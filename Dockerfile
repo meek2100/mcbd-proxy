@@ -9,7 +9,9 @@ RUN pip install docker
 
 # Copy the proxy script and the scripts directory from the build context (your repo)
 COPY proxy_multi.py .
-COPY scripts/ scripts/ # Copies the entire 'scripts' directory into /app/scripts
+
+# Copies the entire 'scripts' directory into /app/scripts
+COPY scripts ./scripts
 
 # Make the scripts executable
 RUN chmod +x scripts/*.sh
