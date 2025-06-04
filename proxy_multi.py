@@ -45,8 +45,9 @@ except Exception as e:
     exit(1)
 
 # Global state variables
-all_servers_warmed_up = False
-last_proxy_activity_time = time.time()
+all_servers_warmed_up = False 
+first_activity_timestamp = None 
+last_proxy_activity_time = time.time() 
 
 server_states = {s['container_name']: {"running": False, "last_activity": time.time()} for s in config['servers']}
 
@@ -81,10 +82,10 @@ def start_mcbe_server(container_name):
         logger.info(result.stdout.strip())
         
         logger.info(f"Waiting for {container_name} to finish initial startup (approx. 15 seconds)...")
-        time.sleep(15)
+        time.sleep(15) 
 
-        server_states[container_name]["running"] = True
-        server_states[container_name]["last_activity"] = time.time()
+        server_states[container_name]["running"] = True 
+        server_states[container_name]["last_activity"] = time.time() 
         logger.info(f"Minecraft Bedrock server {container_name} initiated startup and should be ready for traffic.")
         return True
     return False
@@ -107,15 +108,15 @@ def stop_mcbe_server(container_name):
 # --- Monitor and Shutdown Thread ---
 def monitor_servers_activity():
     """Periodically checks server activity and shuts down idle servers."""
-    global all_servers_warmed_up, last_proxy_activity_time
+    global all_servers_warmed_up, last_proxy_activity_time 
 
     while True:
-        time.sleep(PLAYER_CHECK_INTERVAL_SECONDS)
+        time.sleep(PLAYER_CHECK_INTERVAL_SECONDS) 
         current_time = time.time()
         
-        for server_conf_item in SERVERS_CONFIG.values():
+        for server_conf_item in SERVERS_CONFIG.values(): 
             server_name = server_conf_item['container_name']
-            state = server_states[server_name]
+            state = server_states[server_name] 
 
             if state["running"]:
                 active_players_on_server = 0
@@ -127,9 +128,9 @@ def monitor_servers_activity():
                     logger.info(f"Server {server_name} idle for {IDLE_TIMEOUT_SECONDS}s and no active players detected by proxy. Initiating shutdown.")
                     stop_mcbe_server(server_name)
                 else:
-                    state["player_count"] = active_players_on_server
+                    state["player_count"] = active_players_on_server 
                     if active_players_on_server > 0:
-                        state["last_activity"] = current_time
+                        state["last_activity"] = current_time 
 
         total_active_players = sum(len(clients_per_server[srv_name]) for srv_name in server_states.keys())
         
@@ -137,14 +138,14 @@ def monitor_servers_activity():
            (current_time - last_proxy_activity_time > GLOBAL_IDLE_TIMEOUT_SECONDS):
             
             logger.info(f"Global idle detected ({GLOBAL_IDLE_TIMEOUT_SECONDS}s of no proxy activity and no active players). Shutting down all warmed-up servers.")
-            for srv_conf in SERVERS_CONFIG.values():
+            for srv_conf in SERVERS_CONFIG.values(): 
                 stop_mcbe_server(srv_conf['container_name'])
-            all_servers_warmed_up = False
-            last_proxy_activity_time = current_time
+            all_servers_warmed_up = False 
+            last_proxy_activity_time = current_time 
 
 # --- Main Proxy Logic ---
 def run_proxy():
-    global all_servers_warmed_up, last_proxy_activity_time
+    global all_servers_warmed_up, last_proxy_activity_time, first_activity_timestamp 
 
     client_listen_sockets = {}
     inputs = []
@@ -161,14 +162,13 @@ def run_proxy():
             logger.error(f"ERROR: Could not bind to port {listen_port}. Is it already in use? ({e})")
             exit(1)
 
-    packet_buffers = defaultdict(list) # Defined here locally, as it's only used within run_proxy
+    packet_buffers = defaultdict(list) 
 
     while True:
         try: # This try block covers the entire main loop iteration
             readable, _, _ = select.select(inputs, [], [], 0.05) 
             
             for s in readable:
-                # Identify if the socket is one of our client listener sockets
                 server_port = None
                 for port, sock in client_listen_sockets.items():
                     if sock == s:
@@ -186,23 +186,26 @@ def run_proxy():
 
                     # --- NEW: Warm-up All Servers on First Activity (if not already warmed up) ---
                     if not all_servers_warmed_up:
-                        last_proxy_activity_time = time.time() # Update proxy activity on any packet
+                        if first_activity_timestamp is None:
+                            first_activity_timestamp = time.time()
+                            logger.info(f"First proxy activity detected from {client_addr}. Starting warm-up timer.")
                         
-                        if (time.time() - last_proxy_activity_time < ALL_SERVERS_WARM_UP_THRESHOLD_SECONDS):
-                            logger.debug(f"Proxy received initial activity from {client_addr}, waiting for warm-up threshold.")
-                            packet_buffers[(client_addr, server_port)].append(data) # Buffer initial packets
-                            continue # Don't process this packet yet, just buffer
+                        if (time.time() - first_activity_timestamp < ALL_SERVERS_WARM_UP_THRESHOLD_SECONDS):
+                            logger.debug(f"Proxy received activity, buffering packet for warm-up threshold.")
+                            packet_buffers[(client_addr, server_port)].append(data) 
+                            continue 
                         
-                        logger.info("First client activity detected and warm-up threshold met. Starting all configured Minecraft servers.")
+                        logger.info("Warm-up threshold met. Starting all configured Minecraft servers.")
                         for srv_conf in SERVERS_CONFIG.values():
-                            start_mcbe_server(srv_conf['container_name']) # This includes the sleep
+                            start_mcbe_server(srv_conf['container_name']) 
                         all_servers_warmed_up = True
+                        first_activity_timestamp = None 
                         logger.info("All configured servers initiated startup.")
 
                     # Update global proxy activity time (any packet keeps the system "awake")
                     last_proxy_activity_time = time.time() 
 
-                    server_config = SERVERS_CONFIG[server_port] # Get config based on incoming port
+                    server_config = SERVERS_CONFIG[server_port] 
                     container_name = server_config['container_name']
                     internal_port = server_config['internal_port']
 
@@ -229,8 +232,8 @@ def run_proxy():
                             "last_packet_time": time.time(),
                             "listen_port": server_port
                         }
-                        inputs.append(server_sock) # Add server-facing socket to select list
-                        clients_per_server[container_name].add(client_addr) # Track original client_addr for player count
+                        inputs.append(server_sock)
+                        clients_per_server[container_name].add(client_addr) 
                         logger.info(f"New client session {session_key} established with {container_name}")
                         
                         for buffered_packet in packet_buffers[session_key]:
@@ -262,7 +265,7 @@ def run_proxy():
                             continue
 
                         try:
-                            server_sock.sendto(data, (container_name, target_server_config['internal_port']))
+                            server_sock.sendto(data, (container_name, target_server_config['internal_port'])) 
                             conn_info["last_packet_time"] = time.time()
                             logger.debug(f"Forwarded packet from {session_key} to {target_container}")
                         except socket.error as e:
@@ -285,7 +288,7 @@ def run_proxy():
                         
                         conn_info = active_client_connections[found_session_key]
                         client_facing_socket = client_listen_sockets[conn_info["listen_port"]]
-                        client_addr_original = found_session_key[0]
+                        client_addr_original = found_session_key[0] 
                         
                         try:
                             client_facing_socket.sendto(data, client_addr_original)
@@ -304,7 +307,7 @@ def run_proxy():
                         inputs.remove(s)
                         s.close()
             
-        except select.error as e: # This try/except block now correctly pairs with the 'while True' loop
+        except select.error as e: 
             if e.errno != 4: 
                 logger.error(f"Select error: {e}")
             time.sleep(0.01)
