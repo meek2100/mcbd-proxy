@@ -32,9 +32,9 @@ jobs:
           context: ./ # The build context is the root of your repository (where Dockerfile.proxy_multi is)
           file: ./Dockerfile.proxy_multi # Path to your Dockerfile within the context
           push: true # Enable pushing the image
-          tags: | # Define the tags for your image (multiline string)
-            ghcr.io/${{ github.repository_owner }}/mcbd-proxy:latest # Tag as 'latest'
-            ghcr.io/${{ github.repository_owner }}/mcbd-proxy:${{ github.sha }} # Tag with the full commit SHA
+          tags: | # Define the tags for your image (multi-line string)
+            ghcr.io/${{ github.repository_owner }}/mcbd-proxy:latest # Correct tag
+            ghcr.io/${{ github.repository_owner }}/mcbd-proxy:${{ github.sha }} # Correct tag
           # If you were using Docker Hub instead of GHCR, this would be:
           # tags: |
           #   ${{ secrets.DOCKER_USERNAME }}/mcbd-proxy:latest
