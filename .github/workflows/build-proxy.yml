@@ -9,18 +9,18 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest # GitHub-hosted runner environment
     permissions:
-      contents: read # Permission to read your repository's contents
-      packages: write # Permission to push (write) to GitHub Container Registry
+      contents: read # Required to checkout your repository's contents
+      packages: write # Required to push (write) to GitHub Container Registry (GHCR)
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4 # Action to check out your code
+        uses: actions/checkout@v4 # Action to check out your code into the runner
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io # Specify GitHub Container Registry
-          username: ${{ github.actor }} # GitHub username (automatically available)
+          username: ${{ github.actor }} # Your GitHub username
           password: ${{ secrets.GITHUB_TOKEN }} # GitHub's automatically generated token for workflows
 
       - name: Set up Docker Buildx
@@ -29,14 +29,13 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: ./ # The build context is the root of your repository
+          context: ./ # The build context is the root of your repository (where Dockerfile.proxy_multi is)
           file: ./Dockerfile.proxy_multi # Path to your Dockerfile within the context
           push: true # Enable pushing the image
-          tags: | # Define the tags for your image
-            ghcr.io/${{ github.repository_owner }}/mcbd-proxy:latest
-            ghcr.io/${{ github.repository_owner }}/mcbd-proxy:${{ github.sha }} # Tag with commit SHA for versioning
-          # Example for Docker Hub (if you prefer, requires secrets.DOCKER_USERNAME/DOCKER_TOKEN below)
+          tags: | # Define the tags for your image (multiline string)
+            ghcr.io/${{ github.repository_owner }}/mcbd-proxy:latest # Tag as 'latest'
+            ghcr.io/${{ github.repository_owner }}/mcbd-proxy:${{ github.sha }} # Tag with the full commit SHA
+          # If you were using Docker Hub instead of GHCR, this would be:
           # tags: |
-          #   your-dockerhub-username/mcbd-proxy:latest
-          #   your-dockerhub-username/mcbd-proxy:${{ github.sha }}
-
+          #   ${{ secrets.DOCKER_USERNAME }}/mcbd-proxy:latest
+          #   ${{ secrets.DOCKER_USERNAME }}/mcbd-proxy:${{ github.sha }}
