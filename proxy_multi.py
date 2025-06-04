@@ -98,7 +98,7 @@ def start_container_if_needed(server_port):
                 server_conf['image'],
                 name=container_name,
                 detach=True,
-                ports={f"{server_conf['target_port']}/udp": server_port},
+                ports={f"{server_conf['internal_port']}/udp": server_port},
                 environment=server_conf.get('environment', {}),
             )
             logger.info(f"Created and started container {container_name} on port {server_port}.")
@@ -156,7 +156,7 @@ def run_proxy():
                 if not container_name:
                     continue
 
-                target_port = SERVERS_CONFIG[server_port]['target_port']
+                target_port = SERVERS_CONFIG[server_port]['internal_port']
                 # Resolve container IP
                 try:
                     container = docker_client.containers.get(container_name)
