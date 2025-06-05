@@ -113,7 +113,7 @@ def ensure_all_servers_stopped_on_startup():
         container_name = srv_conf['container_name']
         if is_container_running(container_name):
             logger.info(f"Found {container_name} running at proxy startup. Issuing stop command.")
-            # Note: This will call stop_mcbe_server, which now uses the absolute path.
+            # This will call stop_mcbe_server, which now uses the absolute path.
             stop_mcbe_server(container_name)
         else:
             logger.info(f"{container_name} is already stopped.")
