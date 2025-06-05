@@ -104,6 +104,17 @@ def stop_mcbe_server(container_name):
         return True
     return False
 
+# --- NEW: Function to ensure servers are stopped at proxy startup ---
+def ensure_all_servers_stopped_on_startup():
+    logger.info("Proxy startup detected. Ensuring all Minecraft server containers are initially stopped to enforce on-demand behavior.")
+    for srv_conf in SERVERS_CONFIG.values():
+        container_name = srv_conf['container_name']
+        if is_container_running(container_name):
+            logger.info(f"Found {container_name} running at proxy startup. Issuing stop command.")
+            stop_mcbe_server(container_name) # Call stop_mcbe_server to handle logging and state update
+        else:
+            logger.info(f"{container_name} is already stopped.")
+
 
 # --- Monitor and Shutdown Thread ---
 def monitor_servers_activity():
@@ -129,10 +140,8 @@ def monitor_servers_activity():
                     stop_mcbe_server(server_name)
                 else:
                     state["player_count"] = active_players_on_server 
-                    # --- CRITICAL FIX: Only update last_activity if there are active players ---
                     if active_players_on_server > 0:
                         state["last_activity"] = current_time 
-                    # If active_players_on_server is 0, state["last_activity"] is NOT updated, allowing it to age.
 
         total_active_players = sum(len(clients_per_server[srv_name]) for srv_name in server_states.keys())
         
@@ -148,6 +157,9 @@ def monitor_servers_activity():
 # --- Main Proxy Logic ---
 def run_proxy():
     global all_servers_warmed_up, last_proxy_activity_time, first_activity_timestamp 
+
+    # --- NEW: Ensure servers are stopped at proxy startup ---
+    ensure_all_servers_stopped_on_startup() 
 
     client_listen_sockets = {}
     inputs = []
@@ -234,7 +246,7 @@ def run_proxy():
                             "last_packet_time": time.time(),
                             "listen_port": server_port
                         }
-                        inputs.append(server_sock)
+                        inputs.append(server_sock) 
                         clients_per_server[container_name].add(client_addr) 
                         logger.info(f"New client session {session_key} established with {container_name}")
                         
