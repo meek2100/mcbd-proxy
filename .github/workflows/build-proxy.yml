@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch: # <--- ADD THIS LINE to enable manual triggering
 
 jobs:
   build-and-push:
@@ -35,4 +36,3 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/mcbd-proxy:latest
             ghcr.io/${{ github.repository_owner }}/mcbd-proxy:${{ github.sha }}
-          progress: plain # <--- ADD THIS LINE FOR MORE VERBOSE OUTPUT
