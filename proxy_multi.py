@@ -31,9 +31,8 @@ except json.JSONDecodeError:
 IDLE_TIMEOUT_SECONDS = config.get('idle_timeout_seconds', 600) 
 PLAYER_CHECK_INTERVAL_SECONDS = config.get('player_check_interval_seconds', 60) 
 
-# --- NEW GLOBAL WARM-UP CONFIG ---
-ALL_SERVERS_WARM_UP_THRESHOLD_SECONDS = config.get('all_servers_warm_up_threshold_seconds', 5) 
-GLOBAL_IDLE_TIMEOUT_SECONDS = config.get('global_idle_timeout_seconds', 1800) 
+# --- NEW CONFIG: Configurable Minecraft Server Startup Delay ---
+MINECRAFT_SERVER_STARTUP_DELAY_SECONDS = config.get('minecraft_server_startup_delay_seconds', 15) 
 
 SERVERS_CONFIG = {s['listen_port']: s for s in config.get('servers', [])}
 
@@ -44,11 +43,8 @@ except Exception as e:
     logger.error(f"Error connecting to Docker daemon: {e}. Ensure /var/run/docker.sock is mounted.")
     exit(1)
 
-# Global state variables
-all_servers_warmed_up = False 
-first_activity_timestamp = None 
-last_proxy_activity_time = time.time() 
-
+# Global state variables (reduced for simpler logic)
+# all_servers_warmed_up, first_activity_timestamp, last_proxy_activity_time are removed
 server_states = {s['container_name']: {"running": False, "last_activity": time.time()} for s in config['servers']}
 
 active_client_connections = {} 
@@ -75,15 +71,15 @@ def start_mcbe_server(container_name):
     """Starts a Minecraft Bedrock server Docker container."""
     if not is_container_running(container_name):
         logger.info(f"Starting Minecraft Bedrock server: {container_name}...")
-        # Use absolute path for the script
-        result = subprocess.run(["/app/scripts/start-server.sh", container_name], capture_output=True, text=True) # <<< UPDATED PATH
+        result = subprocess.run(["/app/scripts/start-server.sh", container_name], capture_output=True, text=True) 
         if result.returncode != 0:
             logger.error(f"Error starting {container_name}: {result.stderr}")
             return False
         logger.info(result.stdout.strip())
         
-        logger.info(f"Waiting for {container_name} to finish initial startup (approx. 15 seconds)...")
-        time.sleep(15) 
+        # Use configurable delay here
+        logger.info(f"Waiting for {container_name} to finish initial startup (approx. {MINECRAFT_SERVER_STARTUP_DELAY_SECONDS} seconds)...")
+        time.sleep(MINECRAFT_SERVER_STARTUP_DELAY_SECONDS) 
 
         server_states[container_name]["running"] = True 
         server_states[container_name]["last_activity"] = time.time() 
@@ -95,8 +91,7 @@ def stop_mcbe_server(container_name):
     """Stops a Minecraft Bedrock server Docker container."""
     if is_container_running(container_name):
         logger.info(f"Stopping Minecraft Bedrock server: {container_name}... No players detected.")
-        # Use absolute path for the script
-        result = subprocess.run(["/app/scripts/stop-server.sh", container_name], capture_output=True, text=True) # <<< UPDATED PATH
+        result = subprocess.run(["/app/scripts/stop-server.sh", container_name], capture_output=True, text=True) 
         if result.returncode != 0:
             logger.error(f"Error stopping {container_name}: {result.stderr}")
             return False
@@ -106,14 +101,13 @@ def stop_mcbe_server(container_name):
         return True
     return False
 
-# --- NEW: Function to ensure servers are stopped at proxy startup ---
+# --- NEW: Function to ensure servers are stopped at proxy startup (remains for initial cold start) ---
 def ensure_all_servers_stopped_on_startup():
     logger.info("Proxy startup detected. Ensuring all Minecraft server containers are initially stopped to enforce on-demand behavior.")
     for srv_conf in SERVERS_CONFIG.values():
         container_name = srv_conf['container_name']
         if is_container_running(container_name):
             logger.info(f"Found {container_name} running at proxy startup. Issuing stop command.")
-            # This will call stop_mcbe_server, which now uses the absolute path.
             stop_mcbe_server(container_name)
         else:
             logger.info(f"{container_name} is already stopped.")
@@ -122,7 +116,8 @@ def ensure_all_servers_stopped_on_startup():
 # --- Monitor and Shutdown Thread ---
 def monitor_servers_activity():
     """Periodically checks server activity and shuts down idle servers."""
-    global all_servers_warmed_up, last_proxy_activity_time 
+    # Global state variables related to global warm-up/cool-down are removed
+    # This function now only handles individual server shutdowns
 
     while True:
         time.sleep(PLAYER_CHECK_INTERVAL_SECONDS) 
@@ -143,23 +138,17 @@ def monitor_servers_activity():
                     stop_mcbe_server(server_name)
                 else:
                     state["player_count"] = active_players_on_server 
-                    if active_players_on_server > 0:
+                    if active_players_on_server > 0: # Only reset last_activity if players are present
                         state["last_activity"] = current_time 
+                    # If active_players_on_server is 0, state["last_activity"] is NOT updated, allowing it to age.
 
-        total_active_players = sum(len(clients_per_server[srv_name]) for srv_name in server_states.keys())
-        
-        if all_servers_warmed_up and total_active_players == 0 and \
-           (current_time - last_proxy_activity_time > GLOBAL_IDLE_TIMEOUT_SECONDS):
-            
-            logger.info(f"Global idle detected ({GLOBAL_IDLE_TIMEOUT_SECONDS}s of no proxy activity and no active players). Shutting down all warmed-up servers.")
-            for srv_conf in SERVERS_CONFIG.values(): 
-                stop_mcbe_server(srv_conf['container_name'])
-            all_servers_warmed_up = False 
-            last_proxy_activity_time = current_time 
+        # Global shutdown logic removed from here.
 
 # --- Main Proxy Logic ---
 def run_proxy():
-    global all_servers_warmed_up, last_proxy_activity_time, first_activity_timestamp 
+    # Global state variables related to warm-up are removed from global scope
+    # last_proxy_activity_time, first_activity_timestamp are no longer global to this function scope
+    # (they are no longer used here as warm-up is simpler)
 
     # --- NEW: Ensure servers are stopped at proxy startup ---
     ensure_all_servers_stopped_on_startup() 
@@ -201,27 +190,6 @@ def run_proxy():
                         logger.error(f"Error receiving from client socket {s}: {e}")
                         continue
 
-                    # --- NEW: Warm-up All Servers on First Activity (if not already warmed up) ---
-                    if not all_servers_warmed_up:
-                        if first_activity_timestamp is None:
-                            first_activity_timestamp = time.time()
-                            logger.info(f"First proxy activity detected from {client_addr}. Starting warm-up timer.")
-                        
-                        if (time.time() - first_activity_timestamp < ALL_SERVERS_WARM_UP_THRESHOLD_SECONDS):
-                            logger.debug(f"Proxy received activity, buffering packet for warm-up threshold.")
-                            packet_buffers[(client_addr, server_port)].append(data) 
-                            continue 
-                        
-                        logger.info("Warm-up threshold met. Starting all configured Minecraft servers.")
-                        for srv_conf in SERVERS_CONFIG.values():
-                            start_mcbe_server(srv_conf['container_name']) 
-                        all_servers_warmed_up = True
-                        first_activity_timestamp = None 
-                        logger.info("All configured servers initiated startup.")
-
-                    # Update global proxy activity time (any packet keeps the system "awake")
-                    last_proxy_activity_time = time.time() 
-
                     server_config = SERVERS_CONFIG[server_port] 
                     container_name = server_config['container_name']
                     internal_port = server_config['internal_port']
@@ -229,7 +197,7 @@ def run_proxy():
                     # Update per-server activity time (only if a player is attempting to connect to it)
                     server_states[container_name]["last_activity"] = time.time() 
 
-                    # If server is not running (and should be, i.e., system is warmed up), start it and buffer packet
+                    # If server is not running, start it and buffer packet
                     if not is_container_running(container_name):
                         logger.info(f"Server {container_name} not running for {client_addr}. Starting and buffering initial packet.")
                         start_mcbe_server(container_name)
