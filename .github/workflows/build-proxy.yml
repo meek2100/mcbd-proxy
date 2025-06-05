@@ -30,8 +30,9 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: ./
-          file: ./Dockerfile # <--- UPDATED THIS LINE
+          file: ./Dockerfile
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/mcbd-proxy:latest
             ghcr.io/${{ github.repository_owner }}/mcbd-proxy:${{ github.sha }}
+          progress: plain # <--- ADD THIS LINE FOR MORE VERBOSE OUTPUT
