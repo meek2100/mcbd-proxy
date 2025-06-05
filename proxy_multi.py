@@ -129,8 +129,10 @@ def monitor_servers_activity():
                     stop_mcbe_server(server_name)
                 else:
                     state["player_count"] = active_players_on_server 
+                    # --- CRITICAL FIX: Only update last_activity if there are active players ---
                     if active_players_on_server > 0:
                         state["last_activity"] = current_time 
+                    # If active_players_on_server is 0, state["last_activity"] is NOT updated, allowing it to age.
 
         total_active_players = sum(len(clients_per_server[srv_name]) for srv_name in server_states.keys())
         
@@ -165,7 +167,7 @@ def run_proxy():
     packet_buffers = defaultdict(list) 
 
     while True:
-        try: # This try block covers the entire main loop iteration
+        try: 
             readable, _, _ = select.select(inputs, [], [], 0.05) 
             
             for s in readable:
