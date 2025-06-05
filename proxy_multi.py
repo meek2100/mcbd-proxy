@@ -47,7 +47,7 @@ IDLE_TIMEOUT_SECONDS = get_config_value('PROXY_IDLE_TIMEOUT_SECONDS', 'idle_time
 PLAYER_CHECK_INTERVAL_SECONDS = get_config_value('PROXY_PLAYER_CHECK_INTERVAL_SECONDS', 'player_check_interval_seconds', 60, int)
 MINECRAFT_SERVER_STARTUP_DELAY_SECONDS = get_config_value('PROXY_SERVER_STARTUP_DELAY_SECONDS', 'minecraft_server_startup_delay_seconds', 15, int)
 
-SERVERS_CONFIG = file_config.get('servers', []) # Servers list still comes only from the file
+SERVERS_CONFIG = {s['listen_port']: s for s in file_config.get('servers', [])} # Servers list still comes only from the file
 
 # Docker client setup
 try:
@@ -57,8 +57,7 @@ except Exception as e:
     exit(1)
 
 # Global state variables
-server_states = {s['container_name']: {"running": False, "last_activity": time.time()} for s in SERVERS_CONFIG}
-
+server_states = {s['container_name']: {"running": False, "last_activity": time.time()} for s in SERVERS_CONFIG.values()} # Initialize based on SERVERS_CONFIG values
 active_client_connections = {} 
 clients_per_server = defaultdict(set) 
 packet_buffers = defaultdict(list)
@@ -115,13 +114,14 @@ def stop_mcbe_server(container_name):
 # --- NEW: Function to ensure servers are stopped at proxy startup ---
 def ensure_all_servers_stopped_on_startup():
     logger.info("Proxy startup detected. Ensuring all Minecraft server containers are initially stopped to enforce on-demand behavior.")
-    for srv_conf in SERVERS_CONFIG: # SERVERS_CONFIG is already a dict of {listen_port: srv_conf_dict}
-        container_name = srv_conf['container_name'] # Access srv_conf as a dict
+    for srv_conf in SERVERS_CONFIG.values(): # Iterate over the values of the SERVERS_CONFIG dictionary
+        container_name = srv_conf['container_name']
         if is_container_running(container_name):
             logger.info(f"Found {container_name} running at proxy startup. Issuing stop command.")
             stop_mcbe_server(container_name)
         else:
             logger.info(f"{container_name} is already stopped.")
+
 
 # --- Monitor and Shutdown Thread ---
 def monitor_servers_activity():
@@ -148,21 +148,20 @@ def monitor_servers_activity():
                     if active_players_on_server > 0:
                         state["last_activity"] = current_time 
 
-        # Global shutdown logic removed from here.
+        # Removed global shutdown logic from here.
 
 # --- Main Proxy Logic ---
 def run_proxy():
-    # Global state variables related to warm-up are removed from global scope
-    # last_proxy_activity_time, first_activity_timestamp are no longer global to this function scope
-    # (they are no longer used here as warm-up is simpler)
+    # Removed all_servers_warmed_up, last_proxy_activity_time, first_activity_timestamp globals from this scope.
+    # The new individual-on-demand strategy doesn't need global warm-up state here.
 
-    # --- NEW: Ensure servers are stopped at proxy startup ---
     ensure_all_servers_stopped_on_startup() 
 
     client_listen_sockets = {}
     inputs = []
 
-    for listen_port, srv_cfg in SERVERS_CONFIG.items():
+    # Iterate over SERVERS_CONFIG (which is a dictionary) to create listener sockets
+    for listen_port, srv_cfg in SERVERS_CONFIG.items(): # <<< Line 165
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             sock.bind(('0.0.0.0', listen_port))
@@ -195,6 +194,10 @@ def run_proxy():
                     except Exception as e:
                         logger.error(f"Error receiving from client socket {s}: {e}")
                         continue
+
+                    # --- Removed old "Warm-up All Servers" logic here. ---
+                    # Now, individual servers are started only when traffic is destined for them
+                    # and they are not running.
 
                     server_config = SERVERS_CONFIG[server_port] 
                     container_name = server_config['container_name']
