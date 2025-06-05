@@ -18,7 +18,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- Configuration Loading ---
-# Load config from file first (will be overridden by env vars if present)
 file_config = {}
 try:
     with open('proxy_config.json', 'r') as f:
@@ -28,7 +27,6 @@ except FileNotFoundError:
 except json.JSONDecodeError:
     logger.error("Error: proxy_config.json is not valid JSON. Using environment variables or default values only.")
 
-# --- Configuration Variables (Prioritize Environment Variables over File, then use default) ---
 def get_config_value(env_var_name, json_key_name, default_value, type_converter=str):
     env_val = os.environ.get(env_var_name)
     if env_val is not None:
@@ -46,8 +44,10 @@ def get_config_value(env_var_name, json_key_name, default_value, type_converter=
 IDLE_TIMEOUT_SECONDS = get_config_value('PROXY_IDLE_TIMEOUT_SECONDS', 'idle_timeout_seconds', 600, int)
 PLAYER_CHECK_INTERVAL_SECONDS = get_config_value('PROXY_PLAYER_CHECK_INTERVAL_SECONDS', 'player_check_interval_seconds', 60, int)
 MINECRAFT_SERVER_STARTUP_DELAY_SECONDS = get_config_value('PROXY_SERVER_STARTUP_DELAY_SECONDS', 'minecraft_server_startup_delay_seconds', 15, int)
+SERVER_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_SERVER_READY_MAX_WAIT_TIME_SECONDS', 'server_ready_max_wait_time_seconds', 120, int)
+SERVER_READY_POLL_INTERVAL_SECONDS = get_config_value('PROXY_SERVER_READY_POLL_INTERVAL_SECONDS', 'server_ready_poll_interval_seconds', 2, int)
 
-SERVERS_CONFIG = {s['listen_port']: s for s in file_config.get('servers', [])} # Servers list still comes only from the file
+SERVERS_CONFIG = {s['listen_port']: s for s in file_config.get('servers', [])}
 
 # Docker client setup
 try:
@@ -57,7 +57,8 @@ except Exception as e:
     exit(1)
 
 # Global state variables
-server_states = {s['container_name']: {"running": False, "last_activity": time.time()} for s in SERVERS_CONFIG.values()} # Initialize based on SERVERS_CONFIG values
+server_states = {s['container_name']: {"running": False, "last_activity": time.time()} for s in SERVERS_CONFIG.values()}
+
 active_client_connections = {} 
 clients_per_server = defaultdict(set) 
 packet_buffers = defaultdict(list)
@@ -78,6 +79,40 @@ def is_container_running(container_name):
         logger.error(f"Unexpected error checking container {container_name}: {e}")
         return False
 
+# --- Function to wait for server readiness from logs ---
+def wait_for_server_ready(container_name, max_wait_time_seconds, poll_interval_seconds):
+    """
+    Polls the server's log file for the 'Server started.' message.
+    Returns True if ready, False if timeout or error.
+    """
+    logger.info(f"Waiting for {container_name} to log 'Server started.' (max {max_wait_time_seconds}s)...")
+    start_time = time.time()
+    log_file_path = f"/mnt/{container_name}-data/logs/server.log" # Path inside proxy container (from docker-compose mount)
+
+    while time.time() - start_time < max_wait_time_seconds:
+        try:
+            # Read last few lines to avoid reading entire large log file
+            with open(log_file_path, 'r') as f:
+                f.seek(0, os.SEEK_END)
+                filesize = f.tell()
+                f.seek(max(0, filesize - 4096), os.SEEK_SET) # Read last 4KB
+                lines = f.readlines()
+                
+                for line in reversed(lines):
+                    if "Server started." in line:
+                        logger.info(f"{container_name} logged 'Server started.'. Ready!")
+                        return True
+        except FileNotFoundError:
+            logger.debug(f"Log file {log_file_path} not found yet for {container_name}. Waiting...")
+        except Exception as e:
+            logger.warning(f"Error reading log file {log_file_path} for {container_name}: {e}")
+        
+        time.sleep(poll_interval_seconds)
+    
+    logger.error(f"Timeout waiting for {container_name} to log 'Server started.' after {max_wait_time_seconds} seconds. Proceeding anyway.")
+    return False
+
+
 def start_mcbe_server(container_name):
     """Starts a Minecraft Bedrock server Docker container."""
     if not is_container_running(container_name):
@@ -88,8 +123,9 @@ def start_mcbe_server(container_name):
             return False
         logger.info(result.stdout.strip())
         
-        logger.info(f"Waiting for {container_name} to finish initial startup (approx. {MINECRAFT_SERVER_STARTUP_DELAY_SECONDS} seconds)...")
-        time.sleep(MINECRAFT_SERVER_STARTUP_DELAY_SECONDS) 
+        # Replace fixed sleep with log polling
+        if not wait_for_server_ready(container_name, SERVER_READY_MAX_WAIT_TIME_SECONDS, SERVER_READY_POLL_INTERVAL_SECONDS):
+            logger.warning(f"Server {container_name} did not log 'Server started.' within max wait time.")
 
         server_states[container_name]["running"] = True 
         server_states[container_name]["last_activity"] = time.time() 
@@ -101,7 +137,7 @@ def stop_mcbe_server(container_name):
     """Stops a Minecraft Bedrock server Docker container."""
     if is_container_running(container_name):
         logger.info(f"Stopping Minecraft Bedrock server: {container_name}... No players detected.")
-        result = subprocess.run(["/app/scripts/stop-server.sh", container_name], capture_output=True, text=True)
+        result = subprocess.run(["/app/scripts/stop-server.sh", container_name], capture_output=True, text=True) 
         if result.returncode != 0:
             logger.error(f"Error stopping {container_name}: {result.stderr}")
             return False
@@ -111,10 +147,10 @@ def stop_mcbe_server(container_name):
         return True
     return False
 
-# --- NEW: Function to ensure servers are stopped at proxy startup ---
+# --- Function to ensure servers are stopped at proxy startup ---
 def ensure_all_servers_stopped_on_startup():
     logger.info("Proxy startup detected. Ensuring all Minecraft server containers are initially stopped to enforce on-demand behavior.")
-    for srv_conf in SERVERS_CONFIG.values(): # Iterate over the values of the SERVERS_CONFIG dictionary
+    for srv_conf in SERVERS_CONFIG.values():
         container_name = srv_conf['container_name']
         if is_container_running(container_name):
             logger.info(f"Found {container_name} running at proxy startup. Issuing stop command.")
@@ -148,20 +184,14 @@ def monitor_servers_activity():
                     if active_players_on_server > 0:
                         state["last_activity"] = current_time 
 
-        # Removed global shutdown logic from here.
-
 # --- Main Proxy Logic ---
 def run_proxy():
-    # Removed all_servers_warmed_up, last_proxy_activity_time, first_activity_timestamp globals from this scope.
-    # The new individual-on-demand strategy doesn't need global warm-up state here.
-
     ensure_all_servers_stopped_on_startup() 
 
     client_listen_sockets = {}
     inputs = []
 
-    # Iterate over SERVERS_CONFIG (which is a dictionary) to create listener sockets
-    for listen_port, srv_cfg in SERVERS_CONFIG.items(): # <<< Line 165
+    for listen_port, srv_cfg in SERVERS_CONFIG.items():
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             sock.bind(('0.0.0.0', listen_port))
@@ -194,10 +224,6 @@ def run_proxy():
                     except Exception as e:
                         logger.error(f"Error receiving from client socket {s}: {e}")
                         continue
-
-                    # --- Removed old "Warm-up All Servers" logic here. ---
-                    # Now, individual servers are started only when traffic is destined for them
-                    # and they are not running.
 
                     server_config = SERVERS_CONFIG[server_port] 
                     container_name = server_config['container_name']
