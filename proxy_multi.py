@@ -75,7 +75,8 @@ def start_mcbe_server(container_name):
     """Starts a Minecraft Bedrock server Docker container."""
     if not is_container_running(container_name):
         logger.info(f"Starting Minecraft Bedrock server: {container_name}...")
-        result = subprocess.run(["./scripts/start-server.sh", container_name], capture_output=True, text=True)
+        # Use absolute path for the script
+        result = subprocess.run(["/app/scripts/start-server.sh", container_name], capture_output=True, text=True) # <<< UPDATED PATH
         if result.returncode != 0:
             logger.error(f"Error starting {container_name}: {result.stderr}")
             return False
@@ -94,7 +95,8 @@ def stop_mcbe_server(container_name):
     """Stops a Minecraft Bedrock server Docker container."""
     if is_container_running(container_name):
         logger.info(f"Stopping Minecraft Bedrock server: {container_name}... No players detected.")
-        result = subprocess.run(["./scripts/stop-server.sh", container_name], capture_output=True, text=True)
+        # Use absolute path for the script
+        result = subprocess.run(["/app/scripts/stop-server.sh", container_name], capture_output=True, text=True) # <<< UPDATED PATH
         if result.returncode != 0:
             logger.error(f"Error stopping {container_name}: {result.stderr}")
             return False
@@ -111,7 +113,8 @@ def ensure_all_servers_stopped_on_startup():
         container_name = srv_conf['container_name']
         if is_container_running(container_name):
             logger.info(f"Found {container_name} running at proxy startup. Issuing stop command.")
-            stop_mcbe_server(container_name) # Call stop_mcbe_server to handle logging and state update
+            # Note: This will call stop_mcbe_server, which now uses the absolute path.
+            stop_mcbe_server(container_name)
         else:
             logger.info(f"{container_name} is already stopped.")
 
