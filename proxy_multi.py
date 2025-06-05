@@ -18,23 +18,36 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- Configuration Loading ---
+# Load config from file first (will be overridden by env vars if present)
+file_config = {}
 try:
     with open('proxy_config.json', 'r') as f:
-        config = json.load(f)
+        file_config = json.load(f)
 except FileNotFoundError:
-    logger.error("Error: proxy_config.json not found. Ensure it's mounted correctly.")
-    exit(1)
+    logger.warning("proxy_config.json not found. Using environment variables or default values only.")
 except json.JSONDecodeError:
-    logger.error("Error: proxy_config.json is not valid JSON. Check its syntax.")
-    exit(1)
+    logger.error("Error: proxy_config.json is not valid JSON. Using environment variables or default values only.")
 
-IDLE_TIMEOUT_SECONDS = config.get('idle_timeout_seconds', 600) 
-PLAYER_CHECK_INTERVAL_SECONDS = config.get('player_check_interval_seconds', 60) 
+# --- Configuration Variables (Prioritize Environment Variables over File, then use default) ---
+def get_config_value(env_var_name, json_key_name, default_value, type_converter=str):
+    env_val = os.environ.get(env_var_name)
+    if env_val is not None:
+        try:
+            return type_converter(env_val)
+        except ValueError:
+            logger.warning(f"Invalid type for environment variable {env_var_name}='{env_val}'. Using file config or default.")
+    
+    file_val = file_config.get(json_key_name)
+    if file_val is not None:
+        return type_converter(file_val)
+    
+    return default_value
 
-# --- NEW CONFIG: Configurable Minecraft Server Startup Delay ---
-MINECRAFT_SERVER_STARTUP_DELAY_SECONDS = config.get('minecraft_server_startup_delay_seconds', 15) 
+IDLE_TIMEOUT_SECONDS = get_config_value('PROXY_IDLE_TIMEOUT_SECONDS', 'idle_timeout_seconds', 600, int)
+PLAYER_CHECK_INTERVAL_SECONDS = get_config_value('PROXY_PLAYER_CHECK_INTERVAL_SECONDS', 'player_check_interval_seconds', 60, int)
+MINECRAFT_SERVER_STARTUP_DELAY_SECONDS = get_config_value('PROXY_SERVER_STARTUP_DELAY_SECONDS', 'minecraft_server_startup_delay_seconds', 15, int)
 
-SERVERS_CONFIG = {s['listen_port']: s for s in config.get('servers', [])}
+SERVERS_CONFIG = file_config.get('servers', []) # Servers list still comes only from the file
 
 # Docker client setup
 try:
@@ -43,9 +56,8 @@ except Exception as e:
     logger.error(f"Error connecting to Docker daemon: {e}. Ensure /var/run/docker.sock is mounted.")
     exit(1)
 
-# Global state variables (reduced for simpler logic)
-# all_servers_warmed_up, first_activity_timestamp, last_proxy_activity_time are removed
-server_states = {s['container_name']: {"running": False, "last_activity": time.time()} for s in config['servers']}
+# Global state variables
+server_states = {s['container_name']: {"running": False, "last_activity": time.time()} for s in SERVERS_CONFIG}
 
 active_client_connections = {} 
 clients_per_server = defaultdict(set) 
@@ -71,13 +83,12 @@ def start_mcbe_server(container_name):
     """Starts a Minecraft Bedrock server Docker container."""
     if not is_container_running(container_name):
         logger.info(f"Starting Minecraft Bedrock server: {container_name}...")
-        result = subprocess.run(["/app/scripts/start-server.sh", container_name], capture_output=True, text=True) 
+        result = subprocess.run(["/app/scripts/start-server.sh", container_name], capture_output=True, text=True)
         if result.returncode != 0:
             logger.error(f"Error starting {container_name}: {result.stderr}")
             return False
         logger.info(result.stdout.strip())
         
-        # Use configurable delay here
         logger.info(f"Waiting for {container_name} to finish initial startup (approx. {MINECRAFT_SERVER_STARTUP_DELAY_SECONDS} seconds)...")
         time.sleep(MINECRAFT_SERVER_STARTUP_DELAY_SECONDS) 
 
@@ -91,7 +102,7 @@ def stop_mcbe_server(container_name):
     """Stops a Minecraft Bedrock server Docker container."""
     if is_container_running(container_name):
         logger.info(f"Stopping Minecraft Bedrock server: {container_name}... No players detected.")
-        result = subprocess.run(["/app/scripts/stop-server.sh", container_name], capture_output=True, text=True) 
+        result = subprocess.run(["/app/scripts/stop-server.sh", container_name], capture_output=True, text=True)
         if result.returncode != 0:
             logger.error(f"Error stopping {container_name}: {result.stderr}")
             return False
@@ -101,24 +112,20 @@ def stop_mcbe_server(container_name):
         return True
     return False
 
-# --- NEW: Function to ensure servers are stopped at proxy startup (remains for initial cold start) ---
+# --- NEW: Function to ensure servers are stopped at proxy startup ---
 def ensure_all_servers_stopped_on_startup():
     logger.info("Proxy startup detected. Ensuring all Minecraft server containers are initially stopped to enforce on-demand behavior.")
-    for srv_conf in SERVERS_CONFIG.values():
-        container_name = srv_conf['container_name']
+    for srv_conf in SERVERS_CONFIG: # SERVERS_CONFIG is already a dict of {listen_port: srv_conf_dict}
+        container_name = srv_conf['container_name'] # Access srv_conf as a dict
         if is_container_running(container_name):
             logger.info(f"Found {container_name} running at proxy startup. Issuing stop command.")
             stop_mcbe_server(container_name)
         else:
             logger.info(f"{container_name} is already stopped.")
 
-
 # --- Monitor and Shutdown Thread ---
 def monitor_servers_activity():
     """Periodically checks server activity and shuts down idle servers."""
-    # Global state variables related to global warm-up/cool-down are removed
-    # This function now only handles individual server shutdowns
-
     while True:
         time.sleep(PLAYER_CHECK_INTERVAL_SECONDS) 
         current_time = time.time()
@@ -138,9 +145,8 @@ def monitor_servers_activity():
                     stop_mcbe_server(server_name)
                 else:
                     state["player_count"] = active_players_on_server 
-                    if active_players_on_server > 0: # Only reset last_activity if players are present
+                    if active_players_on_server > 0:
                         state["last_activity"] = current_time 
-                    # If active_players_on_server is 0, state["last_activity"] is NOT updated, allowing it to age.
 
         # Global shutdown logic removed from here.
 
