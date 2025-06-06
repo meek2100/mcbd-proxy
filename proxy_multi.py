@@ -79,7 +79,7 @@ def is_container_running(container_name):
         logger.error(f"Unexpected error checking container {container_name}: {e}")
         return False
 
-# --- Function to wait for server readiness from logs ---
+# --- NEW: Function to wait for server readiness from logs ---
 def wait_for_server_ready(container_name, max_wait_time_seconds, poll_interval_seconds):
     """
     Polls the server's log file for the 'Server started.' message.
@@ -87,7 +87,7 @@ def wait_for_server_ready(container_name, max_wait_time_seconds, poll_interval_s
     """
     logger.info(f"Waiting for {container_name} to log 'Server started.' (max {max_wait_time_seconds}s)...")
     start_time = time.time()
-    log_file_path = f"/mnt/{container_name}-data/logs/server.log" # Path inside proxy container (from docker-compose mount)
+    log_file_path = f"/mnt/{container_name}-data/Dedicated_Server.txt" # <--- UPDATED PATH
 
     while time.time() - start_time < max_wait_time_seconds:
         try:
