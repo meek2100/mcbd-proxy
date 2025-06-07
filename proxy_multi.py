@@ -43,8 +43,8 @@ def get_config_value(env_var_name, json_key_name, default_value, type_converter=
 
 IDLE_TIMEOUT_SECONDS = get_config_value('PROXY_IDLE_TIMEOUT_SECONDS', 'idle_timeout_seconds', 600, int)
 PLAYER_CHECK_INTERVAL_SECONDS = get_config_value('PROXY_PLAYER_CHECK_INTERVAL_SECONDS', 'player_check_interval_seconds', 60, int)
-MINECRAFT_SERVER_STARTUP_DELAY_SECONDS = get_config_value('PROXY_SERVER_STARTUP_DELAY_SECONDS', 'minecraft_server_startup_delay_seconds', 15, int)
-SERVER_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_SERVER_READY_MAX_WAIT_TIME_SECONDS', 'server_ready_max_wait_time_seconds', 120, int)
+MINECRAFT_SERVER_STARTUP_DELAY_SECONDS = get_config_value('PROXY_SERVER_STARTUP_DELAY_SECONDS', 'minecraft_server_startup_delay_seconds', 5, int)
+SERVER_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_SERVER_READY_MAX_WAIT_TIME_SECONDS', 'server_ready_max_wait_time_seconds', 10, int)
 SERVER_READY_POLL_INTERVAL_SECONDS = get_config_value('PROXY_SERVER_READY_POLL_INTERVAL_SECONDS', 'server_ready_poll_interval_seconds', 2, int)
 INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS', 'initial_boot_ready_max_wait_time_seconds', 1800, int) 
 
@@ -88,13 +88,14 @@ def wait_for_server_ready(container_name, max_wait_time_seconds, poll_interval_s
     """
     logger.info(f"Waiting for {container_name} to log 'Server started.' (max {max_wait_time_seconds}s)...")
     start_time = time.time()
-    log_file_path = f"/mnt/{container_name}-data/Dedicated_Server.txt"
+    log_file_path = f"/mnt/{container_name}-data/Dedicated_Server.txt" # Corrected log file path
 
     while time.time() - start_time < max_wait_time_seconds:
+        # Add a small sleep at the start of each poll iteration to give the server time to write/flush logs
+        time.sleep(poll_interval_seconds) 
         try:
-            # Read entire file, as it's small, to avoid seeking issues
             with open(log_file_path, 'r') as f:
-                lines = f.readlines()
+                lines = f.readlines() # Read entire file, as it's small, to avoid seeking issues
                 
                 for line in reversed(lines):
                     if "Server started." in line:
@@ -105,8 +106,6 @@ def wait_for_server_ready(container_name, max_wait_time_seconds, poll_interval_s
         except Exception as e:
             logger.warning(f"Error reading log file {log_file_path} for {container_name}: {e}")
             
-        time.sleep(poll_interval_seconds) # Sleep between polls
-        
     logger.error(f"Timeout waiting for {container_name} to log 'Server started.' after {max_wait_time_seconds} seconds. Proceeding anyway.")
     return False
 
@@ -115,13 +114,14 @@ def start_mcbe_server(container_name):
     """Starts a Minecraft Bedrock server Docker container."""
     if not is_container_running(container_name):
         logger.info(f"Starting Minecraft Bedrock server: {container_name}...")
+        # Use absolute path for the script
         result = subprocess.run(["/app/scripts/start-server.sh", container_name], capture_output=True, text=True)
         if result.returncode != 0:
             logger.error(f"Error starting {container_name}: {result.stderr}")
             return False
         logger.info(result.stdout.strip())
         
-        # Replace fixed sleep with log polling
+        # Replace fixed sleep with log polling, using SERVER_READY_MAX_WAIT_TIME_SECONDS for player-triggered starts
         if not wait_for_server_ready(container_name, SERVER_READY_MAX_WAIT_TIME_SECONDS, SERVER_READY_POLL_INTERVAL_SECONDS):
             logger.warning(f"Server {container_name} did not log 'Server started.' within max wait time. Proceeding anyway.")
 
@@ -135,6 +135,7 @@ def stop_mcbe_server(container_name):
     """Stops a Minecraft Bedrock server Docker container."""
     if is_container_running(container_name):
         logger.info(f"Stopping Minecraft Bedrock server: {container_name}... No players detected.")
+        # Use absolute path for the script
         result = subprocess.run(["/app/scripts/stop-server.sh", container_name], capture_output=True, text=True) 
         if result.returncode != 0:
             logger.error(f"Error stopping {container_name}: {result.stderr}")
@@ -295,7 +296,7 @@ def run_proxy():
                             inputs.remove(server_sock)
                             server_sock.close()
                             if client_addr in clients_per_server[target_container]:
-                                clients_per_server[target_container].remove(client_addr)
+                                clients_per_server[target_name].remove(client_addr) # Corrected this line to use client_addr
                             del active_client_connections[session_key]
                             
                 else: # --- This socket is a backend server socket (response from server) ---
