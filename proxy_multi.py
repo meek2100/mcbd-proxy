@@ -46,6 +46,7 @@ PLAYER_CHECK_INTERVAL_SECONDS = get_config_value('PROXY_PLAYER_CHECK_INTERVAL_SE
 MINECRAFT_SERVER_STARTUP_DELAY_SECONDS = get_config_value('PROXY_SERVER_STARTUP_DELAY_SECONDS', 'minecraft_server_startup_delay_seconds', 15, int)
 SERVER_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_SERVER_READY_MAX_WAIT_TIME_SECONDS', 'server_ready_max_wait_time_seconds', 120, int)
 SERVER_READY_POLL_INTERVAL_SECONDS = get_config_value('PROXY_SERVER_READY_POLL_INTERVAL_SECONDS', 'server_ready_poll_interval_seconds', 2, int)
+INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS', 'initial_boot_ready_max_wait_time_seconds', 1800, int) 
 
 SERVERS_CONFIG = {s['listen_port']: s for s in file_config.get('servers', [])}
 
@@ -79,7 +80,7 @@ def is_container_running(container_name):
         logger.error(f"Unexpected error checking container {container_name}: {e}")
         return False
 
-# --- NEW: Function to wait for server readiness from logs ---
+# --- Function to wait for server readiness from logs ---
 def wait_for_server_ready(container_name, max_wait_time_seconds, poll_interval_seconds):
     """
     Polls the server's log file for the 'Server started.' message.
@@ -87,7 +88,7 @@ def wait_for_server_ready(container_name, max_wait_time_seconds, poll_interval_s
     """
     logger.info(f"Waiting for {container_name} to log 'Server started.' (max {max_wait_time_seconds}s)...")
     start_time = time.time()
-    log_file_path = f"/mnt/{container_name}-data/Dedicated_Server.txt" # <--- UPDATED PATH
+    log_file_path = f"/mnt/{container_name}-data/Dedicated_Server.txt"
 
     while time.time() - start_time < max_wait_time_seconds:
         try:
@@ -106,9 +107,9 @@ def wait_for_server_ready(container_name, max_wait_time_seconds, poll_interval_s
             logger.debug(f"Log file {log_file_path} not found yet for {container_name}. Waiting...")
         except Exception as e:
             logger.warning(f"Error reading log file {log_file_path} for {container_name}: {e}")
-        
+            
         time.sleep(poll_interval_seconds)
-    
+        
     logger.error(f"Timeout waiting for {container_name} to log 'Server started.' after {max_wait_time_seconds} seconds. Proceeding anyway.")
     return False
 
@@ -125,7 +126,7 @@ def start_mcbe_server(container_name):
         
         # Replace fixed sleep with log polling
         if not wait_for_server_ready(container_name, SERVER_READY_MAX_WAIT_TIME_SECONDS, SERVER_READY_POLL_INTERVAL_SECONDS):
-            logger.warning(f"Server {container_name} did not log 'Server started.' within max wait time.")
+            logger.warning(f"Server {container_name} did not log 'Server started.' within max wait time. Proceeding anyway.")
 
         server_states[container_name]["running"] = True 
         server_states[container_name]["last_activity"] = time.time() 
@@ -153,7 +154,11 @@ def ensure_all_servers_stopped_on_startup():
     for srv_conf in SERVERS_CONFIG.values():
         container_name = srv_conf['container_name']
         if is_container_running(container_name):
-            logger.info(f"Found {container_name} running at proxy startup. Issuing stop command.")
+            logger.info(f"Found {container_name} running at proxy startup. Waiting for it to fully start (and update) before stopping.")
+            # Use INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS for initial stop
+            if not wait_for_server_ready(container_name, INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS, SERVER_READY_POLL_INTERVAL_SECONDS):
+                logger.warning(f"{container_name} did not become ready during initial startup within max wait time. Attempting to force stop anyway.")
+            
             stop_mcbe_server(container_name)
         else:
             logger.info(f"{container_name} is already stopped.")
