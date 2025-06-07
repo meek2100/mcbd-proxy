@@ -92,11 +92,8 @@ def wait_for_server_ready(container_name, max_wait_time_seconds, poll_interval_s
 
     while time.time() - start_time < max_wait_time_seconds:
         try:
-            # Read last few lines to avoid reading entire large log file
+            # Read entire file, as it's small, to avoid seeking issues
             with open(log_file_path, 'r') as f:
-                f.seek(0, os.SEEK_END)
-                filesize = f.tell()
-                f.seek(max(0, filesize - 4096), os.SEEK_SET) # Read last 4KB
                 lines = f.readlines()
                 
                 for line in reversed(lines):
@@ -108,7 +105,7 @@ def wait_for_server_ready(container_name, max_wait_time_seconds, poll_interval_s
         except Exception as e:
             logger.warning(f"Error reading log file {log_file_path} for {container_name}: {e}")
             
-        time.sleep(poll_interval_seconds)
+        time.sleep(poll_interval_seconds) # Sleep between polls
         
     logger.error(f"Timeout waiting for {container_name} to log 'Server started.' after {max_wait_time_seconds} seconds. Proceeding anyway.")
     return False
