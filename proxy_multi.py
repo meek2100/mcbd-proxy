@@ -43,11 +43,12 @@ def get_config_value(env_var_name, json_key_name, default_value, type_converter=
 
 IDLE_TIMEOUT_SECONDS = get_config_value('PROXY_IDLE_TIMEOUT_SECONDS', 'idle_timeout_seconds', 600, int)
 PLAYER_CHECK_INTERVAL_SECONDS = get_config_value('PROXY_PLAYER_CHECK_INTERVAL_SECONDS', 'player_check_interval_seconds', 60, int)
-MINECRAFT_SERVER_STARTUP_DELAY_SECONDS = get_config_value('PROXY_SERVER_STARTUP_DELAY_SECONDS', 'minecraft_server_startup_delay_seconds', 15, int)
-SERVER_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_SERVER_READY_MAX_WAIT_TIME_SECONDS', 'server_ready_max_wait_time_seconds', 120, int)
+MINECRAFT_SERVER_STARTUP_DELAY_SECONDS = get_config_value('PROXY_SERVER_STARTUP_DELAY_SECONDS', 'minecraft_server_startup_delay_seconds', 5, int)
+SERVER_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_SERVER_READY_MAX_WAIT_TIME_SECONDS', 'server_ready_max_wait_time_seconds', 10, int)
 SERVER_READY_POLL_INTERVAL_SECONDS = get_config_value('PROXY_SERVER_READY_POLL_INTERVAL_SECONDS', 'server_ready_poll_interval_seconds', 2, int)
-INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS', 'initial_boot_ready_max_wait_time_seconds', 1800, int)
+INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS', 'initial_boot_ready_max_wait_time_seconds', 1800, int) 
 INITIAL_STOP_LOG_WAIT_SECONDS = get_config_value('PROXY_INITIAL_STOP_LOG_WAIT_SECONDS', 'initial_stop_log_wait_seconds', 10, int) 
+INITIAL_LOG_READ_BUFFER_SECONDS = get_config_value('PROXY_INITIAL_LOG_READ_BUFFER_SECONDS', 'initial_log_read_buffer_seconds', 5, int) 
 
 SERVERS_CONFIG = {s['listen_port']: s for s in file_config.get('servers', [])}
 
@@ -91,10 +92,13 @@ def wait_for_server_ready(container_name, max_wait_time_seconds, poll_interval_s
     start_time = time.time()
     log_file_path = f"/mnt/{container_name}-data/Dedicated_Server.txt"
 
+    # Add an initial buffer before starting the polling loop
+    time.sleep(INITIAL_LOG_READ_BUFFER_SECONDS) 
+
     while time.time() - start_time < max_wait_time_seconds:
         time.sleep(poll_interval_seconds) # Sleep between polls
 
-        # --- NEW: Explicitly check for file existence and non-zero size before opening ---
+        # Explicitly check for file existence and non-zero size before opening
         if not os.path.exists(log_file_path):
             logger.debug(f"Log file {log_file_path} does not exist yet for {container_name}. Waiting...")
             continue
@@ -102,19 +106,17 @@ def wait_for_server_ready(container_name, max_wait_time_seconds, poll_interval_s
         if os.path.getsize(log_file_path) == 0:
             logger.debug(f"Log file {log_file_path} is empty for {container_name}. Waiting...")
             continue
-        # --- END NEW ---
 
         try:
             with open(log_file_path, 'r') as f:
-                # Read entire file, as it's small, to avoid seeking issues
-                lines = f.readlines() # Changed: removed f.seek(max(0, filesize - 4096), os.SEEK_SET)
+                lines = f.readlines() # Read entire file
                 
                 for line in reversed(lines):
                     if "Server started." in line:
                         logger.info(f"{container_name} logged 'Server started.'. Ready!")
                         return True
         except FileNotFoundError: # Catches if file disappears after exists check
-           logger.debug(f"Log file {log_file_path} became unavailable for {container_name}. Waiting...")
+            logger.debug(f"Log file {log_file_path} became unavailable for {container_name}. Waiting...")
         except Exception as e:
             logger.warning(f"Error reading log file {log_file_path} for {container_name}: {e}")
             
@@ -220,7 +222,7 @@ def run_proxy():
     while True:
         try: 
             readable, _, _ = select.select(inputs, [], [], 0.05) 
-                
+            
             for s in readable:
                 server_port = None
                 for port, sock in client_listen_sockets.items():
