@@ -8,8 +8,7 @@ import json
 import select
 from collections import defaultdict
 import logging
-from mcstatus import BedrockServer # <<< ADDED: Import BedrockServer
-
+from mcstatus import BedrockServer
 
 # --- Logger Setup ---
 LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
@@ -54,7 +53,7 @@ QUERY_TIMEOUT_SECONDS = get_config_value('PROXY_QUERY_TIMEOUT_SECONDS', 'query_t
 # for client-triggered starts, and INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS for initial stop.
 # The polling interval for these is QUERY_TIMEOUT_SECONDS for mcstatus queries.
 
-INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS', 'initial_boot_ready_max_wait_time_seconds', 180, int) # Reduced from 1800
+INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS', 'initial_boot_ready_max_wait_time_seconds', 180, int)
 SERVER_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_SERVER_READY_MAX_WAIT_TIME_SECONDS', 'server_ready_max_wait_time_seconds', 120, int)
 INITIAL_STOP_LOG_WAIT_SECONDS = get_config_value('PROXY_INITIAL_STOP_LOG_WAIT_SECONDS', 'initial_stop_log_wait_seconds', 10, int) # Initial sleep before querying for initial stop
 # --- END MCSTATUS RELATED CONFIGS ---
@@ -101,11 +100,11 @@ def wait_for_server_query_ready(container_name, target_ip, target_port, max_wait
     logger.info(f"Waiting for {container_name} to respond to query at {target_ip}:{target_port} (max {max_wait_time_seconds}s)...")
     start_time = time.time()
     
-    server = BedrockServer.lookup(f"{target_ip}:{target_port}") # Use lookup to include port
+    server = BedrockServer(target_ip, target_port)
 
     while time.time() - start_time < max_wait_time_seconds:
         try:
-            status = server.status(timeout=query_timeout_seconds) # Corrected: Pass timeout to status()
+            status = server.status(timeout=query_timeout_seconds)
             if status: # A successful response means the server is up and listening
                 logger.info(f"{container_name} responded to query. Latency: {status.latency:.2f}ms. Ready!")
                 return True
@@ -205,9 +204,8 @@ def monitor_servers_activity():
                 target_server_config = next((s for s in SERVERS_CONFIG.values() if s['container_name'] == server_name), None)
                 if target_server_config:
                     try:
-                        server_address = f"{server_name}:{target_server_config['internal_port']}"
-                        server = BedrockServer.lookup(server_address) # Use lookup to include port
-                        status = server.status(timeout=QUERY_TIMEOUT_SECONDS) # Corrected: Pass timeout to status()
+                        server = BedrockServer(server_name, target_server_config['internal_port'])
+                        status = server.status(timeout=QUERY_TIMEOUT_SECONDS)
                         if status and status.players:
                             active_players_on_server = status.players.online
                     except Exception as e:
