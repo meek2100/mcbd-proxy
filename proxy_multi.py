@@ -43,8 +43,8 @@ def get_config_value(env_var_name, json_key_name, default_value, type_converter=
 
 IDLE_TIMEOUT_SECONDS = get_config_value('PROXY_IDLE_TIMEOUT_SECONDS', 'idle_timeout_seconds', 600, int)
 PLAYER_CHECK_INTERVAL_SECONDS = get_config_value('PROXY_PLAYER_CHECK_INTERVAL_SECONDS', 'player_check_interval_seconds', 60, int)
-MINECRAFT_SERVER_STARTUP_DELAY_SECONDS = get_config_value('PROXY_SERVER_STARTUP_DELAY_SECONDS', 'minecraft_server_startup_delay_seconds', 5, int)
-SERVER_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_SERVER_READY_MAX_WAIT_TIME_SECONDS', 'server_ready_max_wait_time_seconds', 10, int)
+MINECRAFT_SERVER_STARTUP_DELAY_SECONDS = get_config_value('PROXY_SERVER_STARTUP_DELAY_SECONDS', 'minecraft_server_startup_delay_seconds', 15, int)
+SERVER_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_SERVER_READY_MAX_WAIT_TIME_SECONDS', 'server_ready_max_wait_time_seconds', 120, int)
 SERVER_READY_POLL_INTERVAL_SECONDS = get_config_value('PROXY_SERVER_READY_POLL_INTERVAL_SECONDS', 'server_ready_poll_interval_seconds', 2, int)
 INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS', 'initial_boot_ready_max_wait_time_seconds', 1800, int) 
 INITIAL_STOP_LOG_WAIT_SECONDS = get_config_value('PROXY_INITIAL_STOP_LOG_WAIT_SECONDS', 'initial_stop_log_wait_seconds', 10, int) 
@@ -98,14 +98,14 @@ def wait_for_server_ready(container_name, max_wait_time_seconds, poll_interval_s
     while time.time() - start_time < max_wait_time_seconds:
         time.sleep(poll_interval_seconds) # Sleep between polls
 
-        # Explicitly check for file existence and non-zero size before opening
+        # Explicitly check for file existence before opening
         if not os.path.exists(log_file_path):
             logger.debug(f"Log file {log_file_path} does not exist yet for {container_name}. Waiting...")
             continue
         
-        if os.path.getsize(log_file_path) == 0:
-            logger.debug(f"Log file {log_file_path} is empty for {container_name}. Waiting...")
-            continue
+        # REMOVED: if os.path.getsize(log_file_path) == 0: check
+        # This allows readlines() to attempt reading even if getsize returns 0,
+        # relying on readlines() to return an empty list if the file is truly empty.
 
         try:
             with open(log_file_path, 'r') as f:
@@ -115,6 +115,8 @@ def wait_for_server_ready(container_name, max_wait_time_seconds, poll_interval_s
                     if "Server started." in line:
                         logger.info(f"{container_name} logged 'Server started.'. Ready!")
                         return True
+            # If we reach here, file exists and was read, but "Server started." not found
+            logger.debug(f"Log file {log_file_path} read, but 'Server started.' not found yet.")
         except FileNotFoundError: # Catches if file disappears after exists check
             logger.debug(f"Log file {log_file_path} became unavailable for {container_name}. Waiting...")
         except Exception as e:
@@ -164,7 +166,6 @@ def ensure_all_servers_stopped_on_startup():
         container_name = srv_conf['container_name']
         if is_container_running(container_name):
             logger.info(f"Found {container_name} running at proxy startup. Waiting for it to fully start (and update) before stopping.")
-            # Use INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS for initial stop
             if not wait_for_server_ready(container_name, INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS, SERVER_READY_POLL_INTERVAL_SECONDS):
                 logger.warning(f"{container_name} did not become ready during initial startup within max wait time. Attempting to force stop anyway.")
             
