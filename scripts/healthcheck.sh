@@ -18,8 +18,16 @@ if [ ! -s "$HEARTBEAT_FILE" ]; then
 fi
 
 # Stage 3: Calculate the age of the heartbeat and check if it's stale.
-LAST_HEARTBEAT=$(cat "$HEARTBEAT_FILE")
+# Sanitize the input from the file to ensure it only contains digits.
+LAST_HEARTBEAT=$(cat "$HEARTBEAT_FILE" | tr -cd '0-9')
 CURRENT_TIME=$(date +%s)
+
+# Ensure that LAST_HEARTBEAT is not empty after sanitizing
+if [ -z "$LAST_HEARTBEAT" ]; then
+    echo "Heartbeat file contains no numbers."
+    exit 1
+fi
+
 AGE=$(($CURRENT_TIME - $LAST_HEARTBEAT))
 
 if [ "$AGE" -lt "$STALE_THRESHOLD" ]; then
