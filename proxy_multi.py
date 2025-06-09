@@ -1,5 +1,5 @@
 """
-MCBE On-Demand Proxy - main.py
+MCBE On-Demand Proxy
 
 An intelligent UDP proxy for Minecraft Bedrock Edition (MCBE) servers.
 This script dynamically starts and stops Dockerized MCBE servers based on player
@@ -131,8 +131,6 @@ def load_servers_from_env():
 # --- Main Application ---
 
 # Top-level variables and objects
-# These are initialized here at the top level to define their scope.
-# They are populated with runtime data when the main application starts.
 IDLE_TIMEOUT_SECONDS = get_config_value('PROXY_IDLE_TIMEOUT_SECONDS', 'idle_timeout_seconds', 600, int)
 PLAYER_CHECK_INTERVAL_SECONDS = get_config_value('PROXY_PLAYER_CHECK_INTERVAL_SECONDS', 'player_check_interval_seconds', 60, int)
 QUERY_TIMEOUT_SECONDS = get_config_value('PROXY_QUERY_TIMEOUT_SECONDS', 'query_timeout_seconds', 5, int)
@@ -153,7 +151,6 @@ active_client_connections = {}
 clients_per_server = defaultdict(set) 
 packet_buffers = defaultdict(list)
 
-# ... (Utility functions like is_container_running, wait_for_server_query_ready, etc. go here) ...
 def is_container_running(container_name):
     """Checks if a Docker container is currently running via the Docker API."""
     try:
@@ -171,7 +168,6 @@ def is_container_running(container_name):
 def wait_for_server_query_ready(container_name, target_ip, target_port, max_wait_time_seconds, query_timeout_seconds):
     """
     Polls a Minecraft server using mcstatus until it responds or a timeout is reached.
-    This function is key to the dynamic startup process.
     """
     logger.info(f"Waiting for {container_name} to respond to query at {target_ip}:{target_port} (max {max_wait_time_seconds}s)...")
     start_time = time.time()
@@ -234,7 +230,6 @@ def stop_mcbe_server(container_name):
 def ensure_all_servers_stopped_on_startup():
     """
     Ensures all managed servers are stopped when the proxy starts.
-    This enforces the on-demand behavior from a clean slate.
     """
     logger.info("Proxy startup: Ensuring all Minecraft servers are initially stopped.")
     for srv_conf in SERVERS_CONFIG.values():
@@ -260,7 +255,6 @@ def ensure_all_servers_stopped_on_startup():
 def monitor_servers_activity():
     """
     Periodically checks running servers for player count and idle time.
-    This thread is the heart of the auto-shutdown feature.
     """
     while True:
         time.sleep(PLAYER_CHECK_INTERVAL_SECONDS)
@@ -268,7 +262,8 @@ def monitor_servers_activity():
         
         for server_conf_item in SERVERS_CONFIG.values(): 
             server_name = server_conf_item['container_name']
-            state = server_states[server_name] 
+            state = server_states.get(server_name)
+            if not state: continue
 
             if state["running"]:
                 active_players_on_server = 0
@@ -291,40 +286,10 @@ def monitor_servers_activity():
                     if active_players_on_server > 0:
                         state["last_activity"] = current_time
 
-def run_proxy():
+def run_proxy(client_listen_sockets, inputs):
     """
-    The main entry point of the proxy. Initializes and runs the primary UDP packet forwarding loop.
+    The main packet forwarding loop of the proxy.
     """
-    global client, server_states, active_client_connections, clients_per_server, packet_buffers
-    
-    # Initialize globals for the main process
-    try:
-        client = docker.from_env()
-    except Exception as e:
-        logger.error(f"Error connecting to Docker daemon: {e}. Ensure /var/run/docker.sock is mounted.")
-        sys.exit(1)
-        
-    server_states = {s['container_name']: {"running": False, "last_activity": time.time()} for s in SERVERS_CONFIG.values()}
-    active_client_connections = {} 
-    clients_per_server = defaultdict(set) 
-    packet_buffers = defaultdict(list)
-    
-    ensure_all_servers_stopped_on_startup() 
-
-    client_listen_sockets = {}
-    inputs = []
-    for listen_port, srv_cfg in SERVERS_CONFIG.items():
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            sock.bind(('0.0.0.0', listen_port))
-            sock.setblocking(False)
-            client_listen_sockets[listen_port] = sock
-            inputs.append(sock)
-            logger.info(f"Proxy listening for players on port {listen_port} -> {srv_cfg['container_name']}")
-        except OSError as e:
-            logger.error(f"ERROR: Could not bind to port {listen_port}. Is it already in use? ({e})")
-            sys.exit(1)
-
     last_heartbeat_time = time.time()
     while True:
         try: 
@@ -423,24 +388,43 @@ def run_proxy():
 if __name__ == "__main__":
     if '--healthcheck' in sys.argv:
         perform_health_check()
-    
-    # --- Normal Startup Sequence ---
-    # Clean up old heartbeat file on start.
-    if HEARTBEAT_FILE.exists():
-        HEARTBEAT_FILE.unlink()
+    else:
+        # --- Normal Startup Sequence ---
+        logger.info("Starting Bedrock On-Demand Proxy...")
 
-    # Final check for server configuration before starting threads.
-    if not SERVERS_CONFIG:
-        logger.error("FATAL: No server configurations loaded. Entering dormant, unhealthy state.")
-        # Enter a dormant loop to allow health checks to fail without causing a restart loop.
-        while True:
-            time.sleep(3600)
-    
-    logger.info("Starting Bedrock On-Demand Proxy...")
-    
-    # Start the server monitoring thread in the background.
-    monitor_thread = threading.Thread(target=monitor_servers_activity, daemon=True)
-    monitor_thread.start()
-    
-    # Run the main proxy loop.
-    run_proxy()
+        if HEARTBEAT_FILE.exists():
+            HEARTBEAT_FILE.unlink()
+
+        if not SERVERS_CONFIG:
+            logger.error("FATAL: No server configurations loaded. Entering dormant, unhealthy state.")
+            while True:
+                time.sleep(3600)
+        
+        try:
+            client = docker.from_env()
+        except Exception as e:
+            logger.error(f"Error connecting to Docker daemon: {e}. Ensure /var/run/docker.sock is mounted.")
+            sys.exit(1)
+            
+        server_states = {s['container_name']: {"running": False, "last_activity": time.time()} for s in SERVERS_CONFIG.values()}
+        
+        ensure_all_servers_stopped_on_startup()
+        
+        client_listen_sockets = {}
+        inputs = []
+        for listen_port, srv_cfg in SERVERS_CONFIG.items():
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                sock.bind(('0.0.0.0', listen_port))
+                sock.setblocking(False)
+                client_listen_sockets[listen_port] = sock
+                inputs.append(sock)
+                logger.info(f"Proxy listening for players on port {listen_port} -> {srv_cfg['container_name']}")
+            except OSError as e:
+                logger.error(f"ERROR: Could not bind to port {listen_port}. Is it already in use? ({e})")
+                sys.exit(1)
+
+        monitor_thread = threading.Thread(target=monitor_servers_activity, daemon=True)
+        monitor_thread.start()
+        
+        run_proxy(client_listen_sockets, inputs)
