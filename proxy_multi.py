@@ -73,15 +73,15 @@ def load_servers_from_env():
     env_servers = []
     i = 1
     while True:
-        # A listen port is required for each server definition.
+															   
         listen_port_str = os.environ.get(f'PROXY_SERVER_{i}_LISTEN_PORT')
         if not listen_port_str:
-            break # No more servers defined.
+            break
 
         try:
             listen_port = int(listen_port_str)
             internal_port_str = os.environ.get(f'PROXY_SERVER_{i}_INTERNAL_PORT')
-            
+			
             if not internal_port_str:
                 logger.warning(f"PROXY_SERVER_{i}_INTERNAL_PORT is not defined. Skipping server definition.")
                 i += 1
@@ -110,7 +110,7 @@ def load_servers_from_env():
     return env_servers
 
 # --- Server Configuration Initialization ---
-# Try to load servers from environment variables first. If none are found, fall back to the JSON file.
+																									  
 servers_list = load_servers_from_env()
 if not servers_list:
     logger.info("No server definitions found in environment variables. Falling back to proxy_config.json.")
@@ -130,12 +130,17 @@ except Exception as e:
     exit(1)
 
 # --- Global State ---
-# These variables track the state of servers and client connections.
+																	
 server_states = {s['container_name']: {"running": False, "last_activity": time.time()} for s in SERVERS_CONFIG.values()}
 active_client_connections = {} 
 clients_per_server = defaultdict(set) 
 packet_buffers = defaultdict(list)
 
+# --- Constants ---
+HEARTBEAT_FILE = "/tmp/proxy_heartbeat"
+HEARTBEAT_INTERVAL_SECONDS = 15
+
+# [ ... The utility functions (is_container_running, wait_for_server_query_ready, etc.) remain the same ... ]
 # --- Utility Functions ---
 def is_container_running(container_name):
     """Checks if a Docker container is currently running via the Docker API."""
@@ -285,7 +290,7 @@ def monitor_servers_activity():
                     # If players are present, update the last activity time to now.
                     if active_players_on_server > 0:
                         state["last_activity"] = current_time
-
+                        
 # --- Main Proxy Logic ---
 def run_proxy():
     """
@@ -293,7 +298,7 @@ def run_proxy():
     """
     ensure_all_servers_stopped_on_startup() 
 
-    # Set up a listening socket for each server defined in the configuration.
+																			 
     client_listen_sockets = {}
     inputs = []
     for listen_port, srv_cfg in SERVERS_CONFIG.items():
@@ -308,11 +313,25 @@ def run_proxy():
             logger.error(f"ERROR: Could not bind to port {listen_port}. Is it already in use? ({e})")
             exit(1)
 
+    # --- NEW: Heartbeat initialization ---
+    last_heartbeat_time = time.time()
+
     while True:
         try: 
-            # Use select to handle I/O from all sockets (clients and servers).
+																			  
             readable, _, _ = select.select(inputs, [], [], 0.05) 
             
+            # --- NEW: Heartbeat update logic ---
+            current_time = time.time()
+            if current_time - last_heartbeat_time > HEARTBEAT_INTERVAL_SECONDS:
+                try:
+                    with open(HEARTBEAT_FILE, 'a'):
+                        os.utime(HEARTBEAT_FILE, None)
+                    last_heartbeat_time = current_time
+                    logger.debug("Proxy heartbeat updated.")
+                except Exception as e:
+                    logger.warning(f"Could not update heartbeat file at {HEARTBEAT_FILE}: {e}")
+
             for sock in readable:
                 # Determine if the packet is from a client or a backend server.
                 is_from_client = any(sock == s for s in client_listen_sockets.values())
