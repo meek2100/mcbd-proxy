@@ -97,25 +97,23 @@ def wait_for_server_query_ready(container_name, target_ip, target_port, max_wait
     Attempts to query the Minecraft Bedrock server directly over the network until it responds.
     Returns True if ready, False if timeout or error.
     """
-    # --- DIAGNOSTIC LOG TO CONFIRM SCRIPT VERSION ---
     logger.info("--- EXECUTING SCRIPT VERSION 6/9 8:28 AM ---")
-    
     logger.info(f"Waiting for {container_name} to respond to query at {target_ip}:{target_port} (max {max_wait_time_seconds}s)...")
     start_time = time.time()
-
-    server = BedrockServer(target_ip, target_port)
-
+    
     while time.time() - start_time < max_wait_time_seconds:
         try:
-            status = server.status(timeout=query_timeout_seconds)
+            # --- NEW APPROACH: Pass timeout to the constructor ---
+            server = BedrockServer(target_ip, target_port, timeout=query_timeout_seconds)
+            status = server.status() # Call status without arguments
             if status: # A successful response means the server is up and listening
                 logger.info(f"{container_name} responded to query. Latency: {status.latency:.2f}ms. Ready!")
                 return True
         except Exception as e:
             logger.debug(f"Query to {container_name} ({target_ip}:{target_port}) failed: {e}. Retrying...")
-
+        
         time.sleep(query_timeout_seconds) # Wait before next query attempt
-
+    
     logger.error(f"Timeout waiting for {container_name} to respond after {max_wait_time_seconds} seconds. Proceeding anyway.")
     return False
 
@@ -194,7 +192,7 @@ def ensure_all_servers_stopped_on_startup():
 def monitor_servers_activity():
     """Periodically checks server activity and shuts down idle servers."""
     while True:
-        time.sleep(PLAYER_CHECK_INTERVAL_SECONDS) 
+        time.sleep(PLAYER_CHECK_INTERVAL_SECONDS)
         current_time = time.time()
         
         for server_conf_item in SERVERS_CONFIG.values(): 
@@ -202,13 +200,13 @@ def monitor_servers_activity():
             state = server_states[server_name] 
 
             if state["running"]:
-                # --- Get active players via mcstatus query for accuracy ---
                 active_players_on_server = 0
                 target_server_config = next((s for s in SERVERS_CONFIG.values() if s['container_name'] == server_name), None)
                 if target_server_config:
                     try:
-                        server = BedrockServer(server_name, target_server_config['internal_port'])
-                        status = server.status(timeout=QUERY_TIMEOUT_SECONDS)
+                        # --- NEW APPROACH: Pass timeout to the constructor ---
+                        server = BedrockServer(server_name, target_server_config['internal_port'], timeout=QUERY_TIMEOUT_SECONDS)
+                        status = server.status() # Call status without arguments
                         if status and status.players:
                             active_players_on_server = status.players.online
                     except Exception as e:
@@ -222,7 +220,7 @@ def monitor_servers_activity():
                 else:
                     state["player_count"] = active_players_on_server 
                     if active_players_on_server > 0:
-                        state["last_activity"] = current_time 
+                        state["last_activity"] = current_time
 
 # --- Main Proxy Logic ---
 def run_proxy():
