@@ -13,14 +13,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application's code into the container
 COPY . .
 
-# Make the shell scripts executable
-RUN chmod +x /app/scripts/*.sh
+# Make the start/stop shell scripts executable
+RUN chmod +x /app/scripts/start-server.sh /app/scripts/stop-server.sh
 
 # --- HEALTHCHECK ---
-# Use the custom healthcheck script.
-# This script implements a two-stage check for configuration and liveness.
+# Execute the health check logic directly within the Python script.
+# This is the most reliable method as it has no external dependencies.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
-  CMD ["/app/scripts/healthcheck.sh"]
+  CMD [ "python", "proxy_multi.py", "--healthcheck" ]
 
 # Command to run the application
 CMD ["python", "proxy_multi.py"]
