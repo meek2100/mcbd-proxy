@@ -29,6 +29,7 @@ except json.JSONDecodeError:
     logger.error("Error: proxy_config.json is not valid JSON. Using environment variables or default values only.")
 
 def get_config_value(env_var_name, json_key_name, default_value, type_converter=str):
+    """Loads a configuration value from an environment variable or a JSON file, with a fallback to a default."""
     env_val = os.environ.get(env_var_name)
     if env_val is not None:
         try:
@@ -42,24 +43,84 @@ def get_config_value(env_var_name, json_key_name, default_value, type_converter=
     
     return default_value
 
+# =================================================================================
+# ---                            PROXY DEFAULTS                                 ---
+# =================================================================================
+# These are the default settings for the proxy. They are designed to be safe and
+# reliable for a general audience. For fine-tuning, override these values using
+# environment variables in your docker-compose.yml file.
+
+# --- Group 1: Core On-Demand Lifecycle ---
 IDLE_TIMEOUT_SECONDS = get_config_value('PROXY_IDLE_TIMEOUT_SECONDS', 'idle_timeout_seconds', 600, int)
 PLAYER_CHECK_INTERVAL_SECONDS = get_config_value('PROXY_PLAYER_CHECK_INTERVAL_SECONDS', 'player_check_interval_seconds', 60, int)
-MINECRAFT_SERVER_STARTUP_DELAY_SECONDS = get_config_value('PROXY_SERVER_STARTUP_DELAY_SECONDS', 'minecraft_server_startup_delay_seconds', 15, int)
 
-# --- NEW MCSTATUS RELATED CONFIGS (ONLY THESE ARE USED FOR READINESS) ---
-QUERY_TIMEOUT_SECONDS = get_config_value('PROXY_QUERY_TIMEOUT_SECONDS', 'query_timeout_seconds', 5, int) # Timeout for the mcstatus query itself
-
-# Note: Max wait for server to become ready is controlled by SERVER_READY_MAX_WAIT_TIME_SECONDS
-# for client-triggered starts, and INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS for initial stop.
-# The polling interval for these is QUERY_TIMEOUT_SECONDS for mcstatus queries.
-
-INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS', 'initial_boot_ready_max_wait_time_seconds', 180, int)
+# --- Group 2: Dynamic Readiness Check ---
+QUERY_TIMEOUT_SECONDS = get_config_value('PROXY_QUERY_TIMEOUT_SECONDS', 'query_timeout_seconds', 5, int)
 SERVER_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_SERVER_READY_MAX_WAIT_TIME_SECONDS', 'server_ready_max_wait_time_seconds', 120, int)
-INITIAL_STOP_LOG_WAIT_SECONDS = get_config_value('PROXY_INITIAL_STOP_LOG_WAIT_SECONDS', 'initial_stop_log_wait_seconds', 10, int) # Initial sleep before querying for initial stop
-# --- END MCSTATUS RELATED CONFIGS ---
+INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS', 'initial_boot_ready_max_wait_time_seconds', 180, int)
+
+# --- Group 3: Startup Buffers ---
+MINECRAFT_SERVER_STARTUP_DELAY_SECONDS = get_config_value('PROXY_SERVER_STARTUP_DELAY_SECONDS', 'minecraft_server_startup_delay_seconds', 5, int)
+INITIAL_SERVER_QUERY_DELAY_SECONDS = get_config_value('PROXY_INITIAL_SERVER_QUERY_DELAY_SECONDS', 'initial_server_query_delay_seconds', 10, int)
 
 
-SERVERS_CONFIG = {s['listen_port']: s for s in file_config.get('servers', [])}
+# --- NEW: Function to load server list from environment variables ---
+def load_servers_from_env():
+    """
+    Loads server configurations from indexed environment variables.
+    e.g., PROXY_SERVER_1_LISTEN_PORT, PROXY_SERVER_2_LISTEN_PORT, etc.
+    """
+    env_servers = []
+    i = 1
+    while True:
+        # A listen port is required for each server definition.
+        listen_port_str = os.environ.get(f'PROXY_SERVER_{i}_LISTEN_PORT')
+        if not listen_port_str:
+            break # No more servers defined.
+
+        try:
+            listen_port = int(listen_port_str)
+            internal_port_str = os.environ.get(f'PROXY_SERVER_{i}_INTERNAL_PORT')
+            
+            if not internal_port_str:
+                logger.warning(f"PROXY_SERVER_{i}_INTERNAL_PORT is not defined. Skipping server definition.")
+                i += 1
+                continue
+
+            internal_port = int(internal_port_str)
+            container_name = os.environ.get(f'PROXY_SERVER_{i}_CONTAINER_NAME')
+
+            if not container_name:
+                logger.warning(f"PROXY_SERVER_{i}_CONTAINER_NAME is not defined. Skipping server definition.")
+                i += 1
+                continue
+
+            server_def = {
+                "name": os.environ.get(f'PROXY_SERVER_{i}_NAME', f"Server {i}"),
+                "listen_port": listen_port,
+                "container_name": container_name,
+                "internal_port": internal_port
+            }
+            env_servers.append(server_def)
+        except (ValueError, TypeError) as e:
+            logger.error(f"Invalid server definition for server index {i}. Please check port numbers. Error: {e}")
+        
+        i += 1
+        
+    return env_servers
+
+# --- Server Configuration Initialization ---
+# Try to load servers from environment variables first. If none are found, fall back to the JSON file.
+servers_list = load_servers_from_env()
+if not servers_list:
+    logger.info("No server definitions found in environment variables. Falling back to proxy_config.json.")
+    servers_list = file_config.get('servers', [])
+
+SERVERS_CONFIG = {s['listen_port']: s for s in servers_list}
+if not SERVERS_CONFIG:
+    logger.error("FATAL: No server configurations found in environment or proxy_config.json. Proxy cannot start.")
+    exit(1)
+
 
 # Docker client setup
 try:
@@ -68,17 +129,16 @@ except Exception as e:
     logger.error(f"Error connecting to Docker daemon: {e}. Ensure /var/run/docker.sock is mounted.")
     exit(1)
 
-# Global state variables
+# --- Global State ---
+# These variables track the state of servers and client connections.
 server_states = {s['container_name']: {"running": False, "last_activity": time.time()} for s in SERVERS_CONFIG.values()}
-
 active_client_connections = {} 
 clients_per_server = defaultdict(set) 
 packet_buffers = defaultdict(list)
 
-
 # --- Utility Functions ---
 def is_container_running(container_name):
-    """Checks if a Docker container is currently running."""
+    """Checks if a Docker container is currently running via the Docker API."""
     try:
         container = client.containers.get(container_name)
         return container.status == 'running'
@@ -91,106 +151,110 @@ def is_container_running(container_name):
         logger.error(f"Unexpected error checking container {container_name}: {e}")
         return False
 
-# --- REPLACED: wait_for_server_ready (log polling) with wait_for_server_query_ready (mcstatus) ---
 def wait_for_server_query_ready(container_name, target_ip, target_port, max_wait_time_seconds, query_timeout_seconds):
     """
-    Attempts to query the Minecraft Bedrock server directly over the network until it responds.
-    Returns True if ready, False if timeout or error.
+    Polls a Minecraft server using mcstatus until it responds or a timeout is reached.
+    This function is key to the dynamic startup process.
     """
-    logger.info("--- EXECUTING SCRIPT VERSION 6/9 8:28 AM ---")
     logger.info(f"Waiting for {container_name} to respond to query at {target_ip}:{target_port} (max {max_wait_time_seconds}s)...")
     start_time = time.time()
     
+    # The polling loop that repeatedly checks the server's status.
     while time.time() - start_time < max_wait_time_seconds:
         try:
-            # --- NEW APPROACH: Pass timeout to the constructor ---
             server = BedrockServer(target_ip, target_port, timeout=query_timeout_seconds)
-            status = server.status() # Call status without arguments
-            if status: # A successful response means the server is up and listening
+            status = server.status()
+            if status:
                 logger.info(f"{container_name} responded to query. Latency: {status.latency:.2f}ms. Ready!")
                 return True
         except Exception as e:
             logger.debug(f"Query to {container_name} ({target_ip}:{target_port}) failed: {e}. Retrying...")
         
-        time.sleep(query_timeout_seconds) # Wait before next query attempt
+        # Wait before the next query attempt.
+        time.sleep(query_timeout_seconds)
     
     logger.error(f"Timeout waiting for {container_name} to respond after {max_wait_time_seconds} seconds. Proceeding anyway.")
     return False
 
-
 def start_mcbe_server(container_name):
-    """Starts a Minecraft Bedrock server Docker container."""
+    """Starts a Minecraft server container and waits for it to become ready."""
     if not is_container_running(container_name):
-        logger.info(f"Starting Minecraft Bedrock server: {container_name}...")
+        logger.info(f"Starting Minecraft server: {container_name}...")
+        # Executes an external script to start the container.
         result = subprocess.run(["/app/scripts/start-server.sh", container_name], capture_output=True, text=True) 
         if result.returncode != 0:
             logger.error(f"Error starting {container_name}: {result.stderr}")
             return False
         logger.info(result.stdout.strip())
         
-        # Give a brief initial buffer before querying (server might still be creating process)
+        # Brief pause to allow the container's process to initialize before polling.
         time.sleep(MINECRAFT_SERVER_STARTUP_DELAY_SECONDS) 
 
-        # Get server internal IP/Port for query
         target_server_config = next((s for s in SERVERS_CONFIG.values() if s['container_name'] == container_name), None)
         if not target_server_config:
             logger.error(f"Config for {container_name} not found. Cannot query for readiness.")
             return False
 
-        # Use mcstatus query for readiness check
+        # Use the dynamic query function to wait for the server to be ready.
         if not wait_for_server_query_ready(container_name, container_name, target_server_config['internal_port'], SERVER_READY_MAX_WAIT_TIME_SECONDS, QUERY_TIMEOUT_SECONDS):
-            logger.warning(f"Server {container_name} did not respond to query within max wait time. Proceeding anyway.")
+            logger.warning(f"Server {container_name} did not respond to query within max wait time. Proceeding with traffic forwarding anyway.")
 
         server_states[container_name]["running"] = True 
         server_states[container_name]["last_activity"] = time.time() 
-        logger.info(f"Minecraft Bedrock server {container_name} initiated startup and should be ready for traffic.")
+        logger.info(f"Server {container_name} startup process complete. Ready for traffic.")
         return True
     return False
 
 def stop_mcbe_server(container_name):
-    """Stops a Minecraft Bedrock server Docker container."""
+    """Stops a Minecraft server container."""
     if is_container_running(container_name):
-        logger.info(f"Stopping Minecraft Bedrock server: {container_name}... No players detected.")
+        logger.info(f"Stopping Minecraft server: {container_name}...")
+        # Executes an external script to stop the container.
         result = subprocess.run(["/app/scripts/stop-server.sh", container_name], capture_output=True, text=True) 
         if result.returncode != 0:
             logger.error(f"Error stopping {container_name}: {result.stderr}")
             return False
         logger.info(result.stdout.strip())
         server_states[container_name]["running"] = False
-        logger.info(f"Minecraft Bedrock server {container_name} stopped.")
+        logger.info(f"Server {container_name} stopped.")
         return True
     return False
 
-# --- Function to ensure servers are stopped at proxy startup ---
 def ensure_all_servers_stopped_on_startup():
-    logger.info("Proxy startup detected. Ensuring all Minecraft server containers are initially stopped to enforce on-demand behavior.")
+    """
+    Ensures all managed servers are stopped when the proxy starts.
+    This enforces the on-demand behavior from a clean slate.
+    """
+    logger.info("Proxy startup: Ensuring all Minecraft servers are initially stopped.")
     for srv_conf in SERVERS_CONFIG.values():
         container_name = srv_conf['container_name']
         if is_container_running(container_name):
-            logger.info(f"Found {container_name} running at proxy startup. Waiting for it to fully start (and update) before stopping.")
+            logger.info(f"Found {container_name} running at proxy startup. Waiting for it to fully start before issuing a safe stop.")
             
-            # Use INITIAL_STOP_LOG_WAIT_SECONDS as initial buffer before querying for initial stop
-            time.sleep(INITIAL_STOP_LOG_WAIT_SECONDS)
+            # Brief pause before querying a server that was already running.
+            time.sleep(INITIAL_SERVER_QUERY_DELAY_SECONDS)
 
-            # Use mcstatus query for readiness for initial stop
             target_server_config = next((s for s in SERVERS_CONFIG.values() if s['container_name'] == container_name), None)
             if not target_server_config:
                 logger.error(f"Config for {container_name} not found. Cannot query for readiness for initial stop.")
-                # Fallback to force stop if config not found
                 stop_mcbe_server(container_name)
                 continue
 
+            # Wait for the server to be responsive before stopping it.
             if not wait_for_server_query_ready(container_name, container_name, target_server_config['internal_port'], INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS, QUERY_TIMEOUT_SECONDS):
-                logger.warning(f"{container_name} did not respond to query during initial startup within max wait time. Attempting to force stop anyway.")
+                logger.warning(f"{container_name} did not respond to query during initial startup. Attempting to force stop anyway.")
             
             stop_mcbe_server(container_name) 
         else:
             logger.info(f"{container_name} is already stopped.")
 
 
-# --- Monitor and Shutdown Thread ---
+# --- Background Threads ---
 def monitor_servers_activity():
-    """Periodically checks server activity and shuts down idle servers."""
+    """
+    Periodically checks running servers for player count and idle time.
+    This thread is the heart of the auto-shutdown feature.
+    """
     while True:
         time.sleep(PLAYER_CHECK_INTERVAL_SECONDS)
         current_time = time.time()
@@ -204,9 +268,8 @@ def monitor_servers_activity():
                 target_server_config = next((s for s in SERVERS_CONFIG.values() if s['container_name'] == server_name), None)
                 if target_server_config:
                     try:
-                        # --- NEW APPROACH: Pass timeout to the constructor ---
                         server = BedrockServer(server_name, target_server_config['internal_port'], timeout=QUERY_TIMEOUT_SECONDS)
-                        status = server.status() # Call status without arguments
+                        status = server.status()
                         if status and status.players:
                             active_players_on_server = status.players.online
                     except Exception as e:
@@ -214,21 +277,25 @@ def monitor_servers_activity():
                 else:
                     logger.warning(f"Config for {server_name} not found when checking player count.")
 
+                # If the server is empty and has been idle for longer than the timeout, stop it.
                 if active_players_on_server == 0 and (current_time - state["last_activity"] > IDLE_TIMEOUT_SECONDS):
-                    logger.info(f"Server {server_name} idle for {IDLE_TIMEOUT_SECONDS}s and no active players detected by proxy. Initiating shutdown.")
+                    logger.info(f"Server {server_name} idle for over {IDLE_TIMEOUT_SECONDS}s with 0 players. Initiating shutdown.")
                     stop_mcbe_server(server_name)
                 else:
-                    state["player_count"] = active_players_on_server 
+                    # If players are present, update the last activity time to now.
                     if active_players_on_server > 0:
                         state["last_activity"] = current_time
 
 # --- Main Proxy Logic ---
 def run_proxy():
+    """
+    The main entry point of the proxy. Initializes and runs the primary UDP packet forwarding loop.
+    """
     ensure_all_servers_stopped_on_startup() 
 
+    # Set up a listening socket for each server defined in the configuration.
     client_listen_sockets = {}
     inputs = []
-
     for listen_port, srv_cfg in SERVERS_CONFIG.items():
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -236,51 +303,46 @@ def run_proxy():
             sock.setblocking(False)
             client_listen_sockets[listen_port] = sock
             inputs.append(sock)
-            logger.info(f"Proxy listening for client connections on port {listen_port}")
+            logger.info(f"Proxy listening for players on port {listen_port} -> {srv_cfg['container_name']}")
         except OSError as e:
             logger.error(f"ERROR: Could not bind to port {listen_port}. Is it already in use? ({e})")
             exit(1)
 
-    packet_buffers = defaultdict(list) 
-
     while True:
         try: 
+            # Use select to handle I/O from all sockets (clients and servers).
             readable, _, _ = select.select(inputs, [], [], 0.05) 
             
-            for s in readable:
-                server_port = None
-                for port, sock in client_listen_sockets.items():
-                    if sock == s:
-                        server_port = port
-                        break
-
-                if server_port is not None:
-                    # --- This socket is a client listener socket (incoming packet from client) ---
+            for sock in readable:
+                # Determine if the packet is from a client or a backend server.
+                is_from_client = any(sock == s for s in client_listen_sockets.values())
+                
+                if is_from_client:
+                    # --- Packet from a Player Client ---
                     try:
-                        data, client_addr = s.recvfrom(4096)
-                        logger.debug(f"Received packet from {client_addr} on port {server_port}")
+                        data, client_addr = sock.recvfrom(4096)
                     except Exception as e:
-                        logger.error(f"Error receiving from client socket {s}: {e}")
+                        logger.error(f"Error receiving from client socket {sock}: {e}")
                         continue
-
+                    
+                    server_port = sock.getsockname()[1]
                     server_config = SERVERS_CONFIG[server_port] 
                     container_name = server_config['container_name']
-                    internal_port = server_config['internal_port']
-
-                    # Update per-server activity time (only if a player is attempting to connect to it)
+                    
+                    # Any packet from a client is considered activity.
                     server_states[container_name]["last_activity"] = time.time() 
 
-                    # If server is not running, start it and buffer packet
+                    # If server is stopped, start it and buffer the first packet.
                     if not is_container_running(container_name):
-                        logger.info(f"Server {container_name} not running for {client_addr}. Starting and buffering initial packet.")
+                        logger.info(f"Server {container_name} not running. Starting for {client_addr} and buffering initial packet.")
                         start_mcbe_server(container_name)
                         packet_buffers[(client_addr, server_port)].append(data)
                         continue
 
-                    # --- Robust Session Handling: Key is (client_addr, server_port) ---
                     session_key = (client_addr, server_port) 
                     
                     if session_key not in active_client_connections:
+                        # --- New Client Session ---
                         server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                         server_sock.setblocking(False)
                         
@@ -291,117 +353,63 @@ def run_proxy():
                             "listen_port": server_port
                         }
                         inputs.append(server_sock) 
-                        clients_per_server[container_name].add(client_addr) 
                         logger.info(f"New client session {session_key} established with {container_name}")
                         
-                        for buffered_packet in packet_buffers[session_key]:
-                            try:
-                                server_sock.sendto(buffered_packet, (container_name, internal_port))
-                            except Exception as e:
-                                logger.error(f"Error sending buffered packet for {session_key} to {container_name}: {e}")
-                        if session_key in packet_buffers:
-                            del packet_buffers[session_key]
-
-                        try:
-                            server_sock.sendto(data, (container_name, internal_port))
-                        except Exception as e:
-                            logger.error(f"Error sending initial packet for {session_key} to {container_name}: {e}")
+                        # Send any buffered packets first.
+                        for buffered_packet in packet_buffers.pop(session_key, []):
+                            server_sock.sendto(buffered_packet, (container_name, server_config['internal_port']))
                         
-                    else: # It's an existing session (same client_addr and server_port)
+                        # Send the current packet.
+                        server_sock.sendto(data, (container_name, server_config['internal_port']))
+                        
+                    else: 
+                        # --- Existing Client Session ---
                         conn_info = active_client_connections[session_key]
-                        target_container = conn_info["target_container"]
-                        server_sock = conn_info["client_to_server_socket"]
-                        
-                        target_server_config = next((s for s in SERVERS_CONFIG.values() if s['container_name'] == target_container), None)
-                        if not target_server_config:
-                            logger.error(f"Target server config not found for {target_container} for session {session_key}. Cleaning up.")
-                            inputs.remove(server_sock)
-                            server_sock.close()
-                            if client_addr in clients_per_server[target_container]:
-                                clients_per_server[target_container].remove(client_addr)
-                            del active_client_connections[session_key]
-                            continue
-
-                        try:
-                            server_sock.sendto(data, (container_name, target_server_config['internal_port'])) 
-                            conn_info["last_packet_time"] = time.time()
-                            logger.debug(f"Forwarded packet from {session_key} to {target_container}")
-                        except socket.error as e:
-                            logger.error(f"Error forwarding packet from {session_key} to {target_container}: {e}. Disconnecting client.")
-                            inputs.remove(server_sock)
-                            server_sock.close()
-                            if client_addr in clients_per_server[target_container]:
-                                clients_per_server[conn_info["target_container"]].remove(client_addr)
-                            del active_client_connections[session_key]
-                            
-                else: # --- This socket is a backend server socket (response from server) ---
+                        conn_info["client_to_server_socket"].sendto(data, (container_name, server_config['internal_port'])) 
+                        conn_info["last_packet_time"] = time.time()
+                
+                else: 
+                    # --- Packet from a Backend Server ---
                     found_session_key = None
-                    for current_session_key, conn_info in active_client_connections.items():
-                        if conn_info["client_to_server_socket"] is s:
-                            found_session_key = current_session_key
+                    for key, conn_info in active_client_connections.items():
+                        if conn_info["client_to_server_socket"] is sock:
+                            found_session_key = key
                             break
                     
                     if found_session_key:
-                        data, _ = s.recvfrom(4096)
-                        
+                        data, _ = sock.recvfrom(4096)
                         conn_info = active_client_connections[found_session_key]
                         client_facing_socket = client_listen_sockets[conn_info["listen_port"]]
-                        client_addr_original = found_session_key[0] 
+                        client_addr_original = found_session_key[0]
                         
-                        try:
-                            client_facing_socket.sendto(data, client_addr_original)
-                            conn_info["last_packet_time"] = time.time()
-                            logger.debug(f"Forwarded response from {conn_info['target_container']} to {found_session_key}")
-                        except socket.error as e:
-                            logger.error(f"Error sending response from server to client {found_session_key}: {e}. Disconnecting client.")
-                            inputs.remove(conn_info["client_to_server_socket"])
-                            conn_info["client_to_server_socket"].close()
-                            if client_addr_original in clients_per_server[conn_info["target_container"]]:
-                                clients_per_server[conn_info["target_container"]].remove(client_addr_original)
-                            del active_client_connections[found_session_key]
-
+                        client_facing_socket.sendto(data, client_addr_original)
+                        conn_info["last_packet_time"] = time.time()
                     else:
-                        logger.error(f"Received unexpected data on backend socket {s}. Session not found. Closing socket.")
-                        inputs.remove(s)
-                        s.close()
-            
-        except select.error as e: 
-            if e.errno != 4: 
-                logger.error(f"Select error: {e}")
-            time.sleep(0.01)
+                        logger.warning(f"Received unexpected data on backend socket {sock}. Session not found. Closing socket.")
+                        inputs.remove(sock)
+                        sock.close()
+
         except Exception as e:
-            logger.error(f"An unexpected error occurred in main proxy loop: {e}", exc_info=True)
+            logger.error(f"An unexpected error occurred in the main proxy loop: {e}", exc_info=True)
             time.sleep(1)
 
-        # --- Cleanup idle client connections (outside the main loop's select.select try/except, but within while True) ---
+        # --- Cleanup Idle Client Connections ---
         current_time = time.time()
-        sessions_to_remove = []
-        for session_key, conn_info in active_client_connections.items():
-            if current_time - conn_info["last_packet_time"] > IDLE_TIMEOUT_SECONDS:
-                sessions_to_remove.append(session_key)
+        sessions_to_remove = [key for key, info in active_client_connections.items() if current_time - info["last_packet_time"] > IDLE_TIMEOUT_SECONDS]
 
         for session_key in sessions_to_remove:
-            conn_info = active_client_connections[session_key]
-            idle_secs = current_time - conn_info["last_packet_time"]
-            logger.info(
-                f"Client session {session_key} idle for {idle_secs:.1f}s. "
-                f"Disconnecting from {conn_info['target_container']}."
-            )
-
+            conn_info = active_client_connections.pop(session_key)
+            logger.info(f"Client session {session_key} idle for >{IDLE_TIMEOUT_SECONDS}s. Disconnecting from {conn_info['target_container']}.")
             inputs.remove(conn_info["client_to_server_socket"])
             conn_info["client_to_server_socket"].close()
-            client_addr_original = session_key[0]
-            if client_addr_original in clients_per_server[conn_info["target_container"]]:
-                clients_per_server[conn_info["target_container"]].remove(client_addr_original)
-            del active_client_connections[session_key]
-            if session_key in packet_buffers:
-                del packet_buffers[session_key]
+            packet_buffers.pop(session_key, None)
 
-# --- Main execution ---
+# --- Main Execution ---
 if __name__ == "__main__":
     logger.info("Starting Bedrock On-Demand Proxy...")
-    monitor_thread = threading.Thread(target=monitor_servers_activity)
-    monitor_thread.daemon = True
+    # Start the server monitoring thread in the background.
+    monitor_thread = threading.Thread(target=monitor_servers_activity, daemon=True)
     monitor_thread.start()
 
+    # Run the main proxy loop.
     run_proxy()
