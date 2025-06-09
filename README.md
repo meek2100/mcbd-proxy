@@ -56,13 +56,13 @@ environment:
   # Server 1
   - PROXY_SERVER_1_NAME=Family Server
   - PROXY_SERVER_1_LISTEN_PORT=19133         # Required
-  - PROXY_SERVER_1_CONTAINER_NAME=mc-family-server # Required
+  - PROXY_SERVER_1_CONTAINER_NAME=mcbd-family-server # Required
   - PROXY_SERVER_1_INTERNAL_PORT=19132      # Required
   
   # Server 2
   - PROXY_SERVER_2_NAME=Friends Server
   - PROXY_SERVER_2_LISTEN_PORT=19134
-  - PROXY_SERVER_2_CONTAINER_NAME=mc-friend-server
+  - PROXY_SERVER_2_CONTAINER_NAME=mcbd-friend-server
   - PROXY_SERVER_2_INTERNAL_PORT=19132
 ```
 
@@ -83,13 +83,13 @@ If no `PROXY_SERVER_...` environment variables are set, the proxy will load the 
     {
       "name": "Family Server",
       "listen_port": 19133,
-      "container_name": "mc-family-server",
+      "container_name": "mcbd-family-server",
       "internal_port": 19132
     },
     {
       "name": "Friends Server",
       "listen_port": 19134,
-      "container_name": "mc-friend-server",
+      "container_name": "mcbd-friend-server",
       "internal_port": 19132
     }
   ]
@@ -98,28 +98,30 @@ If no `PROXY_SERVER_...` environment variables are set, the proxy will load the 
 
 ## Usage Example
 
-This example shows a complete setup using environment variables for configuration. It works alongside `strausmann/minecraft-bedrock-connect`, which provides the in-game server list.
+This proxy is designed to work alongside your Minecraft server containers and a tool like `Pugmatt/BedrockConnect` to present a server list to players.
+
+Below is a complete `docker-compose.yml` structure demonstrating a setup using environment variables for configuration.
 
 ```yaml
 services:
-  # Provides the in-game server list to players
-  mc-connect:
-    container_name: mc-connect
-    image: strausmann/minecraft-bedrock-connect:latest
+  # Provides the in-game server list to players using Pugmatt/BedrockConnect
+  bedrock-connect:
+    container_name: bedrock-connect
+    image: pugmatt/bedrockconnect:latest
     restart: unless-stopped
     ports:
       - "19132:19132/udp" # Default MCBE port players connect to
     volumes:
       # This file should list the proxy's ports (e.g., 19133, 19134)
       - ./data/connect/serverlist.json:/config/serverlist.json
-    networks:
-      - mc-proxy-network
 
   # The on-demand proxy service
-  mc-proxy:
-    container_name: mc-proxy
+  mcbd-proxy:
+    container_name: mcbd-proxy
     image: ghcr.io/meek2100/mcbd-proxy-builder:latest
     restart: unless-stopped
+    networks:
+      - mc-proxy-network
     environment:
       # General settings
       - LOG_LEVEL=DEBUG
@@ -127,43 +129,41 @@ services:
       # Server definitions
       - PROXY_SERVER_1_NAME=Family Server
       - PROXY_SERVER_1_LISTEN_PORT=19133
-      - PROXY_SERVER_1_CONTAINER_NAME=mc-family-server
+      - PROXY_SERVER_1_CONTAINER_NAME=mcbd-family-server
       - PROXY_SERVER_1_INTERNAL_PORT=19132
       - PROXY_SERVER_2_NAME=Friends Server
       - PROXY_SERVER_2_LISTEN_PORT=19134
-      - PROXY_SERVER_2_CONTAINER_NAME=mc-friend-server
+      - PROXY_SERVER_2_CONTAINER_NAME=mcbd-friend-server
       - PROXY_SERVER_2_INTERNAL_PORT=19132
     ports:
       - "19133:19133/udp" # Must match listen ports above
       - "19134:19134/udp"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock # Required
-    networks:
-      - mc-proxy-network
 
   # A managed Minecraft server
-  mc-family-server:
-    container_name: mc-family-server
+  mcbd-family-server:
+    container_name: mcbd-family-server
     image: itzg/minecraft-bedrock-server:latest
     restart: "no" # IMPORTANT: Must be 'no' for proxy management
+    networks:
+      - mc-proxy-network
     environment:
       - EULA=TRUE
     volumes:
       - ./data/family-server:/data
-    networks:
-      - mc-proxy-network
 
   # Another managed Minecraft server
-  mc-friend-server:
-    container_name: mc-friend-server
+  mcbd-friend-server:
+    container_name: mcbd-friend-server
     image: itzg/minecraft-bedrock-server:latest
     restart: "no"
+    networks:
+      - mc-proxy-network
     environment:
       - EULA=TRUE
     volumes:
       - ./data/friend-server:/data
-    networks:
-      - mc-proxy-network
 
 networks:
   mc-proxy-network:
