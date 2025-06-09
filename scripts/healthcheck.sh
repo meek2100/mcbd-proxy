@@ -16,13 +16,13 @@ if [ ! -f "$CONFIGURED_FLAG" ]; then
 fi
 
 # Stage 2: If configured, check the heartbeat to ensure the main loop is running.
-# The Python script touches this file every 15 seconds from its main loop.
-# We check if the file has been modified in the last 60 seconds.
-if find "$HEARTBEAT_FILE" -mmin -1 | grep -q .; then
+# This more robust command checks if the heartbeat file is newer than a
+# reference timestamp from 65 seconds ago. This provides a safe buffer.
+if find "$HEARTBEAT_FILE" -newermt '-65 seconds' | grep -q .; then
   # Heartbeat is recent, app is alive and healthy.
   exit 0
 else
-  # Configured, but heartbeat is stale. App is frozen or dead.
+  # Configured, but heartbeat is stale or missing. App is frozen or dead.
   echo "Heartbeat file is stale. Proxy may be frozen."
   exit 1
 fi
