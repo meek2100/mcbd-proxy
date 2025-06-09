@@ -337,7 +337,7 @@ def run_proxy():
             current_time = time.time()
             if current_time - last_heartbeat_time > HEARTBEAT_INTERVAL_SECONDS:
                 try:
-                    HEARTBEAT_FILE.touch()
+                    HEARTBEAT_FILE.write_text(str(int(current_time)))
                     last_heartbeat_time = current_time
                     logger.debug("Proxy heartbeat updated.")
                 except Exception as e:
