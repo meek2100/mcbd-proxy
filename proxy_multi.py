@@ -125,8 +125,11 @@ if not servers_list:
 
 SERVERS_CONFIG = {s['listen_port']: s for s in servers_list}
 if not SERVERS_CONFIG:
-    logger.error("FATAL: No server configurations found in environment or proxy_config.json. Proxy cannot start.")
-    exit(1)
+    logger.error("FATAL: No server configurations found. The proxy cannot function.")
+    logger.info("The container will remain in a running but unhealthy state until reconfigured.")
+    # Enter an infinite sleep loop instead of exiting.
+    while True:
+        time.sleep(3600)
 else:
     # --- Create the 'configured' flag file to signal health check stage 1 pass ---
     logger.info("Server configuration loaded successfully.")
