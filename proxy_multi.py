@@ -6,6 +6,7 @@ import os
 import threading
 import json
 import select
+import sys
 from collections import defaultdict
 import logging
 from mcstatus import BedrockServer
