@@ -5,7 +5,6 @@ FROM python:3.9-slim
 WORKDIR /app
 
 # Copy the requirements file into the container at /app
-# (Create a requirements.txt file with the content below)
 COPY requirements.txt .
 
 # Install any needed packages specified in requirements.txt
@@ -13,6 +12,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application's code into the container
 COPY . .
+
+# --- FIX: Make the shell scripts executable ---
+RUN chmod +x /app/scripts/*.sh
 
 # --- HEALTHCHECK ---
 # This command checks if the heartbeat file has been updated in the last minute.
