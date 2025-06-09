@@ -5,36 +5,34 @@ CONFIGURED_FLAG="/tmp/proxy_configured"
 HEARTBEAT_FILE="/tmp/proxy_heartbeat"
 STALE_THRESHOLD=60 # Seconds
 
-# Stage 1: Check if the application has been successfully configured.
+# Stage 1: Check if the application is configured.
+# Fails if the /tmp/proxy_configured file does not exist.
 if [ ! -f "$CONFIGURED_FLAG" ]; then
-  echo "Configuration flag not found. Proxy is not ready."
   exit 1
 fi
 
-# Stage 2: Check if the heartbeat file exists and is not empty.
+# Stage 2: Check if the heartbeat file is present and not empty.
+# Fails if the /tmp/proxy_heartbeat file does not exist or is empty.
 if [ ! -s "$HEARTBEAT_FILE" ]; then
-    echo "Heartbeat file is missing or empty."
-    exit 1
+  exit 1
 fi
 
-# Stage 3: Calculate the age of the heartbeat and check if it's stale.
-# Sanitize the input from the file to ensure it only contains digits.
+# Stage 3: Calculate heartbeat age using the portable `expr` command.
+# This is more reliable than other arithmetic methods in minimal shells.
 LAST_HEARTBEAT=$(cat "$HEARTBEAT_FILE" | tr -cd '0-9')
 CURRENT_TIME=$(date +%s)
 
-# Ensure that LAST_HEARTBEAT is not empty after sanitizing
 if [ -z "$LAST_HEARTBEAT" ]; then
-    echo "Heartbeat file contains no numbers."
-    exit 1
+  exit 1
 fi
 
-AGE=$(($CURRENT_TIME - $LAST_HEARTBEAT))
+# Use 'expr' for maximum portability in shell arithmetic.
+AGE=$(expr $CURRENT_TIME - $LAST_HEARTBEAT)
 
+# Exit with success (0) if the age is less than the threshold,
+# otherwise exit with failure (1).
 if [ "$AGE" -lt "$STALE_THRESHOLD" ]; then
-  # Heartbeat is recent, app is alive and healthy.
   exit 0
 else
-  # Configured, but heartbeat is stale. App is frozen or dead.
-  echo "Heartbeat is stale. Age: $AGE seconds."
   exit 1
 fi
