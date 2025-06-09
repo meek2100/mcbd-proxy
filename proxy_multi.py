@@ -97,9 +97,12 @@ def wait_for_server_query_ready(container_name, target_ip, target_port, max_wait
     Attempts to query the Minecraft Bedrock server directly over the network until it responds.
     Returns True if ready, False if timeout or error.
     """
+    # --- DIAGNOSTIC LOG TO CONFIRM SCRIPT VERSION ---
+    logger.info("--- EXECUTING SCRIPT VERSION 6/9 8:28 AM ---")
+    
     logger.info(f"Waiting for {container_name} to respond to query at {target_ip}:{target_port} (max {max_wait_time_seconds}s)...")
     start_time = time.time()
-    
+
     server = BedrockServer(target_ip, target_port)
 
     while time.time() - start_time < max_wait_time_seconds:
@@ -110,9 +113,9 @@ def wait_for_server_query_ready(container_name, target_ip, target_port, max_wait
                 return True
         except Exception as e:
             logger.debug(f"Query to {container_name} ({target_ip}:{target_port}) failed: {e}. Retrying...")
-        
+
         time.sleep(query_timeout_seconds) # Wait before next query attempt
-    
+
     logger.error(f"Timeout waiting for {container_name} to respond after {max_wait_time_seconds} seconds. Proceeding anyway.")
     return False
 
