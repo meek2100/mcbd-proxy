@@ -8,6 +8,8 @@ import json
 import select
 from collections import defaultdict
 import logging
+from mcstatus import BedrockServer # <<< ADDED: Import BedrockServer
+
 
 # --- Logger Setup ---
 LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
@@ -44,11 +46,18 @@ def get_config_value(env_var_name, json_key_name, default_value, type_converter=
 IDLE_TIMEOUT_SECONDS = get_config_value('PROXY_IDLE_TIMEOUT_SECONDS', 'idle_timeout_seconds', 600, int)
 PLAYER_CHECK_INTERVAL_SECONDS = get_config_value('PROXY_PLAYER_CHECK_INTERVAL_SECONDS', 'player_check_interval_seconds', 60, int)
 MINECRAFT_SERVER_STARTUP_DELAY_SECONDS = get_config_value('PROXY_SERVER_STARTUP_DELAY_SECONDS', 'minecraft_server_startup_delay_seconds', 15, int)
-SERVER_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_SERVER_READY_MAX_WAIT_TIME_SECONDS', 'server_ready_max_wait_time_seconds', 120, int)
-SERVER_READY_POLL_INTERVAL_SECONDS = get_config_value('PROXY_SERVER_READY_POLL_INTERVAL_SECONDS', 'server_ready_poll_interval_seconds', 2, int)
+
+# --- NEW MCSTATUS RELATED CONFIGS (ONLY THESE ARE USED FOR READINESS) ---
+QUERY_TIMEOUT_SECONDS = get_config_value('PROXY_QUERY_TIMEOUT_SECONDS', 'query_timeout_seconds', 5, int) # Timeout for the mcstatus query itself
+
+# Note: Max wait for server to become ready is controlled by SERVER_READY_MAX_WAIT_TIME_SECONDS
+# for client-triggered starts, and INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS for initial stop.
+# The polling interval for these is QUERY_TIMEOUT_SECONDS for mcstatus queries.
+
 INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS', 'initial_boot_ready_max_wait_time_seconds', 1800, int)
-INITIAL_STOP_LOG_WAIT_SECONDS = get_config_value('PROXY_INITIAL_STOP_LOG_WAIT_SECONDS', 'initial_stop_log_wait_seconds', 10, int) 
-INITIAL_LOG_READ_BUFFER_SECONDS = get_config_value('PROXY_INITIAL_LOG_READ_BUFFER_SECONDS', 'initial_log_read_buffer_seconds', 5, int) 
+INITIAL_STOP_LOG_WAIT_SECONDS = get_config_value('PROXY_INITIAL_STOP_LOG_WAIT_SECONDS', 'initial_stop_log_wait_seconds', 10, int) # Initial sleep before querying for initial stop
+# --- END MCSTATUS RELATED CONFIGS ---
+
 
 SERVERS_CONFIG = {s['listen_port']: s for s in file_config.get('servers', [])}
 
@@ -82,46 +91,30 @@ def is_container_running(container_name):
         logger.error(f"Unexpected error checking container {container_name}: {e}")
         return False
 
-# --- Function to wait for server readiness from logs ---
-def wait_for_server_ready(container_name, max_wait_time_seconds, poll_interval_seconds):
+# --- REPLACED: wait_for_server_ready (log polling) with wait_for_server_query_ready (mcstatus) ---
+def wait_for_server_query_ready(container_name, target_ip, target_port, max_wait_time_seconds, query_timeout_seconds):
     """
-    Polls the server's log file for the 'Server started.' message.
+    Attempts to query the Minecraft Bedrock server directly over the network until it responds.
     Returns True if ready, False if timeout or error.
     """
-    logger.info(f"Waiting for {container_name} to log 'Server started.' (max {max_wait_time_seconds}s)...")
+    logger.info(f"Waiting for {container_name} to respond to query at {target_ip}:{target_port} (max {max_wait_time_seconds}s)...")
     start_time = time.time()
-    log_file_path = f"/mnt/{container_name}-data/Dedicated_Server.txt"
-
-    time.sleep(INITIAL_LOG_READ_BUFFER_SECONDS) 
+    
+    server = BedrockServer(target_ip, target_port) # Pass host and port as separate arguments
 
     while time.time() - start_time < max_wait_time_seconds:
-        time.sleep(poll_interval_seconds)
-
-        if not os.path.exists(log_file_path):
-            logger.debug(f"Log file {log_file_path} does not exist yet for {container_name}. Waiting...")
-            continue
-        
-        if os.path.getsize(log_file_path) == 0:
-            logger.debug(f"Log file {log_file_path} is empty for {container_name}. Waiting...")
-            continue
-
         try:
-            with open(log_file_path, 'r') as f:
-                lines = f.readlines()
-                
-                for line in reversed(lines):
-                    if "Server started." in line:
-                        logger.info(f"{container_name} logged 'Server started.'. Ready!")
-                        return True
-                    else: 
-                        logger.debug(f"Log file {log_file_path} read, but 'Server started.' not found yet. Line: '{line.strip()}'")
-        except FileNotFoundError: 
-                logger.debug(f"Log file {log_file_path} became unavailable for {container_name}. Waiting...")
+            status = server.status(query_timeout=query_timeout_seconds)
+            if status: # A successful response means the server is up and listening
+                logger.info(f"{container_name} responded to query. Latency: {status.latency:.2f}ms. Ready!")
+                return True
         except Exception as e:
-                logger.warning(f"Error reading log file {log_file_path} for {container_name}: {e}")
-            
-        logger.error(f"Timeout waiting for {container_name} to log 'Server started.' after {max_wait_time_seconds} seconds. Proceeding anyway.")
-        return False
+            logger.debug(f"Query to {container_name} ({target_ip}:{target_port}) failed: {e}. Retrying...")
+        
+        time.sleep(query_timeout_seconds) # Wait before next query attempt
+    
+    logger.error(f"Timeout waiting for {container_name} to respond after {max_wait_time_seconds} seconds. Proceeding anyway.")
+    return False
 
 
 def start_mcbe_server(container_name):
@@ -134,8 +127,18 @@ def start_mcbe_server(container_name):
             return False
         logger.info(result.stdout.strip())
         
-        if not wait_for_server_ready(container_name, SERVER_READY_MAX_WAIT_TIME_SECONDS, SERVER_READY_POLL_INTERVAL_SECONDS):
-            logger.warning(f"Server {container_name} did not log 'Server started.' within max wait time. Proceeding anyway.")
+        # Give a brief initial buffer before querying (server might still be creating process)
+        time.sleep(MINECRAFT_SERVER_STARTUP_DELAY_SECONDS) 
+
+        # Get server internal IP/Port for query
+        target_server_config = next((s for s in SERVERS_CONFIG.values() if s['container_name'] == container_name), None)
+        if not target_server_config:
+            logger.error(f"Config for {container_name} not found. Cannot query for readiness.")
+            return False
+
+        # Use mcstatus query for readiness check
+        if not wait_for_server_query_ready(container_name, container_name, target_server_config['internal_port'], SERVER_READY_MAX_WAIT_TIME_SECONDS, QUERY_TIMEOUT_SECONDS):
+            logger.warning(f"Server {container_name} did not respond to query within max wait time. Proceeding anyway.")
 
         server_states[container_name]["running"] = True 
         server_states[container_name]["last_activity"] = time.time() 
@@ -164,8 +167,20 @@ def ensure_all_servers_stopped_on_startup():
         container_name = srv_conf['container_name']
         if is_container_running(container_name):
             logger.info(f"Found {container_name} running at proxy startup. Waiting for it to fully start (and update) before stopping.")
-            if not wait_for_server_ready(container_name, INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS, SERVER_READY_POLL_INTERVAL_SECONDS):
-                logger.warning(f"{container_name} did not become ready during initial startup within max wait time. Attempting to force stop anyway.")
+            
+            # Use INITIAL_STOP_LOG_WAIT_SECONDS as initial buffer before querying for initial stop
+            time.sleep(INITIAL_STOP_LOG_WAIT_SECONDS)
+
+            # Use mcstatus query for readiness for initial stop
+            target_server_config = next((s for s in SERVERS_CONFIG.values() if s['container_name'] == container_name), None)
+            if not target_server_config:
+                logger.error(f"Config for {container_name} not found. Cannot query for readiness for initial stop.")
+                # Fallback to force stop if config not found
+                stop_mcbe_server(container_name)
+                continue
+
+            if not wait_for_server_query_ready(container_name, container_name, target_server_config['internal_port'], INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS, QUERY_TIMEOUT_SECONDS):
+                logger.warning(f"{container_name} did not respond to query during initial startup within max wait time. Attempting to force stop anyway.")
             
             stop_mcbe_server(container_name) 
         else:
@@ -184,10 +199,20 @@ def monitor_servers_activity():
             state = server_states[server_name] 
 
             if state["running"]:
+                # --- Get active players via mcstatus query for accuracy ---
                 active_players_on_server = 0
-                for session_key, conn_info in active_client_connections.items():
-                    if conn_info["target_container"] == server_name:
-                        active_players_on_server += 1
+                target_server_config = next((s for s in SERVERS_CONFIG.values() if s['container_name'] == server_name), None)
+                if target_server_config:
+                    server_address = (server_name, target_server_config['internal_port'])
+                    server = BedrockServer(server_address[0], server_address[1]) # Pass host and port separately here
+                    try:
+                        status = server.status(query_timeout=QUERY_TIMEOUT_SECONDS)
+                        if status and status.players:
+                            active_players_on_server = status.players.online
+                    except Exception as e:
+                        logger.debug(f"Failed to query {server_name} for player count: {e}. Assuming 0 players for now.")
+                else:
+                    logger.warning(f"Config for {server_name} not found when checking player count.")
 
                 if active_players_on_server == 0 and (current_time - state["last_activity"] > IDLE_TIMEOUT_SECONDS):
                     logger.info(f"Server {server_name} idle for {IDLE_TIMEOUT_SECONDS}s and no active players detected by proxy. Initiating shutdown.")
