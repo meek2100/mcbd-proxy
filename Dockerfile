@@ -1,8 +1,9 @@
-# Use an official Python runtime as a parent image 
+# Use an official Python runtime as a parent image
 FROM python:3.9-slim
 
-# --- CRITICAL ADDITION: Install Docker CLI client ---
-# This is required so the container can execute 'docker start' and 'docker stop' commands.
+# --- Install Docker CLI Client ---
+# This is required so the container can execute 'docker start' and 'docker stop' commands
+# by communicating with the host's Docker daemon via the mounted docker.sock.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -22,22 +23,21 @@ RUN apt-get update && \
 # Set the working directory in the container
 WORKDIR /app
 
-# Copy the requirements file into the container at /app
+# Copy and install Python requirements
 COPY requirements.txt .
-
-# Install any needed packages specified in requirements.txt 
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application's code into the container 
+# Copy the rest of the application's code into the container
 COPY . .
 
-# Make the start/stop shell scripts executable
+# Make the helper shell scripts executable
 RUN chmod +x /app/scripts/start-server.sh /app/scripts/stop-server.sh
 
 # --- HEALTHCHECK ---
-# Execute the health check logic directly within the Python script. 
+# Executes the health check logic within the Python application itself.
+# This ensures maximum reliability and portability, avoiding shell environment differences.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
-  CMD [ "python", "proxy_multi.py", "--healthcheck" ] 
+  CMD [ "python", "proxy_multi.py", "--healthcheck" ]
 
 # Command to run the application
 CMD ["python", "proxy_multi.py"]
