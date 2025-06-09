@@ -1,3 +1,13 @@
+"""
+MCBE On-Demand Proxy - main.py
+
+An intelligent UDP proxy for Minecraft Bedrock Edition (MCBE) servers.
+This script dynamically starts and stops Dockerized MCBE servers based on player
+activity to conserve system resources. It supports multiple servers, flexible
+configuration via environment variables or JSON, and a robust health check.
+
+Author: meek2100 (github.com/meek2100)
+"""
 import socket
 import subprocess
 import time
@@ -121,6 +131,8 @@ def load_servers_from_env():
 # --- Main Application ---
 
 # Top-level variables and objects
+# These are initialized here at the top level to define their scope.
+# They are populated with runtime data when the main application starts.
 IDLE_TIMEOUT_SECONDS = get_config_value('PROXY_IDLE_TIMEOUT_SECONDS', 'idle_timeout_seconds', 600, int)
 PLAYER_CHECK_INTERVAL_SECONDS = get_config_value('PROXY_PLAYER_CHECK_INTERVAL_SECONDS', 'player_check_interval_seconds', 60, int)
 QUERY_TIMEOUT_SECONDS = get_config_value('PROXY_QUERY_TIMEOUT_SECONDS', 'query_timeout_seconds', 5, int)
