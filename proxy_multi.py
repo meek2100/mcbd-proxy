@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 
 # --- Constants ---
 HEARTBEAT_FILE = Path("/tmp/proxy_heartbeat")
-HEARTBEAT_INTERVAL_SECONDS = 15
 HEALTHCHECK_STALE_THRESHOLD_SECONDS = 60
+HEARTBEAT_INTERVAL_SECONDS = 15
 
 # --- Health Check Function ---
 def perform_health_check():
@@ -33,7 +33,6 @@ def perform_health_check():
     2. Checks if the main process heartbeat is recent.
     """
     # Stage 1: Check for a valid configuration.
-    # This must be checked independently within the health check process.
     local_servers_list = load_servers_from_env()
     if not local_servers_list:
         try:
@@ -59,10 +58,10 @@ def perform_health_check():
 
         if age < HEALTHCHECK_STALE_THRESHOLD_SECONDS:
             print(f"Health Check OK: Heartbeat is {age} seconds old.")
-            sys.exit(0) # Healthy
+            sys.exit(0)
         else:
             print(f"Health Check FAIL: Heartbeat is stale ({age} seconds old).")
-            sys.exit(1) # Unhealthy (frozen)
+            sys.exit(1)
     except Exception as e:
         print(f"Health Check FAIL: Could not read or parse heartbeat file. Error: {e}")
         sys.exit(1)
@@ -410,22 +409,23 @@ def run_proxy():
 
 # --- Main Execution ---
 if __name__ == "__main__":
-    # If the --healthcheck argument is passed, run the check and exit immediately.
     if '--healthcheck' in sys.argv:
         perform_health_check()
     
     # --- Normal Startup Sequence ---
-    logger.info("Starting Bedrock On-Demand Proxy...")
-
     # Clean up old heartbeat file on start.
     if HEARTBEAT_FILE.exists():
         HEARTBEAT_FILE.unlink()
 
     # Final check for server configuration before starting threads.
     if not SERVERS_CONFIG:
-        logger.error("FATAL: No server configurations loaded. Exiting.")
-        sys.exit(1)
-
+        logger.error("FATAL: No server configurations loaded. Entering dormant, unhealthy state.")
+        # Enter a dormant loop to allow health checks to fail without causing a restart loop.
+        while True:
+            time.sleep(3600)
+    
+    logger.info("Starting Bedrock On-Demand Proxy...")
+    
     # Start the server monitoring thread in the background.
     monitor_thread = threading.Thread(target=monitor_servers_activity, daemon=True)
     monitor_thread.start()
