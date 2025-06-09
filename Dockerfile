@@ -13,17 +13,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application's code into the container
 COPY . .
 
-# --- FIX: Make the shell scripts executable ---
+# Make the shell scripts executable
 RUN chmod +x /app/scripts/*.sh
 
 # --- HEALTHCHECK ---
-# This command checks if the heartbeat file has been updated in the last minute.
-# --interval: Run check every 30s.
-# --timeout: The check must complete in 10s.
-# --start-period: Grace period of 60s after container starts.
-# --retries: Mark as unhealthy after 3 consecutive failures.
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-  CMD find /tmp/proxy_heartbeat -mmin -1 | grep -q . || exit 1
+# Use the custom healthcheck script.
+# This script implements a two-stage check for configuration and liveness.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+  CMD ["/app/scripts/healthcheck.sh"]
 
 # Command to run the application
 CMD ["python", "proxy_multi.py"]
