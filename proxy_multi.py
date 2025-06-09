@@ -9,6 +9,7 @@ import select
 from collections import defaultdict
 import logging
 from mcstatus import BedrockServer
+from pathlib import Path
 
 # --- Logger Setup ---
 LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
@@ -18,6 +19,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# --- Configuration Loading ---
+# [ ... get_config_value function and PROXY DEFAULTS section remain the same ... ]
 # --- Configuration Loading ---
 file_config = {}
 try:
@@ -109,8 +112,12 @@ def load_servers_from_env():
         
     return env_servers
 
+# --- Constants ---
+HEARTBEAT_FILE = Path("/tmp/proxy_heartbeat")
+CONFIG_READY_FLAG = Path("/tmp/proxy_configured")
+HEARTBEAT_INTERVAL_SECONDS = 15
+
 # --- Server Configuration Initialization ---
-# Try to load servers from environment variables first. If none are found, fall back to the JSON file.
 servers_list = load_servers_from_env()
 if not servers_list:
     logger.info("No server definitions found in environment variables. Falling back to proxy_config.json.")
@@ -120,9 +127,15 @@ SERVERS_CONFIG = {s['listen_port']: s for s in servers_list}
 if not SERVERS_CONFIG:
     logger.error("FATAL: No server configurations found in environment or proxy_config.json. Proxy cannot start.")
     exit(1)
+else:
+    # --- Create the 'configured' flag file to signal health check stage 1 pass ---
+    logger.info("Server configuration loaded successfully.")
+    CONFIG_READY_FLAG.touch()
 
 
 # Docker client setup
+# [ ... rest of the script is the same ... ]
+# --- Docker client setup ---
 try:
     client = docker.from_env()
 except Exception as e:
@@ -135,10 +148,6 @@ server_states = {s['container_name']: {"running": False, "last_activity": time.t
 active_client_connections = {} 
 clients_per_server = defaultdict(set) 
 packet_buffers = defaultdict(list)
-
-# --- Constants ---
-HEARTBEAT_FILE = "/tmp/proxy_heartbeat"
-HEARTBEAT_INTERVAL_SECONDS = 15
 
 
 # --- Utility Functions ---
@@ -325,8 +334,7 @@ def run_proxy():
             current_time = time.time()
             if current_time - last_heartbeat_time > HEARTBEAT_INTERVAL_SECONDS:
                 try:
-                    with open(HEARTBEAT_FILE, 'a'):
-                        os.utime(HEARTBEAT_FILE, None)
+                    HEARTBEAT_FILE.touch()
                     last_heartbeat_time = current_time
                     logger.debug("Proxy heartbeat updated.")
                 except Exception as e:
@@ -425,6 +433,12 @@ def run_proxy():
 
 # --- Main Execution ---
 if __name__ == "__main__":
+    # --- Clean up old health check flags on start ---
+    if HEARTBEAT_FILE.exists():
+        HEARTBEAT_FILE.unlink()
+    if CONFIG_READY_FLAG.exists():
+        CONFIG_READY_FLAG.unlink()
+
     logger.info("Starting Bedrock On-Demand Proxy...")
     # Start the server monitoring thread in the background.
     monitor_thread = threading.Thread(target=monitor_servers_activity, daemon=True)
