@@ -17,6 +17,7 @@ This is ideal for home server environments where multiple Minecraft servers are 
 - **Docker-Native**: Designed to integrate seamlessly with a Docker-based server setup.
 
 ## How It Works
+
 The proxy listens for UDP packets on ports that you map to your Minecraft servers.
 
 1.  When a player tries to connect, the proxy checks if the corresponding Minecraft server container is running.
@@ -26,31 +27,78 @@ The proxy listens for UDP packets on ports that you map to your Minecraft server
 
 ## Configuration
 
-You can configure the proxy in two ways, with **environment variables always taking precedence**.
+You can configure the proxy in two ways, with **environment variables always taking precedence**. This allows you to set base values in the JSON file and override specific ones for testing or production in your `docker-compose.yml`.
 
-#### Method 1: Environment Variables Only (Recommended)
+### Method 1: Environment Variables (Recommended)
 
-This is the cleanest approach. You can define all settings in your `docker-compose.yml` file and do not need to mount a `proxy_config.json` file.
+This is the most flexible approach. You can define all settings in your `docker-compose.yml` file.
 
-**General Settings**
+#### General Settings
+
 | Variable | Default | Description |
 |---|---|---|
 | `LOG_LEVEL` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`). |
 | `PROXY_IDLE_TIMEOUT_SECONDS` | `600` | Seconds a server can be idle before being stopped. |
 | `PROXY_PLAYER_CHECK_INTERVAL_SECONDS` | `60` | How often (in seconds) to check for idle servers. |
-| `PROXY_SERVER_READY_MAX_WAIT_TIME_SECONDS`| `120` | Max time the proxy will wait for a server to start. |
-| ... | ... | *(and so on for all ENV vars)* |
+| `PROXY_SERVER_READY_MAX_WAIT_TIME_SECONDS`| `120` | Max time the proxy will wait for a server to start when a player connects. |
+| `PROXY_INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS`|`180` | Max readiness wait time for servers found running at proxy boot. |
+| `PROXY_SERVER_STARTUP_DELAY_SECONDS` | `5` | A fixed pause (in seconds) after `docker start` before probing begins. |
+| `PROXY_INITIAL_SERVER_QUERY_DELAY_SECONDS`| `10` | A fixed pause before probing servers found running at proxy boot. |
+| `PROXY_QUERY_TIMEOUT_SECONDS` | `5` | Network timeout for a single server status query. |
 
-**Server Definitions**
-Define each server using an indexed block of variables (`PROXY_SERVER_1_...`, `PROXY_SERVER_2_...`, etc.).
+#### Server Definitions
 
-#### Method 2: Using `proxy_config.json`
+If you define servers using environment variables, the `servers` array in `proxy_config.json` will be ignored. Define each server using an indexed block of variables (`PROXY_SERVER_1_...`, `PROXY_SERVER_2_...`, etc.).
 
-If no `PROXY_SERVER_...` variables are found in the environment, the proxy will fall back to loading the server list from a `proxy_config.json` file. You can also use this file to set default values for the general settings.
+```yaml
+# In docker-compose.yml environment section:
+environment:
+  # Server 1
+  - PROXY_SERVER_1_NAME=Family Server
+  - PROXY_SERVER_1_LISTEN_PORT=19133         # Required
+  - PROXY_SERVER_1_CONTAINER_NAME=mc-family-server # Required
+  - PROXY_SERVER_1_INTERNAL_PORT=19132      # Required
+  
+  # Server 2
+  - PROXY_SERVER_2_NAME=Friends Server
+  - PROXY_SERVER_2_LISTEN_PORT=19134
+  - PROXY_SERVER_2_CONTAINER_NAME=mc-friend-server
+  - PROXY_SERVER_2_INTERNAL_PORT=19132
+```
+
+### Method 2: Using `proxy_config.json` (Fallback)
+
+If no `PROXY_SERVER_...` environment variables are set, the proxy will load the server list from a `proxy_config.json` file mounted at `/app/proxy_config.json`.
+
+```json
+{
+  "idle_timeout_seconds": 600,
+  "player_check_interval_seconds": 60,
+  "query_timeout_seconds": 5,
+  "server_ready_max_wait_time_seconds": 120,
+  "initial_boot_ready_max_wait_time_seconds": 180,
+  "minecraft_server_startup_delay_seconds": 5,
+  "initial_server_query_delay_seconds": 10,
+  "servers": [
+    {
+      "name": "Family Server",
+      "listen_port": 19133,
+      "container_name": "mc-family-server",
+      "internal_port": 19132
+    },
+    {
+      "name": "Friends Server",
+      "listen_port": 19134,
+      "container_name": "mc-friend-server",
+      "internal_port": 19132
+    }
+  ]
+}
+```
 
 ## Usage Example
 
-This example shows a complete setup using environment variables for configuration. It works alongside `strausmann/minecraft-bedrock-connect` which provides the in-game server list.
+This example shows a complete setup using environment variables for configuration. It works alongside `strausmann/minecraft-bedrock-connect`, which provides the in-game server list.
 
 ```yaml
 services:
@@ -60,9 +108,9 @@ services:
     image: strausmann/minecraft-bedrock-connect:latest
     restart: unless-stopped
     ports:
-      - "19132:19132/udp" # Default MCBE port
+      - "19132:19132/udp" # Default MCBE port players connect to
     volumes:
-      # This file points to the proxy's ports (19133, 19134)
+      # This file should list the proxy's ports (e.g., 19133, 19134)
       - ./data/connect/serverlist.json:/config/serverlist.json
     networks:
       - mc-proxy-network
@@ -70,7 +118,7 @@ services:
   # The on-demand proxy service
   mc-proxy:
     container_name: mc-proxy
-    image: ghcr.io/meek2100/mcbd-proxy-builder:latest # Use your own image
+    image: ghcr.io/meek2100/mcbd-proxy-builder:latest # Use your image
     restart: unless-stopped
     environment:
       # General settings
@@ -123,8 +171,16 @@ networks:
 ```
 
 ## Building From Source
-This repository contains a GitHub Actions workflow (`build-proxy.yml`) that will automatically build and push the Docker image to `ghcr.io` on every push to the `main` branch. You can also build it manually:
 
-```bash
-docker build -t your-name/mc-proxy .
-```
+This repository contains a GitHub Actions workflow that will automatically build and push the Docker image to `ghcr.io` on every push to the `main` branch. You can also build it manually:
+
+1.  **Clone the repository:**
+    ```bash
+    git clone [https://github.com/meek2100/mcbd-proxy-builder.git](https://github.com/meek2100/mcbd-proxy-builder.git)
+    cd mcbd-proxy-builder
+    ```
+
+2.  **Build the image:**
+    ```bash
+    docker build -t meek2100/mcbd-proxy .
+    ```
