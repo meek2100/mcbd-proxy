@@ -20,6 +20,53 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# --- Constants ---
+HEARTBEAT_FILE = Path("/tmp/proxy_heartbeat")
+HEARTBEAT_INTERVAL_SECONDS = 15
+HEALTHCHECK_STALE_THRESHOLD_SECONDS = 60
+
+# --- Health Check Function ---
+def perform_health_check():
+    """
+    Performs a self-sufficient two-stage health check.
+    1. Checks if configuration is available.
+    2. Checks if the main process heartbeat is recent.
+    """
+    # Stage 1: Check for a valid configuration.
+    # This must be checked independently within the health check process.
+    local_servers_list = load_servers_from_env()
+    if not local_servers_list:
+        try:
+            with open('proxy_config.json', 'r') as f:
+                local_file_config = json.load(f)
+            local_servers_list = local_file_config.get('servers', [])
+        except (FileNotFoundError, json.JSONDecodeError):
+            local_servers_list = []
+    
+    if not local_servers_list:
+        print("Health Check FAIL: No server configuration found.")
+        sys.exit(1)
+
+    # Stage 2: If configured, check for a live heartbeat from the main process.
+    if not HEARTBEAT_FILE.is_file():
+        print("Health Check FAIL: Heartbeat file not found (main process may be starting).")
+        sys.exit(1)
+
+    try:
+        last_heartbeat = int(HEARTBEAT_FILE.read_text())
+        current_time = int(time.time())
+        age = current_time - last_heartbeat
+
+        if age < HEALTHCHECK_STALE_THRESHOLD_SECONDS:
+            print(f"Health Check OK: Heartbeat is {age} seconds old.")
+            sys.exit(0) # Healthy
+        else:
+            print(f"Health Check FAIL: Heartbeat is stale ({age} seconds old).")
+            sys.exit(1) # Unhealthy (frozen)
+    except Exception as e:
+        print(f"Health Check FAIL: Could not read or parse heartbeat file. Error: {e}")
+        sys.exit(1)
+
 # --- Configuration Loading ---
 file_config = {}
 try:
@@ -45,28 +92,6 @@ def get_config_value(env_var_name, json_key_name, default_value, type_converter=
     
     return default_value
 
-# =================================================================================
-# ---                            PROXY DEFAULTS                                 ---
-# =================================================================================
-# These are the default settings for the proxy. They are designed to be safe and
-# reliable for a general audience. For fine-tuning, override these values using
-# environment variables in your docker-compose.yml file.
-
-# --- Group 1: Core On-Demand Lifecycle ---
-IDLE_TIMEOUT_SECONDS = get_config_value('PROXY_IDLE_TIMEOUT_SECONDS', 'idle_timeout_seconds', 600, int)
-PLAYER_CHECK_INTERVAL_SECONDS = get_config_value('PROXY_PLAYER_CHECK_INTERVAL_SECONDS', 'player_check_interval_seconds', 60, int)
-
-# --- Group 2: Dynamic Readiness Check ---
-QUERY_TIMEOUT_SECONDS = get_config_value('PROXY_QUERY_TIMEOUT_SECONDS', 'query_timeout_seconds', 5, int)
-SERVER_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_SERVER_READY_MAX_WAIT_TIME_SECONDS', 'server_ready_max_wait_time_seconds', 120, int)
-INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS', 'initial_boot_ready_max_wait_time_seconds', 180, int)
-
-# --- Group 3: Startup Buffers ---
-MINECRAFT_SERVER_STARTUP_DELAY_SECONDS = get_config_value('PROXY_SERVER_STARTUP_DELAY_SECONDS', 'minecraft_server_startup_delay_seconds', 5, int)
-INITIAL_SERVER_QUERY_DELAY_SECONDS = get_config_value('PROXY_INITIAL_SERVER_QUERY_DELAY_SECONDS', 'initial_server_query_delay_seconds', 10, int)
-
-
-# --- Function to load server list from environment variables ---
 def load_servers_from_env():
     """
     Loads server configurations from indexed environment variables.
@@ -75,7 +100,6 @@ def load_servers_from_env():
     env_servers = []
     i = 1
     while True:
-        # A listen port is required for each server definition.
         listen_port_str = os.environ.get(f'PROXY_SERVER_{i}_LISTEN_PORT')
         if not listen_port_str:
             break
@@ -94,45 +118,31 @@ def load_servers_from_env():
         i += 1
     return env_servers
 
-# --- Constants ---
-HEARTBEAT_FILE = Path("/tmp/proxy_heartbeat")
-CONFIG_READY_FLAG = Path("/tmp/proxy_configured")
-HEARTBEAT_INTERVAL_SECONDS = 15
 
-# --- Server Configuration Initialization ---
+# --- Main Application ---
+
+# Top-level variables and objects
+IDLE_TIMEOUT_SECONDS = get_config_value('PROXY_IDLE_TIMEOUT_SECONDS', 'idle_timeout_seconds', 600, int)
+PLAYER_CHECK_INTERVAL_SECONDS = get_config_value('PROXY_PLAYER_CHECK_INTERVAL_SECONDS', 'player_check_interval_seconds', 60, int)
+QUERY_TIMEOUT_SECONDS = get_config_value('PROXY_QUERY_TIMEOUT_SECONDS', 'query_timeout_seconds', 5, int)
+SERVER_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_SERVER_READY_MAX_WAIT_TIME_SECONDS', 'server_ready_max_wait_time_seconds', 120, int)
+INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS = get_config_value('PROXY_INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS', 'initial_boot_ready_max_wait_time_seconds', 180, int)
+MINECRAFT_SERVER_STARTUP_DELAY_SECONDS = get_config_value('PROXY_SERVER_STARTUP_DELAY_SECONDS', 'minecraft_server_startup_delay_seconds', 5, int)
+INITIAL_SERVER_QUERY_DELAY_SECONDS = get_config_value('PROXY_INITIAL_SERVER_QUERY_DELAY_SECONDS', 'initial_server_query_delay_seconds', 10, int)
+
 servers_list = load_servers_from_env()
 if not servers_list:
     logger.info("No server definitions found in environment variables. Falling back to proxy_config.json.")
     servers_list = file_config.get('servers', [])
 
 SERVERS_CONFIG = {s['listen_port']: s for s in servers_list if s.get('listen_port')}
-if not SERVERS_CONFIG:
-    logger.error("FATAL: No server configurations found. The proxy cannot function.")
-    logger.info("The container will remain in a running but unhealthy state until reconfigured.")
-    # Enter an infinite sleep loop instead of exiting to allow health checks to fail.
-    while True:
-        time.sleep(3600)
-else:
-    # --- Create the 'configured' flag file to signal health check stage 1 pass ---
-    logger.info("Server configuration loaded successfully.")
-    CONFIG_READY_FLAG.touch()
-
-
-# --- Docker client setup ---
-try:
-    client = docker.from_env()
-except Exception as e:
-    logger.error(f"Error connecting to Docker daemon: {e}. Ensure /var/run/docker.sock is mounted.")
-    exit(1)
-
-# --- Global State ---
-server_states = {s['container_name']: {"running": False, "last_activity": time.time()} for s in SERVERS_CONFIG.values()}
+client = None
+server_states = {}
 active_client_connections = {} 
 clients_per_server = defaultdict(set) 
 packet_buffers = defaultdict(list)
 
-
-# --- Utility Functions ---
+# ... (Utility functions like is_container_running, wait_for_server_query_ready, etc. go here) ...
 def is_container_running(container_name):
     """Checks if a Docker container is currently running via the Docker API."""
     try:
@@ -236,8 +246,6 @@ def ensure_all_servers_stopped_on_startup():
         else:
             logger.info(f"{container_name} is already stopped.")
 
-
-# --- Background Threads ---
 def monitor_servers_activity():
     """
     Periodically checks running servers for player count and idle time.
@@ -272,11 +280,24 @@ def monitor_servers_activity():
                     if active_players_on_server > 0:
                         state["last_activity"] = current_time
 
-# --- Main Proxy Logic ---
 def run_proxy():
     """
     The main entry point of the proxy. Initializes and runs the primary UDP packet forwarding loop.
     """
+    global client, server_states, active_client_connections, clients_per_server, packet_buffers
+    
+    # Initialize globals for the main process
+    try:
+        client = docker.from_env()
+    except Exception as e:
+        logger.error(f"Error connecting to Docker daemon: {e}. Ensure /var/run/docker.sock is mounted.")
+        sys.exit(1)
+        
+    server_states = {s['container_name']: {"running": False, "last_activity": time.time()} for s in SERVERS_CONFIG.values()}
+    active_client_connections = {} 
+    clients_per_server = defaultdict(set) 
+    packet_buffers = defaultdict(list)
+    
     ensure_all_servers_stopped_on_startup() 
 
     client_listen_sockets = {}
@@ -291,7 +312,7 @@ def run_proxy():
             logger.info(f"Proxy listening for players on port {listen_port} -> {srv_cfg['container_name']}")
         except OSError as e:
             logger.error(f"ERROR: Could not bind to port {listen_port}. Is it already in use? ({e})")
-            exit(1)
+            sys.exit(1)
 
     last_heartbeat_time = time.time()
     while True:
@@ -373,7 +394,6 @@ def run_proxy():
                         logger.warning(f"Received unexpected data on backend socket {sock}. Session not found. Closing socket.")
                         inputs.remove(sock)
                         sock.close()
-
         except Exception as e:
             logger.error(f"An unexpected error occurred in the main proxy loop: {e}", exc_info=True)
             time.sleep(1)
@@ -387,24 +407,28 @@ def run_proxy():
             conn_info["client_to_server_socket"].close()
             packet_buffers.pop(session_key, None)
 
+
 # --- Main Execution ---
 if __name__ == "__main__":
+    # If the --healthcheck argument is passed, run the check and exit immediately.
     if '--healthcheck' in sys.argv:
-        # This block is intentionally left out from the user's provided file
-        # It needs to be added back in.
-        pass # Placeholder for where the healthcheck logic should go
+        perform_health_check()
+    
+    # --- Normal Startup Sequence ---
+    logger.info("Starting Bedrock On-Demand Proxy...")
 
-    # --- This is the user's provided logic which I need to modify ---
-    # --- Clean up old health check flags on start ---
+    # Clean up old heartbeat file on start.
     if HEARTBEAT_FILE.exists():
         HEARTBEAT_FILE.unlink()
-    if CONFIG_READY_FLAG.exists():
-        CONFIG_READY_FLAG.unlink()
 
-    logger.info("Starting Bedrock On-Demand Proxy...")
+    # Final check for server configuration before starting threads.
+    if not SERVERS_CONFIG:
+        logger.error("FATAL: No server configurations loaded. Exiting.")
+        sys.exit(1)
+
     # Start the server monitoring thread in the background.
     monitor_thread = threading.Thread(target=monitor_servers_activity, daemon=True)
     monitor_thread.start()
-
+    
     # Run the main proxy loop.
     run_proxy()
