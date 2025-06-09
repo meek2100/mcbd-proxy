@@ -118,7 +118,7 @@ services:
   # The on-demand proxy service
   mc-proxy:
     container_name: mc-proxy
-    image: ghcr.io/meek2100/mcbd-proxy-builder:latest # Use your image
+    image: ghcr.io/meek2100/mcbd-proxy-builder:latest
     restart: unless-stopped
     environment:
       # General settings
