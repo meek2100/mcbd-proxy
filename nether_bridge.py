@@ -1,11 +1,11 @@
 """
-Nether-bridge: On-Demand Game Server Proxy
+Nether-bridge: On-Demand Minecraft Server Proxy
 
-An intelligent UDP proxy for Minecraft game servers running in Docker. This script
-dynamically starts and stops Dockerized game servers (e.g., Minecraft)
-based on player activity to conserve system resources. It supports multiple
-servers, both Bedrock and Java editions, flexible configuration, and a
-robust health check.
+An intelligent UDP proxy for Minecraft servers running in Docker. This script
+dynamically starts and stops Dockerized Minecraft servers (both Bedrock and
+Java editions) based on player activity to conserve system resources. It
+supports multiple servers, flexible configuration, and a robust health check.
+                    
 
 Author: meek2100 (github.com/meek2100)
 """
@@ -104,21 +104,21 @@ def get_config_value(env_var_name, json_key_name, default_value, type_converter=
 def load_servers_from_env():
     """
     Loads server configurations from indexed environment variables.
-    e.g., NETHER_BRIDGE_SERVER_1_LISTEN_PORT, NETHER_BRIDGE_SERVER_2_LISTEN_PORT, etc.
+    e.g., NB_1_LISTEN_PORT, NB_2_LISTEN_PORT, etc.
     """
     env_servers = []
     i = 1
     while True:
-        listen_port_str = os.environ.get(f'NETHER_BRIDGE_SERVER_{i}_LISTEN_PORT')
+        listen_port_str = os.environ.get(f'NB_{i}_LISTEN_PORT')
         if not listen_port_str:
             break
         try:
             server_def = {
-                "name": os.environ.get(f'NETHER_BRIDGE_SERVER_{i}_NAME', f"Server {i}"),
-                "server_type": os.environ.get(f'NETHER_BRIDGE_SERVER_{i}_SERVER_TYPE', 'bedrock').lower(),
+                "name": os.environ.get(f'NB_{i}_NAME', f"Server {i}"),
+                "server_type": os.environ.get(f'NB_{i}_SERVER_TYPE', 'bedrock').lower(),
                 "listen_port": int(listen_port_str),
-                "container_name": os.environ.get(f'NETHER_BRIDGE_SERVER_{i}_CONTAINER_NAME'),
-                "internal_port": int(os.environ.get(f'NETHER_BRIDGE_SERVER_{i}_INTERNAL_PORT'))
+                "container_name": os.environ.get(f'NB_{i}_CONTAINER_NAME'),
+                "internal_port": int(os.environ.get(f'NB_{i}_INTERNAL_PORT'))
             }
             if not all(v is not None for v in [server_def['container_name'], server_def['internal_port']]):
                  raise ValueError(f"Incomplete definition for server index {i}. 'container_name' and 'internal_port' are required.")
@@ -133,13 +133,13 @@ def load_servers_from_env():
 
 # --- Main Application ---
 # Top-level variables and objects
-IDLE_TIMEOUT_SECONDS = get_config_value('NETHER_BRIDGE_IDLE_TIMEOUT_SECONDS', 'idle_timeout_seconds', 600, int)
-PLAYER_CHECK_INTERVAL_SECONDS = get_config_value('NETHER_BRIDGE_PLAYER_CHECK_INTERVAL_SECONDS', 'player_check_interval_seconds', 60, int)
-QUERY_TIMEOUT_SECONDS = get_config_value('NETHER_BRIDGE_QUERY_TIMEOUT_SECONDS', 'query_timeout_seconds', 5, int)
-SERVER_READY_MAX_WAIT_TIME_SECONDS = get_config_value('NETHER_BRIDGE_SERVER_READY_MAX_WAIT_TIME_SECONDS', 'server_ready_max_wait_time_seconds', 120, int)
-INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS = get_config_value('NETHER_BRIDGE_INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS', 'initial_boot_ready_max_wait_time_seconds', 180, int)
-SERVER_STARTUP_DELAY_SECONDS = get_config_value('NETHER_BRIDGE_SERVER_STARTUP_DELAY_SECONDS', 'server_startup_delay_seconds', 5, int)
-INITIAL_SERVER_QUERY_DELAY_SECONDS = get_config_value('NETHER_BRIDGE_INITIAL_SERVER_QUERY_DELAY_SECONDS', 'initial_server_query_delay_seconds', 10, int)
+IDLE_TIMEOUT_SECONDS = get_config_value('NB_IDLE_TIMEOUT', 'idle_timeout_seconds', 600, int)
+PLAYER_CHECK_INTERVAL_SECONDS = get_config_value('NB_PLAYER_CHECK_INTERVAL', 'player_check_interval_seconds', 60, int)
+QUERY_TIMEOUT_SECONDS = get_config_value('NB_QUERY_TIMEOUT', 'query_timeout_seconds', 5, int)
+SERVER_READY_MAX_WAIT_TIME_SECONDS = get_config_value('NB_SERVER_READY_MAX_WAIT', 'server_ready_max_wait_time_seconds', 120, int)
+INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS = get_config_value('NB_INITIAL_BOOT_READY_MAX_WAIT', 'initial_boot_ready_max_wait_time_seconds', 180, int)
+SERVER_STARTUP_DELAY_SECONDS = get_config_value('NB_SERVER_STARTUP_DELAY', 'server_startup_delay_seconds', 5, int)
+INITIAL_SERVER_QUERY_DELAY_SECONDS = get_config_value('NB_INITIAL_SERVER_QUERY_DELAY', 'initial_server_query_delay_seconds', 10, int)
 
 servers_list = load_servers_from_env()
 if not servers_list:
@@ -168,7 +168,7 @@ def is_container_running(container_name):
         return False
 
 def wait_for_server_query_ready(server_config, max_wait_time_seconds, query_timeout_seconds):
-    """Polls a game server using mcstatus until it responds or a timeout is reached."""
+    """Polls a Minecraft server using mcstatus until it responds or a timeout is reached."""
     container_name = server_config['container_name']
     target_ip = container_name # Docker DNS resolves container name to IP
     target_port = server_config['internal_port']
@@ -197,10 +197,10 @@ def wait_for_server_query_ready(server_config, max_wait_time_seconds, query_time
     logging.getLogger(__name__).error(f"Timeout waiting for {container_name} to respond after {max_wait_time_seconds} seconds. Proceeding anyway.")
     return False
 
-def start_server_container(container_name):
-    """Starts a game server container and waits for it to become ready."""
+def start_minecraft_server(container_name):
+    """Starts a Minecraft server container and waits for it to become ready."""
     if not is_container_running(container_name):
-        logging.getLogger(__name__).info(f"Starting game server: {container_name}...")
+        logging.getLogger(__name__).info(f"Starting Minecraft server: {container_name}...")
         result = subprocess.run(["/app/scripts/start-server.sh", container_name], capture_output=True, text=True)
         if result.returncode != 0:
             logging.getLogger(__name__).error(f"Error starting {container_name}: {result.stderr}")
@@ -223,10 +223,10 @@ def start_server_container(container_name):
         return True
     return False
 
-def stop_server_container(container_name):
-    """Stops a game server container."""
+def stop_minecraft_server(container_name):
+    """Stops a Minecraft server container."""
     if is_container_running(container_name):
-        logging.getLogger(__name__).info(f"Stopping game server: {container_name}...")
+        logging.getLogger(__name__).info(f"Stopping Minecraft server: {container_name}...")
         result = subprocess.run(["/app/scripts/stop-server.sh", container_name], capture_output=True, text=True)
         if result.returncode != 0:
             logging.getLogger(__name__).error(f"Error stopping {container_name}: {result.stderr}")
@@ -240,7 +240,7 @@ def stop_server_container(container_name):
 def ensure_all_servers_stopped_on_startup():
     """Ensures all managed servers are stopped when the proxy starts."""
     logger = logging.getLogger(__name__)
-    logger.info("Proxy startup: Ensuring all managed game servers are initially stopped.")
+    logger.info("Proxy startup: Ensuring all managed Minecraft servers are initially stopped.")
     for srv_conf in SERVERS_CONFIG.values():
         container_name = srv_conf['container_name']
         if is_container_running(container_name):
@@ -248,7 +248,7 @@ def ensure_all_servers_stopped_on_startup():
             time.sleep(INITIAL_SERVER_QUERY_DELAY_SECONDS)
             if not wait_for_server_query_ready(srv_conf, INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS, QUERY_TIMEOUT_SECONDS):
                 logger.warning(f"{container_name} did not respond to query during initial startup. Attempting to force stop anyway.")
-            stop_server_container(container_name)
+            stop_minecraft_server(container_name)
         else:
             logger.info(f"{container_name} is already stopped.")
 
@@ -285,7 +285,7 @@ def monitor_servers_activity():
 
             if active_players_on_server == 0 and (current_time - state["last_activity"] > IDLE_TIMEOUT_SECONDS):
                 logger.info(f"Server {server_name} idle for over {IDLE_TIMEOUT_SECONDS}s with 0 players. Initiating shutdown.")
-                stop_server_container(server_name)
+                stop_minecraft_server(server_name)
             elif active_players_on_server > 0:
                 logger.debug(f"{server_name} has {active_players_on_server} players. Resetting idle timer.")
                 state["last_activity"] = current_time
@@ -324,7 +324,7 @@ def run_proxy(client_listen_sockets, inputs):
                     
                     if not is_container_running(container_name):
                         logger.info(f"Server {container_name} not running. Starting for {client_addr} and buffering initial packet.")
-                        start_server_container(container_name)
+                        start_minecraft_server(container_name)
                         packet_buffers[(client_addr, server_port)].append(data)
                         continue
                     
@@ -348,7 +348,7 @@ def run_proxy(client_listen_sockets, inputs):
                         conn_info = active_client_connections[session_key]
                         conn_info["client_to_server_socket"].sendto(data, (container_name, server_config['internal_port']))
                         conn_info["last_packet_time"] = time.time()
-                else: # Data is from a game server
+                else: # Data is from a Minecraft server
                     found_session_key = None
                     for key, conn_info in active_client_connections.items():
                         if conn_info["client_to_server_socket"] is sock:
