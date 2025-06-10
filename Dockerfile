@@ -2,10 +2,10 @@
 # Use an official Python runtime as a parent image
 FROM python:3.9-slim AS builder
 
-WORKDIR /app
+# Only copy the requirements file to this stage
+COPY requirements.txt .
 
 # Install Python requirements into a specific layer that can be copied
-COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 
@@ -53,7 +53,7 @@ RUN apt-get update && \
 WORKDIR /app
 
 # --- Application Setup ---
-# Copy the INSTALLED Python packages from the builder stage
+# **FIX**: Copy the INSTALLED Python packages from the builder stage
 COPY --from=builder /usr/local/lib/python3.9/site-packages /usr/local/lib/python3.9/site-packages
 
 # Copy the application source code
