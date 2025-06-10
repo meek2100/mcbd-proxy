@@ -1,5 +1,5 @@
 services:
-  # Provides an in-game server list to Bedrock players
+  # Provides an in-game server list to Minecraft players
   bedrock-connect:
     container_name: bedrock-connect
     image: pugmatt/bedrockconnect:latest
@@ -23,7 +23,9 @@ services:
       - "25565:25565/tcp" # Port for Java server (gameplay)
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock # Required
-      # - ./data/nether-bridge/proxy_config.json:/app/proxy_config.json # Optional
+      # Optionally mount JSON config files
+      # - ./data/nether-bridge/settings.json:/app/settings.json
+      # - ./data/nether-bridge/servers.json:/app/servers.json
     environment:
       # General settings
       - LOG_LEVEL=INFO
