@@ -1,50 +1,37 @@
 # Use an official Python runtime as a parent image
 FROM python:3.9-slim
 
-# --- Install Docker CLI Client ---
-# This is required so the container can execute 'docker start' and 'docker stop' commands
-# by communicating with the host's Docker daemon via the mounted docker.sock.
+# Install Docker CLI Client
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    gnupg && \
+    apt-get install -y --no-install-recommends ca-certificates curl gnupg && \
     install -m 0755 -d /etc/apt/keyrings && \
     curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
     chmod a+r /etc/apt/keyrings/docker.gpg && \
-    echo \
-    "deb [arch=\"$(dpkg --print-architecture)\" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
-    \"$(. /etc/os-release && echo \"$VERSION_CODENAME\")\" stable" | \
-    tee /etc/apt/sources.list.d/docker.list > /dev/null && \
+    echo "deb [arch=\"$(dpkg --print-architecture)\" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \"$(. /etc/os-release && echo \"$VERSION_CODENAME\")\" stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null && \
     apt-get update && \
     apt-get install -y --no-install-recommends docker-ce-cli && \
     rm -rf /var/lib/apt/lists/*
 
-# Set the working directory in the container
+# Set the working directory
 WORKDIR /app
 
-# Copy and install Python requirements
+# Install Python requirements
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application's code into the container
+# Copy application code
 COPY . .
 
-# --- Inject a version variable into the script within the image ---
-# This allows the script to identify itself as the image version.
-# Using a 'here document' (cat <<EOF) safely handles quotes.
-ARG BUILD_DATE
-RUN cat <<EOF >> /app/proxy_multi.py
-__IMAGE_VERSION__ = "Image-Build-Date: ${BUILD_DATE:-unset}"
-EOF
+# Inject the build version (git commit SHA) into the Python script.
+ARG COMMIT_SHA
+RUN echo "__IMAGE_VERSION__ = 'git-sha-${COMMIT_SHA:-local}'" >> /app/proxy_multi.py
 
-# Make the helper shell scripts executable
+# Make helper scripts executable
 RUN chmod +x /app/scripts/*.sh
 
-# --- HEALTHCHECK ---
-# Executes the health check logic within the Python application itself.
+# Configure the health check
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
   CMD [ "python", "proxy_multi.py", "--healthcheck" ]
 
-# Command to run the application
+# Set the default command
 CMD ["python", "proxy_multi.py"]
