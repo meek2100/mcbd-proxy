@@ -80,9 +80,9 @@ try:
     with open('proxy_config.json', 'r') as f:
         file_config = json.load(f)
 except FileNotFoundError:
-    pass # This is an expected condition.
+    pass # Expected if using ENV vars only.
 except json.JSONDecodeError:
-    logger.error("Error: proxy_config.json is not valid JSON. Using environment variables or default values only.")
+    logger.error("Error: proxy_config.json is not valid JSON.")
 
 def get_config_value(env_var_name, json_key_name, default_value, type_converter=str):
     """Loads a configuration value from an environment variable or a JSON file, with a fallback to a default."""
@@ -124,6 +124,7 @@ def load_servers_from_env():
             logger.error(f"Invalid or incomplete server definition for server index {i}. Skipping. Error: {e}")
         i += 1
     return env_servers
+
 
 # --- Main Application ---
 IDLE_TIMEOUT_SECONDS = get_config_value('PROXY_IDLE_TIMEOUT_SECONDS', 'idle_timeout_seconds', 600, int)
@@ -335,28 +336,31 @@ def run_proxy(client_listen_sockets, inputs):
             conn_info["client_to_server_socket"].close()
             packet_buffers.pop(session_key, None)
 
+
 # --- Main Execution ---
 if __name__ == "__main__":
     if '--healthcheck' in sys.argv:
         perform_health_check()
     else:
-        # --- Normal Startup Sequence ---
-        if not SERVERS_CONFIG:
-            logger.error("FATAL: No server configurations loaded. Entering dormant, unhealthy state.")
-            while True:
-                time.sleep(3600)
-
-        # Announce script source as one of the first actions.
-        # This check happens after the file is fully parsed, so __IMAGE_VERSION__ will exist.
+        # Announce script source as the first action of a normal startup.
+        # By the time this block runs, the whole file has been parsed,
+        # so __IMAGE_VERSION__ will exist if it was injected by the Dockerfile.
         if "__IMAGE_VERSION__" in globals():
             logger.info(f"Running script from Docker image ({globals()['__IMAGE_VERSION__']}).")
         else:
             logger.info("Running script from a mounted volume (local override).")
-
+        
         logger.info("Starting Bedrock On-Demand Proxy...")
 
+        # Clean up old heartbeat file on start.
         if HEARTBEAT_FILE.exists():
             HEARTBEAT_FILE.unlink()
+
+        # Final check for server configuration before initializing state.
+        if not SERVERS_CONFIG:
+            logger.error("FATAL: No server configurations loaded. Entering dormant, unhealthy state.")
+            while True:
+                time.sleep(3600)
         
         try:
             client = docker.from_env()
