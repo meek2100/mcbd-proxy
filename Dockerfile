@@ -30,12 +30,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application's code into the container
 COPY . .
 
+# --- NEW: Inject a version variable into the script within the image ---
+# This allows the script to identify itself as the image version.
+# We also add a build date argument that can be set during the build.
+ARG BUILD_DATE
+RUN echo "__IMAGE_VERSION__ = 'Image-Build-Date: ${BUILD_DATE:-unset}'" >> /app/proxy_multi.py
+
 # Make the helper shell scripts executable
-RUN chmod +x /app/scripts/start-server.sh /app/scripts/stop-server.sh
+RUN chmod +x /app/scripts/*.sh
 
 # --- HEALTHCHECK ---
 # Executes the health check logic within the Python application itself.
-# This ensures maximum reliability and portability, avoiding shell environment differences.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
   CMD [ "python", "proxy_multi.py", "--healthcheck" ]
 
