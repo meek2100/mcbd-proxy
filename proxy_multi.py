@@ -1,5 +1,5 @@
 """
-MCBE On-Demand Proxy
+MCBE On-Demand Proxy - main.py
 
 An intelligent UDP proxy for Minecraft Bedrock Edition (MCBE) servers.
 This script dynamically starts and stops Dockerized MCBE servers based on player
@@ -31,14 +31,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- Announce script source automatically ---
-# This block checks for a special variable that is only injected during the
-# Docker build process. Its absence indicates a local file is being used.
-try:
-    # This variable is added by the Dockerfile's 'RUN echo...' command.
-    if __IMAGE_VERSION__:
-        logger.info(f"Running script from Docker image. ({__IMAGE_VERSION__})")
-except NameError:
+# The __IMAGE_VERSION__ variable is injected by the Dockerfile during the
+# build process. If it's not defined, we are running a local file.
+if "__IMAGE_VERSION__" in locals() or "__IMAGE_VERSION__" in globals():
+    logger.info(f"Running script from Docker image ({__IMAGE_VERSION__}).")
+else:
     logger.info("Running script from a mounted volume (local override).")
+
 
 # --- Constants ---
 HEARTBEAT_FILE = Path("/tmp/proxy_heartbeat")
