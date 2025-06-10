@@ -5,7 +5,6 @@ An intelligent UDP proxy for Minecraft servers running in Docker. This script
 dynamically starts and stops Dockerized Minecraft servers (both Bedrock and
 Java editions) based on player activity to conserve system resources. It
 supports multiple servers, flexible configuration, and a robust health check.
-                    
 
 Author: meek2100 (github.com/meek2100)
 """
@@ -27,7 +26,6 @@ from pathlib import Path
 HEARTBEAT_FILE = Path("/tmp/proxy_heartbeat")
 HEALTHCHECK_STALE_THRESHOLD_SECONDS = 60
 HEARTBEAT_INTERVAL_SECONDS = 15
-DEBUG_FLAG_PATH = "/app/local_debug.flag"
 
 # --- Health Check Function ---
 def perform_health_check():
@@ -40,9 +38,9 @@ def perform_health_check():
     local_servers_list = load_servers_from_env()
     if not local_servers_list:
         try:
-            with open('proxy_config.json', 'r') as f:
-                local_file_config = json.load(f)
-            local_servers_list = local_file_config.get('servers', [])
+            with open('servers.json', 'r') as f:
+                servers_json_config = json.load(f)
+            local_servers_list = servers_json_config.get('servers', [])
         except (FileNotFoundError, json.JSONDecodeError):
             local_servers_list = []
 
@@ -71,16 +69,16 @@ def perform_health_check():
         sys.exit(1)
 
 # --- Configuration Loading ---
-file_config = {}
+settings_config = {}
 try:
-    with open('proxy_config.json', 'r') as f:
-        file_config = json.load(f)
+    with open('settings.json', 'r') as f:
+        settings_config = json.load(f)
 except FileNotFoundError:
     # This is not an error, as env vars are the primary method
     pass
 except json.JSONDecodeError:
     # This is an error and should be logged if the file exists
-    logging.getLogger(__name__).error("Error: proxy_config.json is not valid JSON. Using environment variables or default values only.")
+    logging.getLogger(__name__).error("Error: settings.json is not valid JSON. Using environment variables or default values only.")
 
 
 def get_config_value(env_var_name, json_key_name, default_value, type_converter=str):
@@ -92,7 +90,7 @@ def get_config_value(env_var_name, json_key_name, default_value, type_converter=
         except (ValueError, TypeError):
             logging.getLogger(__name__).warning(f"Invalid type for environment variable {env_var_name}='{env_val}'. Using file config or default.")
 
-    file_val = file_config.get(json_key_name)
+    file_val = settings_config.get(json_key_name)
     if file_val is not None:
         try:
             return type_converter(file_val)
@@ -141,10 +139,20 @@ INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS = get_config_value('NB_INITIAL_BOOT_REA
 SERVER_STARTUP_DELAY_SECONDS = get_config_value('NB_SERVER_STARTUP_DELAY', 'server_startup_delay_seconds', 5, int)
 INITIAL_SERVER_QUERY_DELAY_SECONDS = get_config_value('NB_INITIAL_SERVER_QUERY_DELAY', 'initial_server_query_delay_seconds', 10, int)
 
+# Load server definitions from environment variables first, then fall back to servers.json
 servers_list = load_servers_from_env()
 if not servers_list:
-    logging.getLogger(__name__).info("No server definitions found in environment variables. Falling back to proxy_config.json.")
-    servers_list = file_config.get('servers', [])
+    logging.getLogger(__name__).info("No server definitions found in environment variables. Falling back to servers.json.")
+    try:
+        with open('servers.json', 'r') as f:
+            servers_json_config = json.load(f)
+        servers_list = servers_json_config.get('servers', [])
+    except FileNotFoundError:
+        servers_list = []
+    except json.JSONDecodeError:
+        logging.getLogger(__name__).error("Error: servers.json is not valid JSON.")
+        servers_list = []
+
 
 SERVERS_CONFIG = {s['listen_port']: s for s in servers_list if s.get('listen_port')}
 docker_client = None
@@ -153,6 +161,7 @@ active_client_connections = {}
 clients_per_server = defaultdict(set)
 packet_buffers = defaultdict(list)
 
+# (The rest of the script remains the same)
 def is_container_running(container_name):
     """Checks if a Docker container is currently running via the Docker API."""
     try:
@@ -382,39 +391,17 @@ def run_proxy(client_listen_sockets, inputs):
 
 # --- Main Execution ---
 if __name__ == "__main__":
-    if '--healthcheck' in sys.argv:
-        perform_health_check()
-        sys.exit(0)
-    
-    # --- Step 1: Auto-detect if running from a local volume mount ---
-    IS_LOCAL_OVERRIDE = os.path.exists(DEBUG_FLAG_PATH)
-
-    # --- Step 2: Determine Log Level based on override status and environment ---
-    explicit_log_level = os.environ.get('LOG_LEVEL')
-    final_log_level = 'INFO'  # The production default
-
-    if explicit_log_level:
-        # An explicitly set LOG_LEVEL always wins.
-        final_log_level = explicit_log_level.upper()
-    elif IS_LOCAL_OVERRIDE:
-        # If no log level is set AND we are in override mode, default to DEBUG.
-        final_log_level = 'DEBUG'
-
-    # --- Step 3: Configure Logging ---
+    # --- Simplified Logging Setup ---
+    LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
     logging.basicConfig(
-        level=getattr(logging, final_log_level, logging.INFO),
+        level=getattr(logging, LOG_LEVEL, logging.INFO),
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     logger = logging.getLogger(__name__)
 
-    # --- Step 4: Announce Execution Mode and Final Log Level ---
-    if IS_LOCAL_OVERRIDE:
-        logger.warning("==========================================================")
-        logger.warning("===  RUNNING FROM LOCAL OVERRIDE (DEBUG MODE)          ===")
-        logger.warning(f"===  Log Level: {final_log_level:<35} ===")
-        logger.warning("==========================================================")
-    else:
-        logger.info(f"--- Running from Docker Image (Production Mode) | Log Level: {final_log_level} ---")
+    if '--healthcheck' in sys.argv:
+        perform_health_check()
+        sys.exit(0)
     
     # --- Normal Startup Sequence ---
     logger.info("Starting Nether-bridge on-demand proxy...")
@@ -424,7 +411,7 @@ if __name__ == "__main__":
         HEARTBEAT_FILE.unlink()
 
     if not SERVERS_CONFIG:
-        logger.error("FATAL: No server configurations loaded. Please configure servers via environment variables or proxy_config.json. Entering dormant, unhealthy state.")
+        logger.error("FATAL: No server configurations loaded. Please configure servers via environment variables or servers.json. Entering dormant, unhealthy state.")
         # Create a stale heartbeat file to ensure health checks fail correctly
         HEARTBEAT_FILE.write_text("0")
         while True:
