@@ -42,7 +42,6 @@ def perform_health_check():
     1. Checks if configuration is available.
     2. Checks if the main process heartbeat is recent.
     """
-    # Stage 1: Check for a valid configuration.
     local_servers_list = load_servers_from_env()
     if not local_servers_list:
         try:
@@ -56,7 +55,6 @@ def perform_health_check():
         print("Health Check FAIL: No server configuration found.")
         sys.exit(1)
 
-    # Stage 2: If configured, check for a live heartbeat from the main process.
     if not HEARTBEAT_FILE.is_file():
         print("Health Check FAIL: Heartbeat file not found (main process may be starting).")
         sys.exit(1)
@@ -68,10 +66,10 @@ def perform_health_check():
 
         if age < HEALTHCHECK_STALE_THRESHOLD_SECONDS:
             print(f"Health Check OK: Heartbeat is {age} seconds old.")
-            sys.exit(0) # Healthy
+            sys.exit(0)
         else:
             print(f"Health Check FAIL: Heartbeat is stale ({age} seconds old).")
-            sys.exit(1) # Unhealthy
+            sys.exit(1)
     except Exception as e:
         print(f"Health Check FAIL: Could not read or parse heartbeat file. Error: {e}")
         sys.exit(1)
@@ -82,7 +80,7 @@ try:
     with open('proxy_config.json', 'r') as f:
         file_config = json.load(f)
 except FileNotFoundError:
-    logger.warning("proxy_config.json not found. Using environment variables or default values only.")
+    pass # This is an expected condition.
 except json.JSONDecodeError:
     logger.error("Error: proxy_config.json is not valid JSON. Using environment variables or default values only.")
 
@@ -127,10 +125,7 @@ def load_servers_from_env():
         i += 1
     return env_servers
 
-
 # --- Main Application ---
-
-# Top-level variables and objects that will be initialized in main()
 IDLE_TIMEOUT_SECONDS = get_config_value('PROXY_IDLE_TIMEOUT_SECONDS', 'idle_timeout_seconds', 600, int)
 PLAYER_CHECK_INTERVAL_SECONDS = get_config_value('PROXY_PLAYER_CHECK_INTERVAL_SECONDS', 'player_check_interval_seconds', 60, int)
 QUERY_TIMEOUT_SECONDS = get_config_value('PROXY_QUERY_TIMEOUT_SECONDS', 'query_timeout_seconds', 5, int)
@@ -169,7 +164,6 @@ def wait_for_server_query_ready(container_name, target_ip, target_port, max_wait
     """Polls a Minecraft server using mcstatus until it responds or a timeout is reached."""
     logger.info(f"Waiting for {container_name} to respond to query at {target_ip}:{target_port} (max {max_wait_time_seconds}s)...")
     start_time = time.time()
-    
     while time.time() - start_time < max_wait_time_seconds:
         try:
             server = BedrockServer(target_ip, target_port, timeout=query_timeout_seconds)
@@ -180,7 +174,6 @@ def wait_for_server_query_ready(container_name, target_ip, target_port, max_wait
         except Exception as e:
             logger.debug(f"Query to {container_name} ({target_ip}:{target_port}) failed: {e}. Retrying...")
         time.sleep(query_timeout_seconds)
-    
     logger.error(f"Timeout waiting for {container_name} to respond after {max_wait_time_seconds} seconds. Proceeding anyway.")
     return False
 
@@ -193,17 +186,13 @@ def start_mcbe_server(container_name):
             logger.error(f"Error starting {container_name}: {result.stderr}")
             return False
         logger.info(result.stdout.strip())
-        
         time.sleep(MINECRAFT_SERVER_STARTUP_DELAY_SECONDS) 
-
         target_server_config = next((s for s in SERVERS_CONFIG.values() if s['container_name'] == container_name), None)
         if not target_server_config:
             logger.error(f"Config for {container_name} not found. Cannot query for readiness.")
             return False
-
         if not wait_for_server_query_ready(container_name, container_name, target_server_config['internal_port'], SERVER_READY_MAX_WAIT_TIME_SECONDS, QUERY_TIMEOUT_SECONDS):
             logger.warning(f"Server {container_name} did not respond to query within max wait time. Proceeding with traffic forwarding anyway.")
-
         server_states[container_name]["running"] = True 
         server_states[container_name]["last_activity"] = time.time() 
         logger.info(f"Server {container_name} startup process complete. Ready for traffic.")
@@ -231,18 +220,14 @@ def ensure_all_servers_stopped_on_startup():
         container_name = srv_conf['container_name']
         if is_container_running(container_name):
             logger.info(f"Found {container_name} running at proxy startup. Waiting for it to fully start before issuing a safe stop.")
-            
             time.sleep(INITIAL_SERVER_QUERY_DELAY_SECONDS)
-
             target_server_config = next((s for s in SERVERS_CONFIG.values() if s['container_name'] == container_name), None)
             if not target_server_config:
                 logger.error(f"Config for {container_name} not found. Cannot query for readiness for initial stop.")
                 stop_mcbe_server(container_name)
                 continue
-
             if not wait_for_server_query_ready(container_name, container_name, target_server_config['internal_port'], INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS, QUERY_TIMEOUT_SECONDS):
                 logger.warning(f"{container_name} did not respond to query during initial startup. Attempting to force stop anyway.")
-            
             stop_mcbe_server(container_name) 
         else:
             logger.info(f"{container_name} is already stopped.")
@@ -252,12 +237,10 @@ def monitor_servers_activity():
     while True:
         time.sleep(PLAYER_CHECK_INTERVAL_SECONDS)
         current_time = time.time()
-        
         for server_conf_item in SERVERS_CONFIG.values(): 
             server_name = server_conf_item['container_name']
             state = server_states.get(server_name)
             if not state: continue
-
             if state["running"]:
                 active_players_on_server = 0
                 target_server_config = next((s for s in SERVERS_CONFIG.values() if s['container_name'] == server_name), None)
@@ -271,7 +254,6 @@ def monitor_servers_activity():
                         logger.debug(f"Failed to query {server_name} for player count: {e}. Assuming 0 players for now.")
                 else:
                     logger.warning(f"Config for {server_name} not found when checking player count.")
-
                 if active_players_on_server == 0 and (current_time - state["last_activity"] > IDLE_TIMEOUT_SECONDS):
                     logger.info(f"Server {server_name} idle for over {IDLE_TIMEOUT_SECONDS}s with 0 players. Initiating shutdown.")
                     stop_mcbe_server(server_name)
@@ -285,7 +267,6 @@ def run_proxy(client_listen_sockets, inputs):
     while True:
         try: 
             readable, _, _ = select.select(inputs, [], [], 0.05) 
-            
             current_time = time.time()
             if current_time - last_heartbeat_time > HEARTBEAT_INTERVAL_SECONDS:
                 try:
@@ -294,7 +275,6 @@ def run_proxy(client_listen_sockets, inputs):
                     logger.debug("Proxy heartbeat updated.")
                 except Exception as e:
                     logger.warning(f"Could not update heartbeat file at {HEARTBEAT_FILE}: {e}")
-
             for sock in readable:
                 is_from_client = any(sock == s for s in client_listen_sockets.values())
                 if is_from_client:
@@ -303,7 +283,6 @@ def run_proxy(client_listen_sockets, inputs):
                     except Exception as e:
                         logger.error(f"Error receiving from client socket {sock}: {e}")
                         continue
-                    
                     server_port = sock.getsockname()[1]
                     server_config = SERVERS_CONFIG[server_port] 
                     container_name = server_config['container_name']
@@ -317,16 +296,9 @@ def run_proxy(client_listen_sockets, inputs):
                     if session_key not in active_client_connections:
                         server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                         server_sock.setblocking(False)
-                        
-                        active_client_connections[session_key] = {
-                            "target_container": container_name,
-                            "client_to_server_socket": server_sock,
-                            "last_packet_time": time.time(),
-                            "listen_port": server_port
-                        }
+                        active_client_connections[session_key] = {"target_container": container_name, "client_to_server_socket": server_sock, "last_packet_time": time.time(), "listen_port": server_port}
                         inputs.append(server_sock) 
                         logger.info(f"New client session {session_key} established with {container_name}")
-                        
                         for buffered_packet in packet_buffers.pop(session_key, []):
                             server_sock.sendto(buffered_packet, (container_name, server_config['internal_port']))
                         server_sock.sendto(data, (container_name, server_config['internal_port']))
@@ -354,7 +326,6 @@ def run_proxy(client_listen_sockets, inputs):
         except Exception as e:
             logger.error(f"An unexpected error occurred in the main proxy loop: {e}", exc_info=True)
             time.sleep(1)
-
         current_time = time.time()
         sessions_to_remove = [key for key, info in active_client_connections.items() if current_time - info["last_packet_time"] > IDLE_TIMEOUT_SECONDS]
         for session_key in sessions_to_remove:
@@ -364,19 +335,28 @@ def run_proxy(client_listen_sockets, inputs):
             conn_info["client_to_server_socket"].close()
             packet_buffers.pop(session_key, None)
 
-
+# --- Main Execution ---
 if __name__ == "__main__":
     if '--healthcheck' in sys.argv:
         perform_health_check()
     else:
         # --- Normal Startup Sequence ---
-        if HEARTBEAT_FILE.exists():
-            HEARTBEAT_FILE.unlink()
-
         if not SERVERS_CONFIG:
             logger.error("FATAL: No server configurations loaded. Entering dormant, unhealthy state.")
             while True:
                 time.sleep(3600)
+
+        # Announce script source as one of the first actions.
+        # This check happens after the file is fully parsed, so __IMAGE_VERSION__ will exist.
+        if "__IMAGE_VERSION__" in globals():
+            logger.info(f"Running script from Docker image ({globals()['__IMAGE_VERSION__']}).")
+        else:
+            logger.info("Running script from a mounted volume (local override).")
+
+        logger.info("Starting Bedrock On-Demand Proxy...")
+
+        if HEARTBEAT_FILE.exists():
+            HEARTBEAT_FILE.unlink()
         
         try:
             client = docker.from_env()
@@ -401,16 +381,7 @@ if __name__ == "__main__":
             except OSError as e:
                 logger.error(f"ERROR: Could not bind to port {listen_port}. Is it already in use? ({e})")
                 sys.exit(1)
-        
-        # This check must run AFTER all top-level definitions are complete.
-        # This is now the final action before starting the threads and main loop.
-        try:
-            if __IMAGE_VERSION__:
-                logger.info(f"Running script from Docker image ({__IMAGE_VERSION__}).")
-        except NameError:
-            logger.info("Running script from a mounted volume (local override).")
 
-        logger.info("Starting Bedrock On-Demand Proxy Threads and Loop...")
         monitor_thread = threading.Thread(target=monitor_servers_activity, daemon=True)
         monitor_thread.start()
         
