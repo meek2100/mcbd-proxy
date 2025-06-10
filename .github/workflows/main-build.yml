@@ -14,6 +14,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Add this permission if you plan to create GitHub Releases automatically
+      # releases: write
 
     steps:
       - name: Checkout repository
@@ -31,6 +33,14 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}} # For v1.0.0, v1.0.1 etc.
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }} # 'latest' only on main branch pushes
+          labels: |
+            org.opencontainers.image.source=${{ github.event.repository.html_url }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.created }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }} # Use the extracted version
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -46,5 +56,17 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             BUILD_DATE=${{ steps.meta.outputs.created }}
-            APP_VERSION=${{ steps.meta.outputs.version }}
+            APP_VERSION=${{ steps.meta.outputs.version }} # Use the extracted version
             VCS_REF=${{ github.sha }}
+
+      # Optional: Create a GitHub Release automatically when a new tag is pushed
+      # - name: Create GitHub Release
+      #   if: startsWith(github.ref, 'refs/tags/v')
+      #   uses: softprops/action-gh-release@v1
+      #   with:
+      #     tag_name: ${{ github.ref_name }}
+      #     name: Release ${{ github.ref_name }}
+      #     body: |
+      #       See changes in: ${{ github.event.compare }}
+      #     draft: false
+      #     prerelease: false
