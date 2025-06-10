@@ -1,6 +1,6 @@
-# Minecraft Bedrock On-Demand Proxy
+# Nether-bridge: On-Demand Minecraft Server Proxy
 
-This project provides an intelligent proxy for Minecraft Bedrock Edition (MCBE) servers running in Docker. It automatically starts server containers when a player tries to connect and stops them after a period of inactivity, helping to save system resources.
+Nether-bridge is an intelligent proxy for Minecraft servers running in Docker. It automatically starts server containers when a player tries to connect and stops them after a period of inactivity, helping to save system resources.
 
 This is ideal for home server environments where multiple Minecraft servers are available but not always in use.
 
@@ -9,179 +9,57 @@ This is ideal for home server environments where multiple Minecraft servers are 
 ## Features
 
 - **On-Demand Server Startup**: Automatically starts Minecraft server containers when a player connection is detected.
+- **Multi-Platform Support**: Natively supports both **Minecraft: Java Edition** and **Minecraft: Bedrock Edition** servers.
 - **Automatic Shutdown**: Monitors server activity and stops containers after a configurable idle period to free up resources.
 - **Multi-Server Support**: Manages multiple Minecraft servers simultaneously, each on its own port.
 - **Dynamic Readiness Probing**: Uses `mcstatus` to actively query the server status, ensuring it's fully ready before forwarding traffic.
 - **Flexible Configuration**: Configure entirely with environment variables or use a `proxy_config.json` file.
-- **Robust Health Checks**: A two-stage, Python-native health check correctly reports the container's status, even during startup failures.
-- **Docker-Native**: Designed to integrate seamlessly with a Docker-based server setup.
+- **Robust Health Checks**: A two-stage, Python-native health check correctly reports the container's status.
 
 ## How It Works
 
-The proxy listens for UDP packets on ports that you map to your Minecraft servers.
+The proxy listens for UDP (and TCP for Java) packets on ports that you map to your Minecraft servers.
 
 1.  When a player tries to connect, the proxy checks if the corresponding Minecraft server container is running.
-2.  If the container is stopped, the proxy issues a `docker start` command and begins probing the server's status, buffering the initial connection packets.
-3.  Once the server is responsive, the proxy forwards the packets and establishes a two-way communication channel.
-4.  A background thread periodically checks the player count of all running servers. If a server is empty for longer than the configured idle timeout, the proxy issues a `docker stop` command.
+2.  If the container is stopped, the proxy issues a `docker start` command and begins probing the server's status.
+3.  Once the server is responsive, the proxy forwards traffic, establishing a two-way communication channel.
+4.  A background thread periodically checks the player count. If a server is empty for longer than the configured idle timeout, the proxy issues a `docker stop` command.
 
 ## Configuration
 
-You can configure the proxy in two ways, with **environment variables always taking precedence**. This allows you to set base values in the JSON file and override specific ones for testing or production in your `docker-compose.yml`.
+You can configure the proxy in two ways, with **environment variables always taking precedence**.
 
-### Method 1: Environment Variables (Recommended)
+### **Method 1: Environment Variables (Recommended)**
 
-This is the most flexible approach. You can define all settings in your `docker-compose.yml` file.
+This is the most flexible approach. All settings can be defined in your `docker-compose.yml` file.
 
-#### General Settings
+#### **General Settings**
 
 | Variable | Default | Description |
 |---|---|---|
 | `LOG_LEVEL` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`). |
-| `PROXY_IDLE_TIMEOUT_SECONDS` | `600` | Seconds a server can be idle before being stopped. |
-| `PROXY_PLAYER_CHECK_INTERVAL_SECONDS` | `60` | How often (in seconds) to check for idle servers. |
-| `PROXY_SERVER_READY_MAX_WAIT_TIME_SECONDS`| `120` | Max time the proxy will wait for a server to start when a player connects. |
-| `PROXY_INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS`|`180` | Max readiness wait time for servers found running at proxy boot. |
-| `PROXY_SERVER_STARTUP_DELAY_SECONDS` | `5` | A fixed pause (in seconds) after `docker start` before probing begins. |
-| `PROXY_INITIAL_SERVER_QUERY_DELAY_SECONDS`| `10` | A fixed pause before probing servers found running at proxy boot. |
-| `PROXY_QUERY_TIMEOUT_SECONDS` | `5` | Network timeout for a single server status query. |
+| `NB_IDLE_TIMEOUT` | `600` | Seconds a server can be idle with no players before being stopped. |
+| `NB_PLAYER_CHECK_INTERVAL` | `60` | How often (in seconds) to check for idle servers. |
+| `NB_SERVER_READY_MAX_WAIT`| `120` | Max time the proxy will wait for a server to respond to a status check after starting. |
+| `NB_QUERY_TIMEOUT` | `5` | Network timeout for a single server status query. |
 
-#### Server Definitions
+#### **Server Definitions**
 
-If you define servers using environment variables, the `servers` array in `proxy_config.json` will be ignored. Define each server using an indexed block of variables (`PROXY_SERVER_1_...`, `PROXY_SERVER_2_...`, etc.).
+Define each server using an indexed block of variables (`NB_1_*`, `NB_2_*`, etc.).
 
 ```yaml
 # In docker-compose.yml environment section:
 environment:
-  # Server 1
-  - PROXY_SERVER_1_NAME=Family Server
-  - PROXY_SERVER_1_LISTEN_PORT=19133         # Required
-  - PROXY_SERVER_1_CONTAINER_NAME=mcbd-family-server # Required
-  - PROXY_SERVER_1_INTERNAL_PORT=19132      # Required
-  
-  # Server 2
-  - PROXY_SERVER_2_NAME=Friends Server
-  - PROXY_SERVER_2_LISTEN_PORT=19134
-  - PROXY_SERVER_2_CONTAINER_NAME=mcbd-friend-server
-  - PROXY_SERVER_2_INTERNAL_PORT=19132
-```
+  # Server 1: A Bedrock Server
+  - NB_1_NAME=Bedrock Survival
+  - NB_1_SERVER_TYPE=bedrock      # Required: 'bedrock' or 'java'
+  - NB_1_LISTEN_PORT=19133        # Required: External port proxy listens on
+  - NB_1_CONTAINER_NAME=mc-bedrock # Required: Name of the Minecraft server container
+  - NB_1_INTERNAL_PORT=19132     # Required: Game port inside the server container
 
-### Method 2: Using `proxy_config.json` (Fallback)
-
-If no `PROXY_SERVER_...` environment variables are set, the proxy will load the server list from a `proxy_config.json` file mounted at `/app/proxy_config.json`.
-
-```json
-{
-  "idle_timeout_seconds": 600,
-  "player_check_interval_seconds": 60,
-  "query_timeout_seconds": 5,
-  "server_ready_max_wait_time_seconds": 120,
-  "initial_boot_ready_max_wait_time_seconds": 180,
-  "minecraft_server_startup_delay_seconds": 5,
-  "initial_server_query_delay_seconds": 10,
-  "servers": [
-    {
-      "name": "Family Server",
-      "listen_port": 19133,
-      "container_name": "mcbd-family-server",
-      "internal_port": 19132
-    },
-    {
-      "name": "Friends Server",
-      "listen_port": 19134,
-      "container_name": "mcbd-friend-server",
-      "internal_port": 19132
-    }
-  ]
-}
-```
-
-## Usage Example
-
-This proxy is designed to work alongside your Minecraft server containers and a tool like `Pugmatt/BedrockConnect` to present a server list to players.
-
-Below is a complete `docker-compose.yml` structure demonstrating a setup using environment variables for configuration.
-
-```yaml
-services:
-  # Provides the in-game server list to players using Pugmatt/BedrockConnect
-  bedrock-connect:
-    container_name: bedrock-connect
-    image: pugmatt/bedrockconnect:latest
-    restart: unless-stopped
-    ports:
-      - "19132:19132/udp" # Default MCBE port players connect to
-    volumes:
-      # This file should list the proxy's ports (e.g., 19133, 19134)
-      - ./data/connect/serverlist.json:/config/serverlist.json
-
-  # The on-demand proxy service
-  mcbd-proxy:
-    container_name: mcbd-proxy
-    image: ghcr.io/meek2100/mcbd-proxy-builder:latest
-    restart: unless-stopped
-    networks:
-      - mc-proxy-network
-    environment:
-      # General settings
-      - LOG_LEVEL=DEBUG
-      - PROXY_IDLE_TIMEOUT_SECONDS=300
-      # Server definitions
-      - PROXY_SERVER_1_NAME=Family Server
-      - PROXY_SERVER_1_LISTEN_PORT=19133
-      - PROXY_SERVER_1_CONTAINER_NAME=mcbd-family-server
-      - PROXY_SERVER_1_INTERNAL_PORT=19132
-      - PROXY_SERVER_2_NAME=Friends Server
-      - PROXY_SERVER_2_LISTEN_PORT=19134
-      - PROXY_SERVER_2_CONTAINER_NAME=mcbd-friend-server
-      - PROXY_SERVER_2_INTERNAL_PORT=19132
-    ports:
-      - "19133:19133/udp" # Must match listen ports above
-      - "19134:19134/udp"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock # Required
-      # - ./data/mcbd-proxy/proxy_config.json:/app/proxy_config.json # Optional
-
-  # A managed Minecraft server
-  mcbd-family-server:
-    container_name: mcbd-family-server
-    image: itzg/minecraft-bedrock-server:latest
-    restart: "no" # IMPORTANT: Must be 'no' for proxy management
-    networks:
-      - mc-proxy-network
-    environment:
-      - EULA=TRUE
-    volumes:
-      - ./data/family-server:/data
-
-  # Another managed Minecraft server
-  mcbd-friend-server:
-    container_name: mcbd-friend-server
-    image: itzg/minecraft-bedrock-server:latest
-    restart: "no"
-    networks:
-      - mc-proxy-network
-    environment:
-      - EULA=TRUE
-    volumes:
-      - ./data/friend-server:/data
-
-networks:
-  mc-proxy-network:
-    driver: bridge
-```
-
-## Building From Source
-
-This repository contains a GitHub Actions workflow that will automatically build and push the Docker image to `ghcr.io` on every push to the `main` branch. You can also build it manually:
-
-1.  **Clone the repository:**
-    ```bash
-    git clone [https://github.com/meek2100/mcbd-proxy-builder.git](https://github.com/meek2100/mcbd-proxy-builder.git)
-    cd mcbd-proxy-builder
-    ```
-
-2.  **Build the image:**
-    ```bash
-    docker build -t meek2100/mcbd-proxy .
-    ```
+  # Server 2: A Java Server
+  - NB_2_NAME=Java Creative
+  - NB_2_SERVER_TYPE=java
+  - NB_2_LISTEN_PORT=25565
+  - NB_2_CONTAINER_NAME=mc-java
+  - NB_2_INTERNAL_PORT=25565
