@@ -1,0 +1,9 @@
+{
+  "idle_timeout_seconds": 600,
+  "player_check_interval_seconds": 60,
+  "query_timeout_seconds": 5,
+  "server_ready_max_wait_time_seconds": 120,
+  "initial_boot_ready_max_wait_time_seconds": 180,
+  "minecraft_server_startup_delay_seconds": 5,
+  "initial_server_query_delay_seconds": 10
+}
