@@ -27,7 +27,7 @@ The proxy listens for UDP (and TCP for Java) packets on ports that you map to yo
 
 ## Configuration
 
-You can configure the proxy in two ways, with **environment variables always taking precedence**.
+You can configure the proxy in two ways, with **environment variables always taking precedence**. This allows you to set base values in a JSON file and override specific ones in your `docker-compose.yml`.
 
 ### **Method 1: Environment Variables (Recommended)**
 
@@ -41,6 +41,9 @@ This is the most flexible approach. All settings can be defined in your `docker-
 | `NB_IDLE_TIMEOUT` | `600` | Seconds a server can be idle with no players before being stopped. |
 | `NB_PLAYER_CHECK_INTERVAL` | `60` | How often (in seconds) to check for idle servers. |
 | `NB_SERVER_READY_MAX_WAIT`| `120` | Max time the proxy will wait for a server to respond to a status check after starting. |
+| `NB_INITIAL_BOOT_READY_MAX_WAIT`| `180` | Max readiness wait time for servers found running at proxy boot. |
+| `NB_SERVER_STARTUP_DELAY` | `5` | A fixed pause (in seconds) after `docker start` before probing begins, allowing the container to initialize. |
+| `NB_INITIAL_SERVER_QUERY_DELAY`| `10` | A fixed pause before probing servers found running at proxy boot. |
 | `NB_QUERY_TIMEOUT` | `5` | Network timeout for a single server status query. |
 
 #### **Server Definitions**
