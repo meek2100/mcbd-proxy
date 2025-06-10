@@ -32,6 +32,7 @@ COPY . .
 
 # --- Inject a version variable into the script within the image ---
 # This allows the script to identify itself as the image version.
+# Using a 'here document' (cat <<EOF) safely handles quotes.
 ARG BUILD_DATE
 RUN cat <<EOF >> /app/proxy_multi.py
 __IMAGE_VERSION__ = "Image-Build-Date: ${BUILD_DATE:-unset}"
