@@ -4,12 +4,8 @@ FROM python:3.9-slim AS builder
 
 WORKDIR /app
 
-# Selectively copy only the files needed for the application to run
+# Install Python requirements into a specific layer that can be copied
 COPY requirements.txt .
-COPY scripts/ ./scripts/
-COPY nether_bridge.py .
-
-# Install Python requirements
 RUN pip install --no-cache-dir -r requirements.txt
 
 
@@ -57,8 +53,12 @@ RUN apt-get update && \
 WORKDIR /app
 
 # --- Application Setup ---
-# Copy the application files from the builder stage.
-COPY --from=builder /app /app
+# Copy the INSTALLED Python packages from the builder stage
+COPY --from=builder /usr/local/lib/python3.9/site-packages /usr/local/lib/python3.9/site-packages
+
+# Copy the application source code
+COPY nether_bridge.py .
+COPY scripts/ ./scripts/
 
 # Make the helper shell scripts executable.
 RUN chmod +x /app/scripts/start-server.sh /app/scripts/stop-server.sh
