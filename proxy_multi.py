@@ -36,7 +36,6 @@ HEALTHCHECK_STALE_THRESHOLD_SECONDS = 60
 HEARTBEAT_INTERVAL_SECONDS = 15
 
 # --- Health Check Function ---
-# [ ... This function is correct and does not need changes ... ]
 def perform_health_check():
     """
     Performs a self-sufficient two-stage health check.
@@ -76,9 +75,8 @@ def perform_health_check():
     except Exception as e:
         print(f"Health Check FAIL: Could not read or parse heartbeat file. Error: {e}")
         sys.exit(1)
-        
-# --- Configuration Loading & Functions ---
-# [ ... The rest of your functions and setup are correct and do not need changes ... ]
+
+# --- Configuration Loading ---
 file_config = {}
 try:
     with open('proxy_config.json', 'r') as f:
@@ -366,22 +364,15 @@ def run_proxy(client_listen_sockets, inputs):
             conn_info["client_to_server_socket"].close()
             packet_buffers.pop(session_key, None)
 
-# --- Main Execution ---
-if __name__ == "__main__":
-    # --- THIS IS THE ONLY CHANGE: Move the announcement block to the end ---
-    # This entire block is executed after the script file has been fully read.
 
+if __name__ == "__main__":
     if '--healthcheck' in sys.argv:
         perform_health_check()
     else:
         # --- Normal Startup Sequence ---
-        logger.info("Starting Bedrock On-Demand Proxy...")
-
-        # Clean up old heartbeat file on start.
         if HEARTBEAT_FILE.exists():
             HEARTBEAT_FILE.unlink()
 
-        # Final check for server configuration before initializing state.
         if not SERVERS_CONFIG:
             logger.error("FATAL: No server configurations loaded. Entering dormant, unhealthy state.")
             while True:
@@ -410,17 +401,17 @@ if __name__ == "__main__":
             except OSError as e:
                 logger.error(f"ERROR: Could not bind to port {listen_port}. Is it already in use? ({e})")
                 sys.exit(1)
+        
+        # This check must run AFTER all top-level definitions are complete.
+        # This is now the final action before starting the threads and main loop.
+        try:
+            if __IMAGE_VERSION__:
+                logger.info(f"Running script from Docker image ({__IMAGE_VERSION__}).")
+        except NameError:
+            logger.info("Running script from a mounted volume (local override).")
 
+        logger.info("Starting Bedrock On-Demand Proxy Threads and Loop...")
         monitor_thread = threading.Thread(target=monitor_servers_activity, daemon=True)
         monitor_thread.start()
         
         run_proxy(client_listen_sockets, inputs)
-
-# --- Announce script source automatically ---
-# This check now runs AFTER the entire script is defined.
-if "__main__" == __name__ and '--healthcheck' not in sys.argv:
-    try:
-        if __IMAGE_VERSION__:
-            logger.info(f"Running script from Docker image ({__IMAGE_VERSION__}).")
-    except NameError:
-        logger.info("Running script from a mounted volume (local override).")
