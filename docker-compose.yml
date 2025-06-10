@@ -1,0 +1,74 @@
+services:
+  # Provides an in-game server list to Bedrock players
+  bedrock-connect:
+    container_name: bedrock-connect
+    image: pugmatt/bedrockconnect:latest
+    restart: unless-stopped
+    ports:
+      - "19132:19132/udp" # Default MCBE port players connect to first
+    volumes:
+      # This file should list the proxy's ports (e.g., 19133)
+      - ./data/connect/serverlist.json:/config/serverlist.json
+
+  # The on-demand Minecraft proxy service
+  nether-bridge:
+    container_name: nether-bridge
+    image: ghcr.io/meek2100/nether-bridge:latest
+    restart: unless-stopped
+    networks:
+      - mc-network
+    ports:
+      - "19133:19133/udp" # Port for Bedrock server
+      - "25565:25565/udp" # Port for Java server (discovery)
+      - "25565:25565/tcp" # Port for Java server (gameplay)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock # Required
+      # - ./data/nether-bridge/proxy_config.json:/app/proxy_config.json # Optional
+    environment:
+      # General settings
+      - LOG_LEVEL=INFO
+      - NB_IDLE_TIMEOUT=300
+
+      # --- Server Definitions ---
+      # Server 1: Bedrock
+      - NB_1_NAME=Bedrock Survival
+      - NB_1_SERVER_TYPE=bedrock
+      - NB_1_LISTEN_PORT=19133
+      - NB_1_CONTAINER_NAME=mc-bedrock
+      - NB_1_INTERNAL_PORT=19132
+
+      # Server 2: Java
+      - NB_2_NAME=Java Creative
+      - NB_2_SERVER_TYPE=java
+      - NB_2_LISTEN_PORT=25565
+      - NB_2_CONTAINER_NAME=mc-java
+      - NB_2_INTERNAL_PORT=25565
+
+  # A managed Minecraft Bedrock server
+  mc-bedrock:
+    container_name: mc-bedrock
+    image: itzg/minecraft-bedrock-server:latest
+    restart: "no" # IMPORTANT: Must be 'no' for proxy management
+    networks:
+      - mc-network
+    environment:
+      - EULA=TRUE
+    volumes:
+      - ./data/mc-bedrock:/data
+
+  # A managed Minecraft Java server
+  mc-java:
+    container_name: mc-java
+    image: itzg/minecraft-server:latest
+    restart: "no"
+    networks:
+      - mc-network
+    environment:
+      - EULA=TRUE
+      - TYPE=PAPER # Example: Using a specific server type
+    volumes:
+      - ./data/mc-java:/data
+
+networks:
+  mc-network:
+    driver: bridge
