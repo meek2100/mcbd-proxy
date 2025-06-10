@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - 'v*.*.*' # Also trigger on version tags like v1.0.0
   workflow_dispatch:
 
 jobs:
@@ -24,18 +26,25 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Build and push Docker image
+        id: build-and-push
         uses: docker/build-push-action@v5
         with:
           context: ./
           file: ./Dockerfile
           push: true
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/mcbd-proxy:latest
-            ghcr.io/${{ github.repository_owner }}/mcbd-proxy:${{ github.sha }}
-          # Pass the git commit SHA as a build argument.
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            COMMIT_SHA=${{ github.sha }}
+            BUILD_DATE=${{ steps.meta.outputs.created }}
+            BUILD_VERSION=${{ steps.meta.outputs.version }}
+            VCS_REF=${{ github.sha }}
