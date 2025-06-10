@@ -166,26 +166,33 @@ class NetherBridgeProxy:
 
     def _stop_minecraft_server(self, container_name: str) -> bool:
         """Stops a Minecraft server container."""
-        if self._is_container_running(container_name):
-            self.logger.info(f"[{container_name}] Attempting to stop Minecraft server...")
-            try:
-                container = self.docker_client.containers.get(container_name)
+        try:
+            container = self.docker_client.containers.get(container_name)
+            if container.status == 'running':
+                self.logger.info(f"[{container_name}] Attempting to stop Minecraft server...")
                 container.stop()
                 self.server_states[container_name]["running"] = False
                 self.logger.info(f"[{container_name}] Server stopped successfully.")
                 return True
-            except docker.errors.NotFound:
-                self.logger.warning(f"[{container_name}] Docker container not found while trying to stop. Assuming already stopped.")
+            else:
+                # Container exists but is not running (e.g., 'exited', 'paused', 'created')
+                self.logger.debug(f"[{container_name}] Server already in non-running state '{container.status}', no stop action needed.")
+                self.server_states[container_name]["running"] = False # Ensure internal state is false
+                return True
+        except docker.errors.NotFound:
+            # Container does not exist. Treat as already stopped.
+            self.logger.debug(f"[{container_name}] Docker container not found. Assuming already stopped.")
+            # Important: Update internal state to reflect it's not running
+            if container_name in self.server_states: # Ensure the key exists before modifying
                 self.server_states[container_name]["running"] = False
-                return True # Consider successful if it's already gone
-            except docker.errors.APIError as e:
-                self.logger.error(f"[{container_name}] Docker API error during stop: {e}")
-                return False
-            except Exception as e:
-                self.logger.error(f"[{container_name}] Unexpected error during server stop: {e}")
-                return False
-        self.logger.debug(f"[{container_name}] Server already stopped, no stop action needed.")
-        return True # Considered successful if it's already stopped
+            return True
+        except docker.errors.APIError as e:
+            self.logger.error(f"[{container_name}] Docker API error during stop: {e}")
+            # Keep internal state as is if API error occurred, as we don't know true status
+            return False
+        except Exception as e:
+            self.logger.error(f"[{container_name}] Unexpected error during server stop: {e}")
+            return False
 
     def _ensure_all_servers_stopped_on_startup(self):
         """Ensures all managed servers are stopped when the proxy starts for a clean state."""

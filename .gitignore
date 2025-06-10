@@ -1,0 +1,32 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Byte-code files
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+
+# pytest cache directory
+.pytest_cache/
+
+# Data directories for Minecraft servers (volumes)
+data/
+
+# Logs
+*.log
+logs/
+
+# IDE-specific files (common for VS Code, PyCharm, etc.)
+.vscode/
+.idea/
+
+# Operating System Files
+.DS_Store # macOS
+Thumbs.db # Windows
+desktop.ini # Windows
+
+# Environment variables file (if you create one for local env)
+.env
