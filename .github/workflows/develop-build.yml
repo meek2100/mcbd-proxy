@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - develop
-    workflow_dispatch:
+  workflow_dispatch:
 
 jobs:
   build-and-push:
@@ -29,10 +29,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
-          # This configures the action to create a ':develop' tag
           tags: |
-            type=raw,value=develop,enable={{is_default_branch}}
-            type=sha
+            type=raw,value=develop,enable=true
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -47,5 +45,5 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             BUILD_DATE=${{ steps.meta.outputs.created }}
-            BUILD_VERSION=develop
+            APP_VERSION=develop
             VCS_REF=${{ github.sha }}
