@@ -140,6 +140,7 @@ services:
       - "19134:19134/udp"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock # Required
+      # - ./data/mcbd-proxy/proxy_config.json:/app/proxy_config.json # Optional
 
   # A managed Minecraft server
   mcbd-family-server:
