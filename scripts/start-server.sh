@@ -8,7 +8,7 @@ fi
 
 CONTAINER_NAME=$1
 
-echo "Attempting to start game server container: $CONTAINER_NAME"
+echo "Attempting to start Minecraft server container: $CONTAINER_NAME"
 docker start "$CONTAINER_NAME"
 
 echo "Docker command 'start $CONTAINER_NAME' executed."
