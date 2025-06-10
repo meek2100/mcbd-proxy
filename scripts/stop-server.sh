@@ -8,7 +8,7 @@ fi
 
 CONTAINER_NAME=$1
 
-echo "Attempting to stop Minecraft Bedrock server: $CONTAINER_NAME"
+echo "Attempting to stop Minecraft server container: $CONTAINER_NAME"
 
 docker stop "$CONTAINER_NAME"
 
