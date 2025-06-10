@@ -36,6 +36,6 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/mcbd-proxy:latest
             ghcr.io/${{ github.repository_owner }}/mcbd-proxy:${{ github.sha }}
-          # --- ADD THIS BLOCK TO PASS THE BUILD DATE ---
+          # Pass the git commit SHA as a build argument.
           build-args: |
-            BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+            COMMIT_SHA=${{ github.sha }}
