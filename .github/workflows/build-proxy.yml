@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch: # <--- ADD THIS LINE to enable manual triggering
+  workflow_dispatch:
 
 jobs:
   build-and-push:
@@ -36,3 +36,6 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/mcbd-proxy:latest
             ghcr.io/${{ github.repository_owner }}/mcbd-proxy:${{ github.sha }}
+          # --- ADD THIS BLOCK TO PASS THE BUILD DATE ---
+          build-args: |
+            BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
