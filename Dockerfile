@@ -30,11 +30,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application's code into the container
 COPY . .
 
-# --- NEW: Inject a version variable into the script within the image ---
+# --- Inject a version variable into the script within the image ---
 # This allows the script to identify itself as the image version.
-# We also add a build date argument that can be set during the build.
 ARG BUILD_DATE
-RUN echo "__IMAGE_VERSION__ = 'Image-Build-Date: ${BUILD_DATE:-unset}'" >> /app/proxy_multi.py
+RUN cat <<EOF >> /app/proxy_multi.py
+__IMAGE_VERSION__ = "Image-Build-Date: ${BUILD_DATE:-unset}"
+EOF
 
 # Make the helper shell scripts executable
 RUN chmod +x /app/scripts/*.sh
