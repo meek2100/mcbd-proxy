@@ -30,6 +30,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# --- Announce script source automatically ---
+# This block checks for a special variable that is only injected during the
+# Docker build process. Its absence indicates a local file is being used.
+try:
+    # This variable is added by the Dockerfile's 'RUN echo...' command.
+    if __IMAGE_VERSION__:
+        logger.info(f"Running script from Docker image. ({__IMAGE_VERSION__})")
+except NameError:
+    logger.info("Running script from a mounted volume (local override).")
+
 # --- Constants ---
 HEARTBEAT_FILE = Path("/tmp/proxy_heartbeat")
 HEALTHCHECK_STALE_THRESHOLD_SECONDS = 60
