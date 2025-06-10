@@ -1,0 +1,18 @@
+{
+  "servers": [
+    {
+      "name": "Bedrock Survival",
+      "server_type": "bedrock",
+      "listen_port": 19133,
+      "container_name": "mc-bedrock-survival",
+      "internal_port": 19132
+    },
+    {
+      "name": "Java Creative",
+      "server_type": "java",
+      "listen_port": 25565,
+      "container_name": "mc-java-creative",
+      "internal_port": 25565
+    }
+  ]
+}
