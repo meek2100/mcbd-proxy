@@ -1,5 +1,5 @@
 """
-MCBE On-Demand Proxy - main.py
+MCBE On-Demand Proxy
 
 An intelligent UDP proxy for Minecraft Bedrock Edition (MCBE) servers.
 This script dynamically starts and stops Dockerized MCBE servers based on player
@@ -30,21 +30,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Announce script source automatically ---
-# The __IMAGE_VERSION__ variable is injected by the Dockerfile during the
-# build process. If it's not defined, we are running a local file.
-if "__IMAGE_VERSION__" in locals() or "__IMAGE_VERSION__" in globals():
-    logger.info(f"Running script from Docker image ({__IMAGE_VERSION__}).")
-else:
-    logger.info("Running script from a mounted volume (local override).")
-
-
 # --- Constants ---
 HEARTBEAT_FILE = Path("/tmp/proxy_heartbeat")
 HEALTHCHECK_STALE_THRESHOLD_SECONDS = 60
 HEARTBEAT_INTERVAL_SECONDS = 15
 
 # --- Health Check Function ---
+# [ ... This function is correct and does not need changes ... ]
 def perform_health_check():
     """
     Performs a self-sufficient two-stage health check.
@@ -77,15 +69,16 @@ def perform_health_check():
 
         if age < HEALTHCHECK_STALE_THRESHOLD_SECONDS:
             print(f"Health Check OK: Heartbeat is {age} seconds old.")
-            sys.exit(0)
+            sys.exit(0) # Healthy
         else:
             print(f"Health Check FAIL: Heartbeat is stale ({age} seconds old).")
-            sys.exit(1)
+            sys.exit(1) # Unhealthy
     except Exception as e:
         print(f"Health Check FAIL: Could not read or parse heartbeat file. Error: {e}")
         sys.exit(1)
-
-# --- Configuration Loading ---
+        
+# --- Configuration Loading & Functions ---
+# [ ... The rest of your functions and setup are correct and do not need changes ... ]
 file_config = {}
 try:
     with open('proxy_config.json', 'r') as f:
@@ -240,14 +233,18 @@ def ensure_all_servers_stopped_on_startup():
         container_name = srv_conf['container_name']
         if is_container_running(container_name):
             logger.info(f"Found {container_name} running at proxy startup. Waiting for it to fully start before issuing a safe stop.")
+            
             time.sleep(INITIAL_SERVER_QUERY_DELAY_SECONDS)
+
             target_server_config = next((s for s in SERVERS_CONFIG.values() if s['container_name'] == container_name), None)
             if not target_server_config:
                 logger.error(f"Config for {container_name} not found. Cannot query for readiness for initial stop.")
                 stop_mcbe_server(container_name)
                 continue
+
             if not wait_for_server_query_ready(container_name, container_name, target_server_config['internal_port'], INITIAL_BOOT_READY_MAX_WAIT_TIME_SECONDS, QUERY_TIMEOUT_SECONDS):
                 logger.warning(f"{container_name} did not respond to query during initial startup. Attempting to force stop anyway.")
+            
             stop_mcbe_server(container_name) 
         else:
             logger.info(f"{container_name} is already stopped.")
@@ -257,6 +254,7 @@ def monitor_servers_activity():
     while True:
         time.sleep(PLAYER_CHECK_INTERVAL_SECONDS)
         current_time = time.time()
+        
         for server_conf_item in SERVERS_CONFIG.values(): 
             server_name = server_conf_item['container_name']
             state = server_states.get(server_name)
@@ -307,6 +305,7 @@ def run_proxy(client_listen_sockets, inputs):
                     except Exception as e:
                         logger.error(f"Error receiving from client socket {sock}: {e}")
                         continue
+                    
                     server_port = sock.getsockname()[1]
                     server_config = SERVERS_CONFIG[server_port] 
                     container_name = server_config['container_name']
@@ -320,6 +319,7 @@ def run_proxy(client_listen_sockets, inputs):
                     if session_key not in active_client_connections:
                         server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                         server_sock.setblocking(False)
+                        
                         active_client_connections[session_key] = {
                             "target_container": container_name,
                             "client_to_server_socket": server_sock,
@@ -328,6 +328,7 @@ def run_proxy(client_listen_sockets, inputs):
                         }
                         inputs.append(server_sock) 
                         logger.info(f"New client session {session_key} established with {container_name}")
+                        
                         for buffered_packet in packet_buffers.pop(session_key, []):
                             server_sock.sendto(buffered_packet, (container_name, server_config['internal_port']))
                         server_sock.sendto(data, (container_name, server_config['internal_port']))
@@ -367,6 +368,9 @@ def run_proxy(client_listen_sockets, inputs):
 
 # --- Main Execution ---
 if __name__ == "__main__":
+    # --- THIS IS THE ONLY CHANGE: Move the announcement block to the end ---
+    # This entire block is executed after the script file has been fully read.
+
     if '--healthcheck' in sys.argv:
         perform_health_check()
     else:
@@ -383,7 +387,6 @@ if __name__ == "__main__":
             while True:
                 time.sleep(3600)
         
-        # Initialize all state variables for the main application process.
         try:
             client = docker.from_env()
         except Exception as e:
@@ -392,10 +395,8 @@ if __name__ == "__main__":
             
         server_states = {s['container_name']: {"running": False, "last_activity": time.time()} for s in SERVERS_CONFIG.values()}
         
-        # Perform initial server cleanup.
         ensure_all_servers_stopped_on_startup()
         
-        # Prepare listening sockets.
         client_listen_sockets = {}
         inputs = []
         for listen_port, srv_cfg in SERVERS_CONFIG.items():
@@ -410,9 +411,16 @@ if __name__ == "__main__":
                 logger.error(f"ERROR: Could not bind to port {listen_port}. Is it already in use? ({e})")
                 sys.exit(1)
 
-        # Start the background monitoring thread.
         monitor_thread = threading.Thread(target=monitor_servers_activity, daemon=True)
         monitor_thread.start()
         
-        # Run the main proxy loop.
         run_proxy(client_listen_sockets, inputs)
+
+# --- Announce script source automatically ---
+# This check now runs AFTER the entire script is defined.
+if "__main__" == __name__ and '--healthcheck' not in sys.argv:
+    try:
+        if __IMAGE_VERSION__:
+            logger.info(f"Running script from Docker image ({__IMAGE_VERSION__}).")
+    except NameError:
+        logger.info("Running script from a mounted volume (local override).")
