@@ -31,11 +31,8 @@ RUN mkdir -p /app/data/nether-bridge
 
 # Expose the default Bedrock/Java ports (these are what the proxy listens on)
 EXPOSE 19132/udp
-EXPOSE 19133/udp
 EXPOSE 25565/udp
 EXPOSE 25565/tcp
-EXPOSE 25566/udp
-EXPOSE 25566/tcp
 
 # Define entrypoint script to run your main Python application
 ENTRYPOINT ["python", "nether_bridge.py"]

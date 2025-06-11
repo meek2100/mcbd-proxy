@@ -44,7 +44,7 @@ def mock_servers_config():
         ServerConfig(
             name="Bedrock Test",
             server_type="bedrock",
-            listen_port=19133,
+            listen_port=19132,
             container_name="test-mc-bedrock",
             internal_port=19132
         ),

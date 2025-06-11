@@ -8,7 +8,7 @@ import docker
 # IMPORTANT: This must be the IP address of the machine running Docker (your Debian VM)
 TARGET_HOST = "192.168.1.176" 
 # Ports should match what is defined in your docker-compose.yml and servers.json
-BEDROCK_PROXY_PORT = 19133
+BEDROCK_PROXY_PORT = 19132
 JAVA_PROXY_PORT = 25565 # Using the standard port as per servers.json
 
 # --- Packet Definitions ---

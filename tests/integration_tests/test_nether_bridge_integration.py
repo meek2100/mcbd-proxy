@@ -135,7 +135,7 @@ def test_bedrock_server_starts_on_connection(docker_compose_up, docker_client_fi
     Test that the mc-bedrock server starts when a connection attempt is made
     to the nether-bridge proxy on its Bedrock port.
     """
-    bedrock_proxy_port = 19133 # As defined in docker-compose.yml
+    bedrock_proxy_port = 19132 # As defined in docker-compose.yml
     mc_bedrock_service_name = "mc-bedrock"
     
     # Expected container name from docker-compose.yml
@@ -204,7 +204,7 @@ def test_java_server_starts_on_connection(docker_compose_up, docker_client_fixtu
     Test that the mc-java server starts when a connection attempt is made
     to the nether-bridge proxy on its Java port.
     """
-    java_proxy_port = 25566 # As defined in docker-compose.yml (using 25566 for testing)
+    java_proxy_port = 25565 # As defined in docker-compose.yml (using 25565 for testing)
     mc_java_service_name = "mc-java"
     
     # Expected container name from docker-compose.yml
