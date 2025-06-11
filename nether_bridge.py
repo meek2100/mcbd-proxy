@@ -23,7 +23,9 @@ DEFAULT_SETTINGS = {
     "initial_boot_ready_max_wait_time_seconds": 180,
     "server_startup_delay_seconds": 5,
     "initial_server_query_delay_seconds": 10,
-    "log_level": "INFO" # Default log level
+    "log_level": "INFO", # Default log level
+    "healthcheck_stale_threshold_seconds": 60, # Added to settings
+    "proxy_heartbeat_interval_seconds": 15 # Added to settings
 }
 
 @dataclass
@@ -46,6 +48,8 @@ class ProxySettings:
     server_startup_delay_seconds: int
     initial_server_query_delay_seconds: int
     log_level: str
+    healthcheck_stale_threshold_seconds: int # Added to dataclass
+    proxy_heartbeat_interval_seconds: int # Added to dataclass
 
 
 class NetherBridgeProxy:
@@ -218,7 +222,7 @@ class NetherBridgeProxy:
                 container_name = server_conf.container_name
                 state = self.server_states.get(container_name)
 
-                # Skip if the server isn't supposed to be running (state not initialized or explicitly stopped)
+                # Skip if the server isn't supposed to be running
                 if not (state and state.get("running")):
                     continue
 
@@ -235,7 +239,7 @@ class NetherBridgeProxy:
                     elif server_type == 'java':
                         server = JavaServer.lookup(f"{target_ip}:{target_port}", timeout=self.settings.query_timeout_seconds)
                         status = server.status()
-
+                    
                     if status and status.players:
                         active_players_on_server = status.players.online
                 except Exception as e:
@@ -258,7 +262,7 @@ class NetherBridgeProxy:
 
                 # Update the heartbeat file for the Docker health check
                 current_time = time.time()
-                if current_time - self.last_heartbeat_time > HEARTBEAT_INTERVAL_SECONDS:
+                if current_time - self.last_heartbeat_time > self.settings.proxy_heartbeat_interval_seconds: # FIX: Use self.settings
                     try:
                         HEARTBEAT_FILE.write_text(str(int(current_time)))
                         self.last_heartbeat_time = current_time
@@ -270,16 +274,17 @@ class NetherBridgeProxy:
                     # --- Packet from a Client ---
                     if sock in self.client_listen_sockets.values():
                         try:
-                            data, client_addr = sock.recvfrom(4096) # Using a common UDP packet size
+                            data, client_addr = sock.recvfrom(4096)
+                            self.logger.debug(f"Received packet on {sock.getsockname()[1]} from {client_addr}: {data[:30]}...") # Debug log
                         except Exception as e:
                             self.logger.error(f"Error receiving from client socket {sock.getsockname()}: {e}")
                             continue
-
+                        
                         server_port = sock.getsockname()[1]
                         server_config = self.servers_config_map[server_port]
                         container_name = server_config.container_name
                         self.server_states[container_name]["last_activity"] = time.time()
-
+                        
                         # Start server if it's not running
                         if not self._is_container_running(container_name):
                             self.logger.info(f"[{container_name}] New connection from {client_addr}. Starting server and buffering packet.")
@@ -287,13 +292,13 @@ class NetherBridgeProxy:
                             # Buffer the first packet to be sent after the server is ready
                             self.packet_buffers[(client_addr, server_port)].append(data)
                             continue
-
+                        
                         session_key = (client_addr, server_port)
                         # Establish a new session if one doesn't exist
-                        if session_key not in self.active_client_connections:
+                        if session_key not in self.active_client_connections: # FIX: Use self.active_client_connections
                             server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                             server_sock.setblocking(False)
-                            self.active_client_connections[session_key] = {
+                            self.active_client_connections[session_key] = { # FIX: Use self.active_client_connections
                                 "target_container": container_name,
                                 "client_to_server_socket": server_sock,
                                 "last_packet_time": time.time(),
@@ -301,14 +306,14 @@ class NetherBridgeProxy:
                             }
                             self.inputs.append(server_sock)
                             self.logger.info(f"[{container_name}] New client session for {client_addr} established.")
-
+                            
                             # Forward any buffered packets first
                             for buffered_packet in self.packet_buffers.pop(session_key, []):
                                 try:
                                     server_sock.sendto(buffered_packet, (container_name, server_config.internal_port))
                                 except Exception as e:
                                     self.logger.warning(f"[{container_name}] Error sending buffered packet to {container_name}:{server_config.internal_port}: {e}")
-
+                            
                             # Forward the current packet
                             try:
                                 server_sock.sendto(data, (container_name, server_config.internal_port))
@@ -322,15 +327,15 @@ class NetherBridgeProxy:
                                 conn_info["last_packet_time"] = time.time()
                             except Exception as e:
                                 self.logger.warning(f"[{container_name}] Error forwarding packet for {client_addr} to {container_name}:{server_config.internal_port}: {e}")
-
+                    
                     # --- Packet from a Minecraft Server ---
-                    else:
+                    else: 
                         # Find which client session this server-side socket belongs to
                         found_session_key = next((key for key, info in self.active_client_connections.items() if info["client_to_server_socket"] is sock), None)
-
+                        
                         if found_session_key:
                             try:
-                                data, _ = sock.recvfrom(4096) # Using a common UDP packet size
+                                data, _ = sock.recvfrom(4096)
                                 conn_info = self.active_client_connections[found_session_key]
                                 client_facing_socket = self.client_listen_sockets[conn_info["listen_port"]]
                                 client_addr_original = found_session_key[0]
@@ -338,11 +343,9 @@ class NetherBridgeProxy:
                                 conn_info["last_packet_time"] = time.time()
                             except Exception as e:
                                 self.logger.error(f"Error receiving/forwarding from backend socket {sock.getsockname()}: {e}")
-                                # Close the problematic backend socket
                                 if sock in self.inputs:
                                     self.inputs.remove(sock)
                                 sock.close()
-                                # Clean up the session if it's tied to this socket
                                 if found_session_key in self.active_client_connections:
                                     self.active_client_connections.pop(found_session_key)
                         else:
@@ -350,17 +353,14 @@ class NetherBridgeProxy:
                             if sock in self.inputs:
                                 self.inputs.remove(sock)
                             sock.close()
-
+                            
             except Exception as e:
                 self.logger.error(f"An unexpected error occurred in the main proxy loop: {e}", exc_info=True)
-                time.sleep(1) # Prevent rapid error looping
+                time.sleep(1)
 
             # --- Cleanup Idle Sessions ---
             current_time = time.time()
-            sessions_to_remove = [
-                key for key, info in self.active_client_connections.items()
-                if current_time - info["last_packet_time"] > self.settings.idle_timeout_seconds
-            ]
+            sessions_to_remove = [key for key, info in self.active_client_connections.items() if current_time - info["last_packet_time"] > self.settings.idle_timeout_seconds]
             for session_key in sessions_to_remove:
                 conn_info = self.active_client_connections.pop(session_key)
                 container_name = conn_info['target_container']
@@ -368,8 +368,7 @@ class NetherBridgeProxy:
                 if conn_info["client_to_server_socket"] in self.inputs:
                     self.inputs.remove(conn_info["client_to_server_socket"])
                 conn_info["client_to_server_socket"].close()
-                # Clear any stray buffers for this session
-                self.packet_buffers.pop(session_key, None)
+                self.packet_buffers.pop(session_key, None) # Clear any stray buffers for this session
 
 
     def run(self):
@@ -422,8 +421,6 @@ class NetherBridgeProxy:
 
 
 # --- Health Check Function (outside class as it's a standalone entrypoint for Docker) ---
-HEALTHCHECK_STALE_THRESHOLD_SECONDS = 60
-HEARTBEAT_INTERVAL_SECONDS = 15
 
 def perform_health_check():
     """
@@ -434,7 +431,6 @@ def perform_health_check():
     logger = logging.getLogger(__name__)
 
     # Stage 1: Check for a valid configuration.
-    # We re-use the loading logic here to ensure configuration is present.
     try:
         settings, servers_list = load_application_config()
         if not servers_list:
@@ -445,7 +441,21 @@ def perform_health_check():
         logger.error(f"Health Check FAIL: Error loading configuration: {e}")
         sys.exit(1)
 
-    # Stage 2: Check for a live heartbeat from the main process.
+    # Stage 2: If configured, check for a live heartbeat from the main process.
+    # Use the value from settings, or a default if settings not fully loaded yet.
+    # This assumes load_application_config could potentially fail early, but for healthcheck,
+    # it needs to be robust. We'll use a hardcoded default here.
+    HEALTHCHECK_STALE_THRESHOLD_SECONDS_DEFAULT = 60 
+    proxy_settings_for_healthcheck = None
+    try:
+        proxy_settings_for_healthcheck, _ = load_application_config()
+    except Exception:
+        pass # Healthcheck proceeds with defaults if config loading fails
+
+    healthcheck_threshold = HEALTHCHECK_STALE_THRESHOLD_SECONDS_DEFAULT
+    if proxy_settings_for_healthcheck and hasattr(proxy_settings_for_healthcheck, 'healthcheck_stale_threshold_seconds'):
+        healthcheck_threshold = proxy_settings_for_healthcheck.healthcheck_stale_threshold_seconds
+
     if not HEARTBEAT_FILE.is_file():
         logger.error("Health Check FAIL: Heartbeat file not found (main process may be starting or crashed).")
         sys.exit(1)
@@ -455,11 +465,11 @@ def perform_health_check():
         current_time = int(time.time())
         age = current_time - last_heartbeat
 
-        if age < HEALTHCHECK_STALE_THRESHOLD_SECONDS:
+        if age < healthcheck_threshold:
             logger.info(f"Health Check OK: Heartbeat is {age} seconds old.")
             sys.exit(0)
         else:
-            logger.error(f"Health Check FAIL: Heartbeat is stale ({age} seconds old). Threshold: {HEALTHCHECK_STALE_THRESHOLD_SECONDS}s.")
+            logger.error(f"Health Check FAIL: Heartbeat is stale ({age} seconds old). Threshold: {healthcheck_threshold}s.")
             sys.exit(1)
     except Exception as e:
         logger.error(f"Health Check FAIL: Could not read or parse heartbeat file. Error: {e}")
@@ -468,29 +478,7 @@ def perform_health_check():
 
 # --- Configuration Loading Functions ---
 
-def _get_config_value(env_var_name: str, json_key_name: str, default_value, type_converter=str):
-    """
-    Loads a configuration value based on a priority order:
-    1. Environment Variable
-    2. JSON file (from pre-loaded settings_config)
-    3. Hardcoded Default
-    """
-    logger = logging.getLogger(__name__)
-    env_val = os.environ.get(env_var_name)
-    if env_val is not None:
-        try:
-            logger.debug(f"Configuration '{env_var_name}' loaded from environment variable.")
-            return type_converter(env_val)
-        except (ValueError, TypeError):
-            logger.warning(f"Invalid type for environment variable {env_var_name}='{env_val}'. Falling back.")
-
-    # This function expects settings_config to be passed or accessible if used outside load_application_config
-    # For now, it's designed to be called within load_application_config where settings_config is available.
-    # We will pass settings_from_json to this function.
-    
-    # We'll adapt this function slightly to take the pre-loaded JSON dict.
-    # This is a helper, not meant to be called directly from outside load_application_config
-    pass
+# Removed _get_config_value as it's refactored into load_application_config more directly
 
 def _load_settings_from_json(file_path: Path) -> dict:
     """Loads settings from a JSON file."""
@@ -526,7 +514,7 @@ def _load_servers_from_json(file_path: Path) -> list[dict]:
 def _load_servers_from_env() -> list[dict]:
     """
     Loads server configurations from indexed environment variables.
-    e.g., NB_1_LISTEN_PORT, NB_2_LISTEN_PORT, etc.
+    e.g., NB_1_LISTEN_PORT, NB_2_LISTEN_LISTEN_PORT, etc.
     """
     logger = logging.getLogger(__name__)
     env_servers = []
@@ -571,12 +559,31 @@ def load_application_config() -> tuple[ProxySettings, list[ServerConfig]]:
     # 2. Apply environment variables on top of JSON settings and defaults for main settings
     final_settings = {}
     for key, default_val in DEFAULT_SETTINGS.items():
-        env_var = key.upper() # Simple conversion, assumes direct mapping for now
-        # Special handling for log_level if it's not a direct env var
+        env_var_name = key.upper() 
+        # Specific environment variable names that differ from direct upper-casing
         if key == "log_level":
-            env_var = "LOG_LEVEL"
-        
-        env_val = os.environ.get(env_var)
+            env_var_name = "LOG_LEVEL"
+        elif key == "idle_timeout_seconds":
+            env_var_name = "NB_IDLE_TIMEOUT"
+        elif key == "player_check_interval_seconds":
+            env_var_name = "NB_PLAYER_CHECK_INTERVAL"
+        elif key == "query_timeout_seconds":
+            env_var_name = "NB_QUERY_TIMEOUT"
+        elif key == "server_ready_max_wait_time_seconds":
+            env_var_name = "NB_SERVER_READY_MAX_WAIT"
+        elif key == "initial_boot_ready_max_wait_time_seconds":
+            env_var_name = "NB_INITIAL_BOOT_READY_MAX_WAIT"
+        elif key == "server_startup_delay_seconds":
+            env_var_name = "NB_SERVER_STARTUP_DELAY"
+        elif key == "initial_server_query_delay_seconds":
+            env_var_name = "NB_INITIAL_SERVER_QUERY_DELAY"
+        elif key == "healthcheck_stale_threshold_seconds":
+            env_var_name = "NB_HEALTHCHECK_STALE_THRESHOLD" # A new ENV var name
+        elif key == "proxy_heartbeat_interval_seconds":
+            env_var_name = "NB_HEARTBEAT_INTERVAL" # A new ENV var name
+
+
+        env_val = os.environ.get(env_var_name)
         if env_val is not None:
             try:
                 if isinstance(default_val, int):
@@ -585,9 +592,9 @@ def load_application_config() -> tuple[ProxySettings, list[ServerConfig]]:
                     final_settings[key] = env_val.lower() == 'true'
                 else: # string
                     final_settings[key] = env_val
-                logger.debug(f"Setting '{key}' loaded from env var '{env_var}'.")
+                logger.debug(f"Setting '{key}' loaded from env var '{env_var_name}'.")
             except ValueError:
-                logger.warning(f"Invalid type for env var '{env_var}' ('{env_val}'). Falling back to JSON/default.")
+                logger.warning(f"Invalid type for env var '{env_var_name}' ('{env_val}'). Falling back to JSON/default.")
                 final_settings[key] = settings_from_json.get(key, default_val)
         else:
             final_settings[key] = settings_from_json.get(key, default_val)
@@ -617,9 +624,11 @@ def load_application_config() -> tuple[ProxySettings, list[ServerConfig]]:
 # --- Main Execution ---
 if __name__ == "__main__":
     # Simplified Logging Setup (before full config load for healthcheck)
-    LOG_LEVEL_DEFAULT = os.environ.get('LOG_LEVEL', 'INFO').upper()
+    # This initial setup uses a default or LOG_LEVEL env var for early logging
+    # before full settings are parsed.
+    LOG_LEVEL_EARLY = os.environ.get('LOG_LEVEL', 'INFO').upper()
     logging.basicConfig(
-        level=getattr(logging, LOG_LEVEL_DEFAULT, logging.INFO),
+        level=getattr(logging, LOG_LEVEL_EARLY, logging.INFO),
         format='%(asctime)s - %(levelname)-8s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
@@ -629,11 +638,11 @@ if __name__ == "__main__":
     if '--healthcheck' in sys.argv:
         perform_health_check()
         sys.exit(0)
-
+    
     # --- Normal Startup Sequence ---
     settings, servers = load_application_config()
 
-    # Re-configure logging with the determined log level
+    # Re-configure logging with the determined log level from settings
     logging.getLogger().setLevel(getattr(logging, settings.log_level, logging.INFO))
     logger.info(f"Log level set to {settings.log_level}.")
 

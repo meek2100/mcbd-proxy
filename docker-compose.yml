@@ -2,24 +2,24 @@ services:
   # The on-demand Minecraft proxy service
   nether-bridge:
     container_name: nether-bridge
-    image: ghcr.io/meek2100/mcbd-proxy:latest # Updated image name
+    image: ghcr.io/meek2100/mcbd-proxy:develop
     restart: unless-stopped
     networks:
       - mc-network
     ports:
-      - "19133:19133/udp" # Port for Bedrock server (NB_1_LISTEN_PORT)
+      - "19133:19133/udp" # Default MCBE port players connect to first
       - "25565:25565/udp" # Port for Java server discovery (NB_2_LISTEN_PORT)
       - "25565:25565/tcp" # Port for Java server gameplay (needs to be exposed by Docker)
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock # Required for Docker management
-      # Optionally mount JSON config files (uncomment to use these instead of environment variables)
-      # - ./data/nether-bridge/settings.json:/app/settings.json
-      # - ./data/nether-bridge/servers.json:/app/servers.json
+      # Mount settings.json and servers.json to ensure they are read
+      - ./settings.json:/app/settings.json
+      - ./servers.json:/app/servers.json
     environment:
-      # General settings
-      - LOG_LEVEL=INFO
-      - NB_IDLE_TIMEOUT=300
-      - NB_PLAYER_CHECK_INTERVAL=60
+      # General settings - these will now override settings.json if set
+      # - LOG_LEVEL=INFO # Commented out to use settings.json's DEBUG
+      # - NB_IDLE_TIMEOUT=300 # Commented out to use settings.json's value (10s)
+      # - NB_PLAYER_CHECK_INTERVAL=60 # Commented out to use settings.json's value (5s)
       - NB_QUERY_TIMEOUT=5
       - NB_SERVER_READY_MAX_WAIT=120
       - NB_INITIAL_BOOT_READY_MAX_WAIT=180
@@ -38,7 +38,7 @@ services:
       - NB_2_NAME=Java Creative
       - NB_2_SERVER_TYPE=java
       - NB_2_LISTEN_PORT=25565
-      - NB_2_CONTAINER_NAME=mc-java # Matches service name below
+      - NB_2_CONTAINER_NAME=mc-java
       - NB_2_INTERNAL_PORT=25565
 
   # A managed Minecraft Bedrock server
@@ -63,6 +63,7 @@ services:
     environment:
       - EULA=TRUE
       - TYPE=PAPER # Example: Using a specific server type
+      - JVM_ARGS=-Xmx1G -Xms1G
     volumes:
       - ./data/mc-java:/data
 
