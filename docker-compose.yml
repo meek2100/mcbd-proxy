@@ -7,9 +7,9 @@ services:
     networks:
       - mc-network
     ports:
-      - "19133:19133/udp" # Default MCBE port players connect to first
-      - "25566:25566/udp" # Port for Java server discovery (NB_2_LISTEN_PORT)
-      - "25566:25566/tcp" # Port for Java server gameplay (needs to be exposed by Docker)
+      - "19132:19132/udp" # Default MCBE port players connect to first
+      - "25565:25565/udp" # Port for Java server discovery (NB_2_LISTEN_PORT)
+      - "25565:25565/tcp" # Port for Java server gameplay (needs to be exposed by Docker)
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock # Required for Docker management
       - /home/meek2100/docker/nether-bridge/settings.json:/app/settings.json
