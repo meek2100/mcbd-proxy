@@ -40,8 +40,6 @@ services:
       - NB_2_LISTEN_PORT=25565
       - NB_2_CONTAINER_NAME=mc-java
       - NB_2_INTERNAL_PORT=25565
-    # TEMPORARY: Install net-tools for debugging
-    #command: /bin/bash -c "apt-get update && apt-get install -y net-tools && python nether_bridge.py" # <--- ADD THIS LINE
     
   # A managed Minecraft Bedrock server (COMMENTED OUT FOR TESTING)
   mc-bedrock:
