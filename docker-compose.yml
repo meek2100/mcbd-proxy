@@ -35,13 +35,13 @@ services:
       - NB_1_INTERNAL_PORT=19132
 
       # Server 2: Java Creative
-      #- NB_2_NAME=Java Creative
-      #- NB_2_SERVER_TYPE=java
-      #- NB_2_LISTEN_PORT=25565
-      #- NB_2_CONTAINER_NAME=mc-java
-      #- NB_2_INTERNAL_PORT=25565
+      - NB_2_NAME=Java Creative
+      - NB_2_SERVER_TYPE=java
+      - NB_2_LISTEN_PORT=25565
+      - NB_2_CONTAINER_NAME=mc-java
+      - NB_2_INTERNAL_PORT=25565
     # TEMPORARY: Install net-tools for debugging
-    command: /bin/bash -c "apt-get update && apt-get install -y net-tools && python nether_bridge.py" # <--- ADD THIS LINE
+    #command: /bin/bash -c "apt-get update && apt-get install -y net-tools && python nether_bridge.py" # <--- ADD THIS LINE
     
   # A managed Minecraft Bedrock server (COMMENTED OUT FOR TESTING)
   mc-bedrock:
@@ -56,18 +56,18 @@ services:
       - /home/meek2100/docker/mc-bedrock:/data
 
   # A managed Minecraft Java server
-  #mc-java:
-  #  container_name: mc-java
-  #  image: itzg/minecraft-server:latest
-  #  restart: "no"
-  #  networks:
-  #    - mc-network
-  #  environment:
-  #    - EULA=TRUE
-  #    - TYPE=PAPER
-  #    - JVM_ARGS=-Xmx1G -Xms1G
-  #  volumes:
-  #    - /home/meek2100/docker/mc-java:/data
+  mc-java:
+    container_name: mc-java
+    image: itzg/minecraft-server:latest
+    restart: "no"
+    networks:
+      - mc-network
+    environment:
+      - EULA=TRUE
+      - TYPE=PAPER
+      - JVM_ARGS=-Xmx1G -Xms1G
+    volumes:
+      - /home/meek2100/docker/mc-java:/data
 
 networks:
   mc-network:
