@@ -25,8 +25,6 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends net-tools &
 COPY nether_bridge.py .
 COPY settings.json .
 COPY servers.json .
-COPY send_test_packets.py .
-COPY get_container_ip.py .
 
 # Create data directory for volumes if they are used
 RUN mkdir -p /app/data/nether-bridge

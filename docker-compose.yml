@@ -13,18 +13,18 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock # Required for Docker management
       - /home/meek2100/docker/nether-bridge/settings.json:/app/settings.json
-      - /home/meek2100/docker/nether-bridge/servers.json:/app/servers.json
+      #- /home/meek2100/docker/nether-bridge/servers.json:/app/servers.json
     #  - .:/app # Local mount for live code changes
     environment:
       # General settings
       # - LOG_LEVEL=INFO
       # - NB_IDLE_TIMEOUT=300
       # - NB_PLAYER_CHECK_INTERVAL=60
-      - NB_QUERY_TIMEOUT=5
-      - NB_SERVER_READY_MAX_WAIT=120
-      - NB_INITIAL_BOOT_READY_MAX_WAIT=180
-      - NB_SERVER_STARTUP_DELAY=5
-      - NB_INITIAL_SERVER_QUERY_DELAY=10
+      #- NB_QUERY_TIMEOUT=5
+      #- NB_SERVER_READY_MAX_WAIT=120
+      #- NB_INITIAL_BOOT_READY_MAX_WAIT=180
+      #- NB_SERVER_STARTUP_DELAY=5
+      #- NB_INITIAL_SERVER_QUERY_DELAY=10
 
       # --- Server Definitions ---
       # Server 1: Bedrock Survival (COMMENTED OUT FOR TESTING)
