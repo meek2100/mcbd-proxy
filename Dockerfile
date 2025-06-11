@@ -16,23 +16,31 @@ ENV APP_IMAGE_METADATA='{"version": "${APP_VERSION}", "build_date": "${BUILD_DAT
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# NEW: Install net-tools (for netstat) for debugging purposes
+# It's important to run apt-get update before installing packages.
+# rm -rf /var/lib/apt/lists/* cleans up apt cache to keep image size small.
+RUN apt-get update && apt-get install -y net-tools && rm -rf /var/lib/apt/lists/*
+
 # Copy the application code into the container
 COPY nether_bridge.py .
 COPY settings.json .
 COPY servers.json .
+COPY send_test_packets.py .
+COPY get_container_ip.py .
 
 # Create data directory for volumes if they are used
 RUN mkdir -p /app/data/nether-bridge
 
 # Expose the default Bedrock/Java ports (these are what the proxy listens on)
-# Make sure these match the ports you expose in docker-compose.yml
 EXPOSE 19132/udp
 EXPOSE 19133/udp
 EXPOSE 25565/udp
 EXPOSE 25565/tcp
+EXPOSE 25566/udp
+EXPOSE 25566/tcp
 
-# Define entrypoint script
+# Define entrypoint script to run your main Python application
 ENTRYPOINT ["python", "nether_bridge.py"]
 
-# Default command for the container
+# Default command for the container (can be overridden by docker-compose)
 CMD []
