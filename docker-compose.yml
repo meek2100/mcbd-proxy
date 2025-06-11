@@ -30,7 +30,7 @@ services:
       # Server 1: Bedrock Survival (COMMENTED OUT FOR TESTING)
       - NB_1_NAME=Bedrock Survival
       - NB_1_SERVER_TYPE=bedrock
-      - NB_1_LISTEN_PORT=19133
+      - NB_1_LISTEN_PORT=19132
       - NB_1_CONTAINER_NAME=mc-bedrock
       - NB_1_INTERNAL_PORT=19132
 
