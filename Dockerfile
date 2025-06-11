@@ -16,10 +16,10 @@ ENV APP_IMAGE_METADATA='{"version": "${APP_VERSION}", "build_date": "${BUILD_DAT
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# NEW: Install net-tools (for netstat) for debugging purposes
-# It's important to run apt-get update before installing packages.
-# rm -rf /var/lib/apt/lists/* cleans up apt cache to keep image size small.
-RUN apt-get update && apt-get install -y net-tools && rm -rf /var/lib/apt/lists/*
+# NEW: Install net-tools (for netstat) for debugging purposes.
+# Ensure apt-get update is fully successful and net-tools is installed.
+# It should put netstat in /usr/bin, which is usually in PATH.
+RUN apt-get update -qq && apt-get install -y --no-install-recommends net-tools && rm -rf /var/lib/apt/lists/*
 
 # Copy the application code into the container
 COPY nether_bridge.py .

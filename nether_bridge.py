@@ -201,7 +201,7 @@ class NetherBridgeProxy:
             return True
         except docker.errors.APIError as e:
             self.logger.error(f"[{container_name}] Docker API error during stop: {e}")
-            # Keep internal state as is if API error occurred, as we don't know true status
+            # Keep internal state as is if API occurred, as we don't know true status
             return False
         except Exception as e:
             self.logger.error(f"[{container_name}] Unexpected error during server stop: {e}")
