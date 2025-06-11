@@ -3,7 +3,7 @@
     {
       "name": "Bedrock Survival",
       "server_type": "bedrock",
-      "listen_port": 19132,
+      "listen_port": 19133,
       "container_name": "mc-bedrock",
       "internal_port": 19132
     },
