@@ -8,19 +8,18 @@ services:
       - mc-network
     ports:
       - "19133:19133/udp" # Default MCBE port players connect to first
-      - "25566:25566/udp" # Port for Java server discovery (NB_2_LISTEN_PORT) - will not be used if mc-java commented out
-      - "25566:25566/tcp" # Port for Java server gameplay - will not be used if mc-java commented out
+      - "25566:25566/udp" # Port for Java server discovery (NB_2_LISTEN_PORT)
+      - "25566:25566/tcp" # Port for Java server gameplay (needs to be exposed by Docker)
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock # Required for Docker management
-      # Mount settings.json and servers.json to ensure they are read
-      - ./settings.json:/app/settings.json
-      - ./servers.json:/app/servers.json
-      - .:/app # Local mount for live code changes
+      - /home/meek2100/docker/nether-bridge/settings.json:/app/settings.json
+      - /home/meek2100/docker/nether-bridge/servers.json:/app/servers.json
+    #  - .:/app # Local mount for live code changes
     environment:
       # General settings
-      # - LOG_LEVEL=INFO # Commented out to use settings.json's DEBUG
-      # - NB_IDLE_TIMEOUT=300 # Commented out to use settings.json's value (10s)
-      # - NB_PLAYER_CHECK_INTERVAL=60 # Commented out to use settings.json's value (5s)
+      # - LOG_LEVEL=INFO
+      # - NB_IDLE_TIMEOUT=300
+      # - NB_PLAYER_CHECK_INTERVAL=60
       - NB_QUERY_TIMEOUT=5
       - NB_SERVER_READY_MAX_WAIT=120
       - NB_INITIAL_BOOT_READY_MAX_WAIT=180
@@ -28,62 +27,48 @@ services:
       - NB_INITIAL_SERVER_QUERY_DELAY=10
 
       # --- Server Definitions ---
-      # Server 1: Bedrock Survival
-      - NB_1_NAME=Bedrock Survival
-      - NB_1_SERVER_TYPE=bedrock
-      - NB_1_LISTEN_PORT=19133
-      - NB_1_CONTAINER_NAME=mc-bedrock
-      - NB_1_INTERNAL_PORT=19132
+      # Server 1: Bedrock Survival (COMMENTED OUT FOR TESTING)
+      # - NB_1_NAME=Bedrock Survival
+      # - NB_1_SERVER_TYPE=bedrock
+      # - NB_1_LISTEN_PORT=19133
+      # - NB_1_CONTAINER_NAME=mc-bedrock
+      # - NB_1_INTERNAL_PORT=19132
 
-      # Server 2: Java Creative (COMMENTED OUT FOR THIS TEST)
-      # - NB_2_NAME=Java Creative
-      # - NB_2_SERVER_TYPE=java
-      # - NB_2_LISTEN_PORT=25566
-      # - NB_2_CONTAINER_NAME=mc-java
-      # - NB_2_INTERNAL_PORT=25565
+      # Server 2: Java Creative
+      - NB_2_NAME=Java Creative
+      - NB_2_SERVER_TYPE=java
+      - NB_2_LISTEN_PORT=25565
+      - NB_2_CONTAINER_NAME=mc-java
+      - NB_2_INTERNAL_PORT=25565
+    # TEMPORARY: Install net-tools for debugging
+    command: /bin/bash -c "apt-get update && apt-get install -y net-tools && python nether_bridge.py" # <--- ADD THIS LINE
     
-  # A managed Minecraft Bedrock server
-  mc-bedrock:
-    container_name: mc-bedrock
-    image: itzg/minecraft-bedrock-server:latest
-    restart: "no" # IMPORTANT: Must be 'no' for proxy management
-    networks:
-      - mc-network
-    environment:
-      - EULA=TRUE
-    volumes:
-      - ./data/mc-bedrock:/data
-
-  # A managed Minecraft Java server (COMMENTED OUT FOR THIS TEST)
-  # mc-java:
-  #   container_name: mc-java
-  #   image: itzg/minecraft-server:latest
+  # A managed Minecraft Bedrock server (COMMENTED OUT FOR TESTING)
+  # mc-bedrock:
+  #   container_name: mc-bedrock
+  #   image: itzg/minecraft-bedrock-server:latest
   #   restart: "no"
   #   networks:
   #     - mc-network
   #   environment:
   #     - EULA=TRUE
-  #     - TYPE=PAPER # Example: Using a specific server type
-  #     - JVM_ARGS=-Xmx1G -Xms1G
   #   volumes:
-  #     - ./data/mc-java:/data
+  #     - /home/meek2100/docker/data/mc-bedrock:/data
+
+  # A managed Minecraft Java server
+  mc-java:
+    container_name: mc-java
+    image: itzg/minecraft-server:latest
+    restart: "no"
+    networks:
+      - mc-network
+    environment:
+      - EULA=TRUE
+      - TYPE=PAPER
+      - JVM_ARGS=-Xmx1G -Xms1G
+    volumes:
+      - /home/meek2100/docker/mc-java:/data
 
 networks:
   mc-network:
     driver: bridge
-
-# --- Optional Services ---
-# If you wish to provide an in-game server list to Minecraft Bedrock players,
-# you can use the bedrock-connect service. This is separate from Nether-bridge's
-# core proxy and orchestration functionality. Uncomment and add to your compose stack
-# if needed.
-#
-# bedrock-connect:
-#   container_name: bedrock-connect
-#   image: pugmatt/bedrockconnect:latest
-#   restart: unless-stopped
-#   ports:
-#     - "19132:19132/udp" # Default MCBE port players connect to first
-#   volumes:
-#     # This file should list the proxy's ports (e.g., 19133)
-#     - ./data/connect/serverlist.json:/config/serverlist.json
