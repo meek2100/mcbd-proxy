@@ -25,17 +25,12 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends net-tools &
 COPY nether_bridge.py .
 COPY settings.json .
 COPY servers.json .
-COPY send_test_packets.py .
-COPY get_container_ip.py .
 
 # Create data directory for volumes if they are used
 RUN mkdir -p /app/data/nether-bridge
 
 # Expose the default Bedrock/Java ports (these are what the proxy listens on)
-EXPOSE 19132/udp
 EXPOSE 19133/udp
-EXPOSE 25565/udp
-EXPOSE 25565/tcp
 EXPOSE 25566/udp
 EXPOSE 25566/tcp
 
