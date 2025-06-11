@@ -28,46 +28,46 @@ services:
 
       # --- Server Definitions ---
       # Server 1: Bedrock Survival (COMMENTED OUT FOR TESTING)
-      # - NB_1_NAME=Bedrock Survival
-      # - NB_1_SERVER_TYPE=bedrock
-      # - NB_1_LISTEN_PORT=19133
-      # - NB_1_CONTAINER_NAME=mc-bedrock
-      # - NB_1_INTERNAL_PORT=19132
+      - NB_1_NAME=Bedrock Survival
+      - NB_1_SERVER_TYPE=bedrock
+      - NB_1_LISTEN_PORT=19133
+      - NB_1_CONTAINER_NAME=mc-bedrock
+      - NB_1_INTERNAL_PORT=19132
 
       # Server 2: Java Creative
-      - NB_2_NAME=Java Creative
-      - NB_2_SERVER_TYPE=java
-      - NB_2_LISTEN_PORT=25565
-      - NB_2_CONTAINER_NAME=mc-java
-      - NB_2_INTERNAL_PORT=25565
+      #- NB_2_NAME=Java Creative
+      #- NB_2_SERVER_TYPE=java
+      #- NB_2_LISTEN_PORT=25565
+      #- NB_2_CONTAINER_NAME=mc-java
+      #- NB_2_INTERNAL_PORT=25565
     # TEMPORARY: Install net-tools for debugging
     command: /bin/bash -c "apt-get update && apt-get install -y net-tools && python nether_bridge.py" # <--- ADD THIS LINE
     
   # A managed Minecraft Bedrock server (COMMENTED OUT FOR TESTING)
-  # mc-bedrock:
-  #   container_name: mc-bedrock
-  #   image: itzg/minecraft-bedrock-server:latest
-  #   restart: "no"
-  #   networks:
-  #     - mc-network
-  #   environment:
-  #     - EULA=TRUE
-  #   volumes:
-  #     - /home/meek2100/docker/data/mc-bedrock:/data
-
-  # A managed Minecraft Java server
-  mc-java:
-    container_name: mc-java
-    image: itzg/minecraft-server:latest
+  mc-bedrock:
+    container_name: mc-bedrock
+    image: itzg/minecraft-bedrock-server:latest
     restart: "no"
     networks:
       - mc-network
     environment:
       - EULA=TRUE
-      - TYPE=PAPER
-      - JVM_ARGS=-Xmx1G -Xms1G
     volumes:
-      - /home/meek2100/docker/mc-java:/data
+      - /home/meek2100/docker/mc-bedrock:/data
+
+  # A managed Minecraft Java server
+  #mc-java:
+  #  container_name: mc-java
+  #  image: itzg/minecraft-server:latest
+  #  restart: "no"
+  #  networks:
+  #    - mc-network
+  #  environment:
+  #    - EULA=TRUE
+  #    - TYPE=PAPER
+  #    - JVM_ARGS=-Xmx1G -Xms1G
+  #  volumes:
+  #    - /home/meek2100/docker/mc-java:/data
 
 networks:
   mc-network:
