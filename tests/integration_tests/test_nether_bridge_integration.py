@@ -227,16 +227,15 @@ def test_server_shuts_down_on_idle(docker_compose_up, docker_client_fixture, doc
     bedrock_proxy_port = 19132
     mc_bedrock_container_name = "mc-bedrock"
     
-    # Using short timeouts for this specific test by passing them as env vars
-    # to the proxy. This overrides the settings.json for this test run.
-    # Note: This requires the docker_compose_up fixture to be function-scoped.
-    # We will adjust conftest.py for this.
+    # Values from settings.json used for testing
+    idle_timeout = 10 
+    check_interval = 5
     
     # 1. Wait for the proxy to be ready
     assert wait_for_proxy_to_be_ready(docker_client_fixture, timeout=300), \
         "Proxy did not become ready within the timeout period."
 
-    # 2. Start the Bedrock server by sending a packet
+    # 2. Trigger the Bedrock server to start by sending a packet
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         print(f"\nTriggering server '{mc_bedrock_container_name}' to start...")
@@ -258,18 +257,18 @@ def test_server_shuts_down_on_idle(docker_compose_up, docker_client_fixture, doc
         print(f"Server '{mc_bedrock_container_name}' confirmed to be running.")
 
         # 4. Wait for a duration longer than the idle_timeout + check_interval
-        # idle_timeout_seconds is 10s and player_check_interval_seconds is 5s in settings.json
-        idle_wait_time = 18 
-        print(f"Server is running. Waiting {idle_wait_time}s for it to be shut down due to inactivity...")
+        # This ensures at least one idle check will have occurred after the timeout period.
+        wait_duration = idle_timeout + check_interval + 3 # Adding a 3-second buffer
+        print(f"Server is running. Waiting {wait_duration}s for it to be shut down due to inactivity...")
         
         # 5. Assert that the server is stopped by the proxy
         assert wait_for_container_status(
             docker_client_fixture,
             mc_bedrock_container_name,
             ["exited"],
-            timeout=idle_wait_time,
+            timeout=wait_duration,
             interval=2
-        ), f"Server was not stopped after {idle_wait_time}s of inactivity."
+        ), f"Server was not stopped after {wait_duration}s of inactivity."
         print("Server successfully shut down due to idle timeout.")
 
     finally:
