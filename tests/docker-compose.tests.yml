@@ -59,7 +59,7 @@ services:
 
   mc-bedrock:
     container_name: mc-bedrock # Docker Compose will now generate unique names
-   # image: itzg/minecraft-bedrock-server:latest
+    image: itzg/minecraft-bedrock-server:latest
     restart: "no"
     networks:
       - mc-network
