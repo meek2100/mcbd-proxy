@@ -21,8 +21,8 @@ def docker_compose_project_name():
 @pytest.fixture(scope='session')
 def docker_services(docker_compose_project_name, pytestconfig):
     """
-    Starts Docker Compose services in stages for a clean test environment,
-    creates a dynamic servers.json, and yields a helper to manage services.
+    Starts Docker Compose services, creates a dynamic servers.json for the test run,
+    and yields a helper object to manage services. This runs only once per session.
     """
     compose_file_name = pytestconfig.getoption("compose_file")
     compose_file_path = str(pytestconfig.rootdir / compose_file_name)
@@ -59,17 +59,11 @@ def docker_services(docker_compose_project_name, pytestconfig):
 
     service_manager = ServiceManager(docker_compose_project_name)
     
-    # Step 2: Dynamically generate the servers.json file with the correct container names.
+    # Step 2: Dynamically generate the servers.json file.
     servers_config = {
         "servers": [
-            {
-                "name": "Bedrock Test", "server_type": "bedrock", "listen_port": 19132,
-                "container_name": service_manager.get_container_name("mc-bedrock"), "internal_port": 19132
-            },
-            {
-                "name": "Java Test", "server_type": "java", "listen_port": 25565,
-                "container_name": service_manager.get_container_name("mc-java"), "internal_port": 25565
-            }
+            { "name": "Bedrock Test", "server_type": "bedrock", "listen_port": 19132, "container_name": service_manager.get_container_name("mc-bedrock"), "internal_port": 19132 },
+            { "name": "Java Test", "server_type": "java", "listen_port": 25565, "container_name": service_manager.get_container_name("mc-java"), "internal_port": 25565 }
         ]
     }
     servers_json_path = Path(pytestconfig.rootdir) / "servers.tests.json"
@@ -77,7 +71,7 @@ def docker_services(docker_compose_project_name, pytestconfig):
         json.dump(servers_config, f, indent=2)
     print(f"Dynamically generated '{servers_json_path.name}' for test run.")
     
-    # Step 3: Now, start the proxy container. It will use the new servers.tests.json
+    # Step 3: Start the proxy container.
     print("Starting 'nether-bridge' service...")
     start_command = ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'up', '-d', '--build', 'nether-bridge']
     try:
@@ -108,3 +102,25 @@ def docker_client_fixture():
     client = docker.from_env()
     yield client
     client.close()
+
+# --- NEW FIXTURE ---
+@pytest.fixture(autouse=True)
+def reset_server_state(docker_services):
+    """
+    Ensures all Minecraft servers are stopped before each test function runs,
+    creating a clean state for every test.
+    """
+    print("\n-- Resetting server state before test --")
+    
+    # Get container objects
+    mc_bedrock_container = docker_services.get_container("mc-bedrock")
+    mc_java_container = docker_services.get_container("mc-java")
+    
+    # Stop them if they are running
+    if mc_bedrock_container.status == 'running':
+        print(f"Stopping {mc_bedrock_container.name}...")
+        mc_bedrock_container.stop()
+
+    if mc_java_container.status == 'running':
+        print(f"Stopping {mc_java_container.name}...")
+        mc_java_container.stop()
