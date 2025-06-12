@@ -59,14 +59,14 @@ services:
 
   mc-bedrock:
     container_name: mc-bedrock # Docker Compose will now generate unique names
-    image: garyplattenburg/minecraft-bedrock-server:latest
    # image: itzg/minecraft-bedrock-server:latest
     restart: "no"
     networks:
       - mc-network
     environment:
       - EULA=TRUE
-    #  - VERSION=1.20.72.01 # Pinning Bedrock server version for stability
+      - VERSION=1.21.84.1 # Pinning Java server version for stability
+      - DOWNLOAD_URL=https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.21.84.1.zip
     healthcheck: # Docker Compose healthcheck for Bedrock server to ensure it's up
       test: ["CMD", "mcstatus", "bedrock", "127.0.0.1:19132", "status"]
       interval: 5s
