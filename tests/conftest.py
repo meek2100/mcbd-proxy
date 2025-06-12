@@ -35,7 +35,12 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
     # Yield control to tests
     yield
 
-    # Teardown: Stop and remove services after tests
+    # Teardown: Pause for inspection, then stop and remove services
+    print("\n---")
+    print("Tests finished. The Docker environment is still running.")
+    print("Open another terminal to inspect logs (e.g., 'docker logs -f nether-bridge').")
+    input("Press Enter to tear down the test environment...")
+    
     print(f"\nStopping Docker Compose project '{docker_compose_project_name}'...")
     try:
         subprocess.run(
