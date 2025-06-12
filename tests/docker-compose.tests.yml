@@ -1,5 +1,5 @@
 # tests/docker-compose.tests.yml
-# This file is used exclusively for running automated integration tests.
+# This file is configured for self-contained integration testing within a CI/CD environment.
 # It sets up a minimal environment with Nether-bridge and two Minecraft servers.
 services:
   nether-bridge:
@@ -48,10 +48,15 @@ services:
     restart: "no"
     networks:
       - mc-network
+    volumes:
+      # Mount a local directory to /data in the container
+      - ./data/mc-bedrock:/data
     environment:
       - EULA=TRUE
-    #  - VERSION=1.21.84.1 # Explicitly set version
-    #  - DIRECT_DOWNLOAD_URL=https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.21.84.1.zip # <--- NEW: Direct download URL for the entrypoint
+      # VERSION and DOWNLOAD_URL can be removed if you always place the .zip manually
+      # or if the entrypoint handles existing files. Keep them if they are needed for healthcheck info.
+      # - VERSION=1.21.84.1 # Keep this if bedrock-entry.sh extracts it from here
+      # - DOWNLOAD_URL=https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.21.84.1.zip # Can comment out as file is pre-placed
     healthcheck:
       test: ["CMD", "mcstatus", "bedrock", "127.0.0.1:19132", "status"]
       interval: 5s
@@ -64,6 +69,9 @@ services:
     restart: "no"
     networks:
       - mc-network
+    volumes:
+      # Mount a local directory to /data in the container
+      - ./data/mc-java:/data
     environment:
       - EULA=TRUE
       - TYPE=PAPER
@@ -80,3 +88,9 @@ services:
 networks:
   mc-network:
     driver: bridge
+
+# Define named volumes if you decide to switch back to them later,
+# but for local manual placement, direct bind mounts are simpler.
+# volumes:
+#   mc-bedrock-data:
+#   mc-java-data:
