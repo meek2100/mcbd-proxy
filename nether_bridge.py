@@ -293,7 +293,15 @@ class NetherBridgeProxy:
 
 
     def _run_proxy_loop(self):
-        """The main packet forwarding loop of the proxy."""
+        """
+        The main packet forwarding loop of the proxy. This loop uses select.select
+        to efficiently monitor multiple sockets for incoming data or new connections.
+        It handles three primary scenarios:
+        1. New TCP connections: Accepts, starts server if needed, creates backend socket, and registers session.
+        2. New UDP packets: Establishes new UDP sessions for unknown clients, starts server if needed,
+           creates a unique backend UDP socket for the session, and forwards the packet.
+        3. Data on existing client/server sockets: Forwards packets between established client-server pairs.
+        """
         self.logger.info("Starting main proxy packet forwarding loop.")
 
         while True:
