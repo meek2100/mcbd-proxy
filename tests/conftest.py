@@ -4,25 +4,39 @@ import subprocess
 import time
 import os
 
+def pytest_addoption(parser):
+    """Add a command line option to specify the docker-compose file."""
+    parser.addoption(
+        "--compose-file", action="store", default="docker-compose.yml",
+        help="Specify the docker-compose file to use for tests."
+    )
+
 @pytest.fixture(scope='session')
 def docker_compose_project_name():
     """Generates a unique project name for docker-compose to isolate test runs."""
-    # Use a unique name to prevent conflicts if tests are run concurrently or repeatedly
     return f"netherbridge_test_{int(time.time())}"
 
 @pytest.fixture(scope='session')
 def docker_compose_up(docker_compose_project_name, pytestconfig):
     """
     Starts Docker Compose services before tests and tears them down afterwards.
-    This fixture relies on the 'docker compose' CLI directly.
     """
-    compose_file_path = str(pytestconfig.rootdir / 'docker-compose.yml')
-    # Use subprocess to call 'docker compose' CLI
+    # Use the compose file specified on the command line, or the default
+    compose_file_name = pytestconfig.getoption("compose_file")
+    compose_file_path = str(pytestconfig.rootdir / compose_file_name)
+    
+    # Add --build flag to ensure the image is built from source in CI
+    command = [
+        'docker', 'compose', 
+        '-p', docker_compose_project_name, 
+        '-f', compose_file_path, 
+        'up', '-d', '--build'
+    ]
+
     print(f"\nStarting Docker Compose project '{docker_compose_project_name}' from {compose_file_path}...")
     try:
-        # Use docker compose up -d to start services in detached mode
         subprocess.run(
-            ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'up', '-d'],
+            command,
             check=True,
             capture_output=True,
             text=True
@@ -32,10 +46,8 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
         print(f"Error starting Docker Compose services: {e.stderr}")
         raise
 
-    # Yield control to tests
     yield
 
-    # Teardown: Stop and remove services automatically after tests complete. 
     print(f"\nTests finished. Tearing down Docker Compose project '{docker_compose_project_name}'...")
     try:
         subprocess.run(
@@ -47,7 +59,6 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
         print(f"Docker Compose project '{docker_compose_project_name}' stopped and removed.")
     except subprocess.CalledProcessError as e:
         print(f"Error stopping Docker Compose services: {e.stderr}")
-        # Don't re-raise, try to clean up as much as possible even if stopping fails
 
 @pytest.fixture(scope='session')
 def docker_client_fixture():
