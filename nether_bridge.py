@@ -162,7 +162,7 @@ class NetherBridgeProxy:
                 self._wait_for_server_query_ready(target_server_config, self.settings.server_ready_max_wait_time_seconds, self.settings.query_timeout_seconds)
 
                 self.server_states[container_name]["running"] = True
-                self.server_states[container_name]["last_activity"] = time.time()
+                self.server_states[container_name]["last_activity"] = time.time() 
                 self.logger.info(f"[{container_name}] Startup process complete. Now handling traffic.")
                 return True
             except docker.errors.NotFound:
