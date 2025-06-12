@@ -7,7 +7,7 @@ import os
 def pytest_addoption(parser):
     """Add a command line option to specify the docker-compose file."""
     parser.addoption(
-        "--compose-file", action="store", default="docker-compose.yml",
+        "--compose-file", action="store", default="tests/docker-compose.tests.yml",
         help="Specify the docker-compose file to use for tests."
     )
 

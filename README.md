@@ -83,7 +83,102 @@ sequenceDiagram
 
 ## Configuration
 
-Nether-bridge can be configured using environment variables or JSON files. Environment variables take precedence over settings found in `settings.json` and `servers.json`.
+Nether-bridge offers two primary methods for configuration:
+
+1. **Environment Variables**: Ideal for most Docker and container-based setups.
+2. **JSON Files**: A convenient alternative for local setups or when you prefer keeping configurations in separate files.
+
+These methods can be mixed, but it's important to understand the order of precedence:
+
+**Environment Variables > Mounted JSON Files > Built-in Defaults**
+
+Any setting defined as an environment variable will override the same setting found in a mounted `settings.json` or `servers.json` file. The application uses built-in defaults for any setting not provided by either method.
+
+### Method 1: Environment Variables (Recommended)
+
+This is the recommended approach for most users. You define all proxy settings and server definitions directly in your `docker-compose.yml` file.
+
+**Example `docker-compose.yml` using only Environment Variables:**
+
+```yaml
+services:
+  nether-bridge:
+    image: ghcr.io/meek2100/nether-bridge:latest
+    container_name: nether-bridge
+    restart: unless-stopped
+    ports:
+      - "19132:19132/udp"
+      - "25565:25565/tcp"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      # --- General Settings ---
+      - LOG_LEVEL=INFO
+      - NB_IDLE_TIMEOUT=600
+
+      # --- Server Definitions ---
+      # Server 1: Bedrock
+      - NB_1_SERVER_TYPE=bedrock
+      - NB_1_LISTEN_PORT=19132
+      - NB_1_CONTAINER_NAME=mc-bedrock
+      - NB_1_INTERNAL_PORT=19132
+      # Server 2: Java
+      - NB_2_SERVER_TYPE=java
+      - NB_2_LISTEN_PORT=25565
+      - NB_2_CONTAINER_NAME=mc-java
+      - NB_2_INTERNAL_PORT=25565
+
+  # ... your mc-bedrock and mc-java services
+```
+
+### Method 2: JSON Files
+
+This method is useful if you prefer to keep your server list and settings in separate files.
+
+**Step 1: Create your JSON files.**
+
+- Create a `settings.json` file for general proxy settings.
+- Create a `servers.json` file to define your Minecraft servers.
+
+**Example `servers.json`:**
+
+```json
+{
+  "servers": [
+    {
+      "name": "Bedrock Survival",
+      "server_type": "bedrock",
+      "listen_port": 19132,
+      "container_name": "mc-bedrock",
+      "internal_port": 19132
+    }
+  ]
+}
+```
+
+**Step 2: Update `docker-compose.yml` to mount the files.**
+Modify your `docker-compose.yml` to mount these files into the container. Note that the `environment` section for server definitions would typically be removed.
+
+```yaml
+services:
+  nether-bridge:
+    image: ghcr.io/meek2100/nether-bridge:latest
+    container_name: nether-bridge
+    restart: unless-stopped
+    ports:
+      - "19132:19132/udp"
+      - "25565:25565/tcp"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Mount your configuration files from a local 'data' directory
+      - ./data/nether-bridge/settings.json:/app/settings.json
+      - ./data/nether-bridge/servers.json:/app/servers.json
+    # Environment variables can still be used to override specific JSON values
+    environment:
+      - LOG_LEVEL=DEBUG # Overrides LOG_LEVEL from settings.json
+
+  # ... your mc-bedrock and mc-java services
+  ```
 
 ### Main Proxy Settings
 
@@ -377,9 +472,39 @@ If using `servers.json` or `settings.json`, you must uncomment and add the volum
 
 ## Usage
 
-1.  Ensure your `docker-compose.yml` is configured and running (`docker compose up -d`).
-2.  **For Bedrock Edition:** Players connect to the IP address of your server (where Nether-bridge is running) on the configured Bedrock listen port (e.g., `19132`). The proxy will automatically start the associated Bedrock server if it's not running.
-3.  **For Java Edition:** Players connect to the IP address of your server on the configured Java listen port (e.g., `25565`). The proxy will start the associated Java server.
+1. Ensure your `docker-compose.yml` is configured and running (`docker compose up -d`).
+2. **For Bedrock Edition (PC/Mobile):** Players connect to the IP address of your server on the configured Bedrock listen port (e.g., `19132`).
+3. **For Java Edition:** Players connect to the IP address of your server on the configured Java listen port (e.g., `25565`).
+
+## Console (Switch, Xbox, PlayStation) Support
+
+To allow Minecraft Bedrock Edition on consoles to connect, you need to use a DNS redirector service like `Pugmatt/BedrockConnect`. The main `docker-compose.yml` file contains a commented-out, optional service for this purpose.
+
+The connection flow for consoles is:
+**Console** → **BedrockConnect** (Port 19132) → **Nether-bridge** (Port 19133) → **Minecraft Server**
+
+### Setup for Console Support
+
+1.  **Enable the Service**: In your `docker-compose.yml` file, uncomment the entire `bedrock-connect` service.
+
+2.  **Update Nether-bridge Config**: Reconfigure the `nether-bridge` service to listen for Bedrock traffic on a new port (e.g., `19133`) since `bedrock-connect` will now be using the default port `19132`. You must update both the `ports` mapping and the `NB_1_LISTEN_PORT` environment variable.
+
+3.  **Configure `BedrockConnect`**: Create a file at `data/bedrock-connect/servers.json` with the following content. This tells `BedrockConnect` to show a server list that points to your Nether-bridge proxy's new port.
+    ```json
+    [
+      {
+        "serverName": "My On-Demand Survival",
+        "serverAddress": "nether-bridge",
+        "serverPort": 19133
+      }
+    ]
+    ```
+
+4.  **Configure Console DNS**: On your gaming console, change your network's primary DNS server to the IP address of the machine running Docker.
+
+5.  **Connect**: Launch Minecraft on your console, navigate to the "Servers" tab, and any of the featured servers should now show your custom server list.
+
+> **Advanced Use**: While primarily for console support, `BedrockConnect` can be configured to list any server, including Java Edition servers. Note that for a Bedrock client to successfully connect to a Java server, an additional protocol-translation proxy (like GeyserMC) would also be required in the connection chain.
 
 ## Health Checks
 
