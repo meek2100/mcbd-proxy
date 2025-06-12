@@ -1,8 +1,6 @@
 # tests/docker-compose.tests.yml
 # This file is used exclusively for running automated integration tests.
-
-version: '3.8'
-
+# It sets up a minimal environment with Nether-bridge and two Minecraft servers.
 services:
   nether-bridge:
     # Builds from the Dockerfile in the parent directory.
