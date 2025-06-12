@@ -217,3 +217,60 @@ def test_java_server_starts_on_connection(docker_compose_up, docker_client_fixtu
 
     finally:
         client_socket.close()
+
+@pytest.mark.integration
+def test_server_shuts_down_on_idle(docker_compose_up, docker_client_fixture, docker_compose_project_name):
+    """
+    Tests that a running server is automatically stopped by the proxy after a
+    period of inactivity.
+    """
+    bedrock_proxy_port = 19132
+    mc_bedrock_container_name = "mc-bedrock"
+    
+    # Using short timeouts for this specific test by passing them as env vars
+    # to the proxy. This overrides the settings.json for this test run.
+    # Note: This requires the docker_compose_up fixture to be function-scoped.
+    # We will adjust conftest.py for this.
+    
+    # 1. Wait for the proxy to be ready
+    assert wait_for_proxy_to_be_ready(docker_client_fixture, timeout=300), \
+        "Proxy did not become ready within the timeout period."
+
+    # 2. Start the Bedrock server by sending a packet
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        print(f"\nTriggering server '{mc_bedrock_container_name}' to start...")
+        unconnected_ping_packet = (
+            b'\x01' + b'\x00\x00\x00\x00\x00\x00\x00\x00' +
+            b'\x00\xff\xff\x00\xfe\xfe\xfe\xfe\xfd\xfd\xfd\xfd\x12\x34\x56\x78' +
+            b'\x00\x00\x00\x00\x00\x00\x00\x00'
+        )
+        client_socket.sendto(unconnected_ping_packet, (VM_HOST_IP, bedrock_proxy_port))
+        
+        # 3. Confirm the server starts and becomes running
+        assert wait_for_container_status(
+            docker_client_fixture,
+            mc_bedrock_container_name,
+            ["running"],
+            timeout=180,
+            interval=2
+        ), "Bedrock server did not start after being triggered."
+        print(f"Server '{mc_bedrock_container_name}' confirmed to be running.")
+
+        # 4. Wait for a duration longer than the idle_timeout + check_interval
+        # idle_timeout_seconds is 10s and player_check_interval_seconds is 5s in settings.json
+        idle_wait_time = 18 
+        print(f"Server is running. Waiting {idle_wait_time}s for it to be shut down due to inactivity...")
+        
+        # 5. Assert that the server is stopped by the proxy
+        assert wait_for_container_status(
+            docker_client_fixture,
+            mc_bedrock_container_name,
+            ["exited"],
+            timeout=idle_wait_time,
+            interval=2
+        ), f"Server was not stopped after {idle_wait_time}s of inactivity."
+        print("Server successfully shut down due to idle timeout.")
+
+    finally:
+        client_socket.close()
