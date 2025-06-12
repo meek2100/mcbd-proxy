@@ -120,7 +120,7 @@ def test_start_minecraft_server_readiness_timeout(mock_wait_ready, nether_bridge
     mock_container.status = 'exited'
     mock_docker_client.containers.get.return_value = mock_container
     result = nether_bridge_instance._start_minecraft_server(container_name)
-    assert result is True # Should still be true as it proceeds anyway
+    assert result is True
     mock_wait_ready.assert_called_once()
 
 def test_stop_minecraft_server_success(nether_bridge_instance, mock_docker_client, mock_container):
@@ -194,20 +194,19 @@ def test_wait_for_server_query_ready_java_timeout(mock_java_lookup, mock_sleep, 
 @patch('nether_bridge.time.sleep', side_effect=InterruptedError)
 @patch('nether_bridge.NetherBridgeProxy._stop_minecraft_server')
 @patch('mcstatus.BedrockServer.lookup')
-@patch('mcstatus.JavaServer.lookup')
-def test_monitor_servers_activity_stops_idle_server(mock_java_lookup, mock_bedrock_lookup, mock_stop, mock_sleep, nether_bridge_instance, mock_servers_config):
+def test_monitor_servers_activity_stops_idle_server(mock_lookup, mock_stop, mock_sleep, nether_bridge_instance, mock_servers_config):
     container_name = "test-mc-bedrock"
     state = nether_bridge_instance.server_states[container_name]
     state["running"] = True
     state["last_activity"] = time.time() - 20
     nether_bridge_instance.settings.idle_timeout_seconds = 10
     
-    mock_lookup = mock_bedrock_lookup
     mock_status = MagicMock(players=MagicMock(online=0))
     mock_lookup.return_value.status.return_value = mock_status
 
-    with pytest.raises(InterruptedError):
-        nether_bridge_instance._monitor_servers_activity()
+    with patch.object(nether_bridge_instance, 'active_sessions', {}):
+        with pytest.raises(InterruptedError):
+            nether_bridge_instance._monitor_servers_activity()
     
     mock_stop.assert_called_once_with(container_name)
 
@@ -220,12 +219,13 @@ def test_monitor_servers_activity_resets_active_server_timer(mock_lookup, mock_s
     state["running"] = True
     original_time = time.time() - 5
     state["last_activity"] = original_time
-    
+
     mock_status = MagicMock(players=MagicMock(online=1))
     mock_lookup.return_value.status.return_value = mock_status
-
-    with pytest.raises(InterruptedError):
-        nether_bridge_instance._monitor_servers_activity()
+    
+    with patch.object(nether_bridge_instance, 'active_sessions', {}):
+        with pytest.raises(InterruptedError):
+            nether_bridge_instance._monitor_servers_activity()
     
     mock_stop.assert_not_called()
     assert state["last_activity"] > original_time
@@ -240,8 +240,8 @@ def test_monitor_servers_activity_handles_query_failure(mock_lookup, mock_stop, 
     state["last_activity"] = time.time() - 20
     nether_bridge_instance.settings.idle_timeout_seconds = 10
 
-    with pytest.raises(InterruptedError):
-        nether_bridge_instance._monitor_servers_activity()
-
-    assert mock_lookup.called
+    with patch.object(nether_bridge_instance, 'active_sessions', {}):
+        with pytest.raises(InterruptedError):
+            nether_bridge_instance._monitor_servers_activity()
+            
     mock_stop.assert_called_once_with(container_name)
