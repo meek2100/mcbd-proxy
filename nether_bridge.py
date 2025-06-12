@@ -221,6 +221,8 @@ class NetherBridgeProxy:
             else:
                 self.logger.info(f"[{container_name}] Is confirmed to be stopped.")
 
+
+
     def _monitor_servers_activity(self):
         """Periodically checks running servers for player count and stops them if idle."""
         while True:
@@ -236,31 +238,33 @@ class NetherBridgeProxy:
 
                 active_players_on_server = 0
                 try:
-                    target_ip = container_name # Docker DNS resolves container name to IP
-                    target_port = server_conf.internal_port
-                    server_type = server_conf.server_type
-
+                    # This section is now restored to correctly query the server
                     status = None
+                    server_type = server_conf.server_type
+                    target_ip = container_name
+                    target_port = server_conf.internal_port
+
                     if server_type == 'bedrock':
                         server = BedrockServer.lookup(f"{target_ip}:{target_port}", timeout=self.settings.query_timeout_seconds)
                         status = server.status()
                     elif server_type == 'java':
                         server = JavaServer.lookup(f"{target_ip}:{target_port}", timeout=self.settings.query_timeout_seconds)
                         status = server.status()
-
-                    if status and hasattr(status, 'players') and hasattr(status.players, 'online'):
+                    
+                    if status and status.players:
                         active_players_on_server = status.players.online
-
                 except Exception as e:
                     self.logger.debug(f"[{container_name}] Failed to query for player count: {e}. Assuming 0 players for now.")
 
+                # This logic is now correct again
                 if active_players_on_server > 0:
                     self.logger.debug(f"[{container_name}] Found {active_players_on_server} active player(s). Resetting idle timer.")
-                    state["last_activity"] = current_time # <--- This line is not reached in the "reset_active_server_timer" test
+                    state["last_activity"] = current_time
                 else:
+                    # No players are online, check if the idle timeout has passed.
                     if (current_time - state.get("last_activity", 0) > self.settings.idle_timeout_seconds):
                         self.logger.info(f"[{container_name}] Idle for over {self.settings.idle_timeout_seconds}s with 0 players. Initiating shutdown.")
-                        self._stop_minecraft_server(container_name) # <--- These lines are not reached in the "stops_idle_server" and "handles_query_failure" tests
+                        self._stop_minecraft_server(container_name)
     
     def _close_session_sockets(self, session_info):
         """Helper to safely close sockets associated with a session and remove from inputs."""
