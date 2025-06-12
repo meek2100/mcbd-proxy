@@ -91,20 +91,24 @@ def get_java_handshake_and_status_request_packets(host, port):
     
     return handshake_packet, status_request_packet
 
-# --- NEW HELPER FUNCTION ---
+# --- Helper Function ---
 def wait_for_proxy_to_be_ready(docker_client_fixture, timeout=60):
-    """Waits for the nether-bridge proxy to be fully initialized by watching its logs."""
+    """
+    Waits for the nether-bridge proxy to be fully initialized by watching its logs.
+    This version is robust and checks the full log history first.
+    """
     print("\nWaiting for nether-bridge proxy to be ready...")
-    start_time = time.time()
     proxy_container = docker_client_fixture.containers.get("nether-bridge")
     
-    # Check logs since the container started to avoid missing the message
-    logs = proxy_container.logs(since=int(start_time - 10)).decode('utf-8')
-    if "Starting main proxy packet forwarding loop" in logs:
-        print("Proxy is ready (found message in recent logs).")
+    # First, check the *entire log history* to see if the proxy is already ready.
+    # This handles subsequent tests in the same session.
+    full_log = proxy_container.logs().decode('utf-8')
+    if "Starting main proxy packet forwarding loop" in full_log:
+        print("Proxy is already ready (found message in existing logs).")
         return True
 
-    # If not found, stream new logs
+    # If not found, stream new logs (for the very first test run)
+    start_time = time.time()
     for line in proxy_container.logs(stream=True, since=int(start_time)):
         decoded_line = line.decode('utf-8').strip()
         print(f"  [proxy log]: {decoded_line}")
@@ -117,7 +121,6 @@ def wait_for_proxy_to_be_ready(docker_client_fixture, timeout=60):
     return False
 
 # --- Integration Test Cases ---
-
 @pytest.mark.integration
 def test_bedrock_server_starts_on_connection(docker_compose_up, docker_client_fixture, docker_compose_project_name):
     """
