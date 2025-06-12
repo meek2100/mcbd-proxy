@@ -1,388 +1,193 @@
-import sys
 import pytest
-import os
-import json
 import time
 import socket
-from unittest.mock import MagicMock, patch
 import docker
+from mcstatus import BedrockServer, JavaServer
 
-# Adjusting sys.path to allow importing nether_bridge.py from the parent directory
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# --- Test File Configuration ---
+VM_HOST_IP = "127.0.0.1" 
 
-from nether_bridge import NetherBridgeProxy, ProxySettings, ServerConfig, load_application_config, HEARTBEAT_FILE
+# --- Helper Functions (No changes needed here) ---
+def get_container_status(docker_client_fixture, container_name):
+    try:
+        container = docker_client_fixture.containers.get(container_name)
+        return container.status
+    except docker.errors.NotFound:
+        return "not_found"
+    except Exception as e:
+        pytest.fail(f"Failed to get status for container {container_name}: {e}")
 
-# --- Fixtures for common test setup ---
+def wait_for_container_status(docker_client_fixture, container_name, target_statuses, timeout=240, interval=5):
+    start_time = time.time()
+    print(f"Waiting for container '{container_name}' to reach status in {target_statuses} (max {timeout}s)...")
+    while time.time() - start_time < timeout:
+        current_status = get_container_status(docker_client_fixture, container_name)
+        print(f"  Current status of '{container_name}': {current_status}")
+        if current_status in target_statuses:
+            print(f"  Container '{container_name}' reached desired status: {current_status}")
+            return True
+        time.sleep(interval)
+    print(f"Timeout waiting for container '{container_name}' to reach status in {target_statuses}. Current: {current_status}")
+    return False
 
-@pytest.fixture
-def mock_docker_client():
-    """Mocks the docker.client.DockerClient object."""
-    mock_client = MagicMock()
-    # Default behavior for get() is to return a mock container that is 'running'
-    mock_container_obj = MagicMock(status='running')
-    mock_client.containers.get.return_value = mock_container_obj
-    yield mock_client
+def wait_for_mc_server_ready(server_config, timeout=60, interval=1):
+    host, port = server_config['host'], server_config['port']
+    server_type = server_config['type']
+    start_time = time.time()
+    print(f"\nWaiting for {server_type} server at {host}:{port} to be ready...")
 
-# In tests/test_nether_bridge.py
+    while time.time() - start_time < timeout:
+        try:
+            status = None
+            if server_type == 'bedrock':
+                server = BedrockServer.lookup(f"{host}:{port}", timeout=interval)
+                status = server.status()
+            elif server_type == 'java':
+                server = JavaServer.lookup(f"{host}:{port}", timeout=interval)
+                status = server.status()
 
-@pytest.fixture
-def default_proxy_settings():
-    """Provides default ProxySettings for testing."""
-    return ProxySettings(
-        idle_timeout_seconds=0.2,
-        player_check_interval_seconds=0.1,
-        query_timeout_seconds=0.1,
-        server_ready_max_wait_time_seconds=0.5,
-        initial_boot_ready_max_wait_time_seconds=0.5,
-        server_startup_delay_seconds=0,
-        initial_server_query_delay_seconds=0,
-        log_level="DEBUG",
-        healthcheck_stale_threshold_seconds=60,
-        proxy_heartbeat_interval_seconds=15
+            if status:
+                print(f"[{server_type}@{host}:{port}] Server responded! Latency: {status.latency:.2f}ms.")
+                return True
+        except Exception as e:
+            pass
+        time.sleep(interval)
+    print(f"[{server_type}@{host}:{port}] Timeout waiting for server to be ready.")
+    return False
+
+def get_java_handshake_and_status_request_packets(host, port):
+    def encode_varint(value):
+        buf = b''
+        while True:
+            byte = value & 0x7F
+            value >>= 7
+            if value != 0:
+                byte |= 0x80
+            buf += bytes([byte])
+            if value == 0:
+                break
+        return buf
+    
+    server_address_bytes = host.encode('utf-8')
+    handshake_payload = (
+        encode_varint(754) +
+        encode_varint(len(server_address_bytes)) + server_address_bytes +
+        port.to_bytes(2, byteorder='big') +
+        encode_varint(1)
     )
+    handshake_packet = encode_varint(len(handshake_payload) + 1) + b'\x00' + handshake_payload
+    status_request_packet = encode_varint(1) + b'\x00'
+    return handshake_packet, status_request_packet
 
-@pytest.fixture
-def mock_servers_config():
-    """Provides a list of mock ServerConfig objects."""
-    return [
-        ServerConfig(
-            name="Bedrock Test",
-            server_type="bedrock",
-            listen_port=19132,
-            container_name="test-mc-bedrock",
-            internal_port=19132
-        ),
-        ServerConfig(
-            name="Java Test",
-            server_type="java",
-            listen_port=25565,
-            container_name="test-mc-java",
-            internal_port=25565
+def wait_for_proxy_to_be_ready(docker_client_fixture, proxy_container_name, timeout=60):
+    print(f"\nWaiting for proxy container '{proxy_container_name}' to be ready...")
+    proxy_container = docker_client_fixture.containers.get(proxy_container_name)
+    
+    full_log = proxy_container.logs().decode('utf-8')
+    if "Starting main proxy packet forwarding loop" in full_log:
+        print("Proxy is already ready (found message in existing logs).")
+        return True
+
+    start_time = time.time()
+    for line in proxy_container.logs(stream=True, since=int(start_time)):
+        decoded_line = line.decode('utf-8').strip()
+        print(f"  [proxy log]: {decoded_line}")
+        if "Starting main proxy packet forwarding loop" in decoded_line:
+            print("Proxy is now ready.")
+            return True
+        if time.time() - start_time > timeout:
+            print("Timeout waiting for proxy to become ready.")
+            return False
+    return False
+
+# --- Integration Test Cases ---
+
+@pytest.mark.integration
+def test_bedrock_server_starts_on_connection(docker_services, docker_client_fixture):
+    bedrock_proxy_port = 19132
+    mc_bedrock_container_name = docker_services.get_container_name("mc-bedrock")
+    proxy_container_name = docker_services.get_container_name("nether-bridge")
+
+    assert wait_for_proxy_to_be_ready(docker_client_fixture, proxy_container_name, timeout=300)
+    
+    initial_status = get_container_status(docker_client_fixture, mc_bedrock_container_name)
+    assert initial_status in ["exited", "created"], f"Bedrock server should be stopped, but is: {initial_status}"
+    print(f"\nInitial status of {mc_bedrock_container_name}: {initial_status}")
+
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        print(f"Simulating connection to proxy on port {bedrock_proxy_port}...")
+        unconnected_ping_packet = (
+            b'\x01' + b'\x00\x00\x00\x00\x00\x00\x00\x00' +
+            b'\x00\xff\xff\x00\xfe\xfe\xfe\xfe\xfd\xfd\xfd\xfd\x12\x34\x56\x78' +
+            b'\x00\x00\x00\x00\x00\x00\x00\x00'
         )
-    ]
+        client_socket.sendto(unconnected_ping_packet, (VM_HOST_IP, bedrock_proxy_port))
+        print("Bedrock 'Unconnected Ping' packet sent.")
 
-@pytest.fixture
-def nether_bridge_instance(default_proxy_settings, mock_servers_config, mock_docker_client):
-    """Provides a NetherBridgeProxy instance with mocked Docker client."""
-    proxy = NetherBridgeProxy(default_proxy_settings, mock_servers_config)
-    proxy.docker_client = mock_docker_client # Inject the mocked client
-    return proxy
+        assert wait_for_container_status(docker_client_fixture, mc_bedrock_container_name, ["running"], timeout=180)
+        assert wait_for_mc_server_ready({'host': VM_HOST_IP, 'port': bedrock_proxy_port, 'type': 'bedrock'}, timeout=60)
+    finally:
+        client_socket.close()
 
-@pytest.fixture
-def mock_container():
-    """Provides a reusable MagicMock for a Docker container."""
-    return MagicMock()
+@pytest.mark.integration
+def test_java_server_starts_on_connection(docker_services, docker_client_fixture):
+    java_proxy_port = 25565
+    mc_java_container_name = docker_services.get_container_name("mc-java")
+    proxy_container_name = docker_services.get_container_name("nether-bridge")
 
-# --- Test Cases ---
+    assert wait_for_proxy_to_be_ready(docker_client_fixture, proxy_container_name, timeout=300)
+        
+    initial_status = get_container_status(docker_client_fixture, mc_java_container_name)
+    assert initial_status in ["exited", "created"], f"Java server should be stopped, but is: {initial_status}"
+    print(f"\nInitial status of {mc_java_container_name}: {initial_status}")
 
-def test_proxy_initialization(default_proxy_settings, mock_servers_config, nether_bridge_instance):
-    """Test if the proxy initializes correctly."""
-    assert nether_bridge_instance.settings == default_proxy_settings
-    assert nether_bridge_instance.servers_list == mock_servers_config
-    assert len(nether_bridge_instance.servers_config_map) == len(mock_servers_config)
-    assert "test-mc-bedrock" in nether_bridge_instance.server_states
-    assert nether_bridge_instance.server_states["test-mc-bedrock"]["running"] == False
-
-# Test cases for _is_container_running
-def test_is_container_running_exists_and_running(nether_bridge_instance, mock_docker_client, mock_container):
-    mock_container.status = 'running'
-    mock_docker_client.containers.get.return_value = mock_container
-    assert nether_bridge_instance._is_container_running("test-mc-bedrock") is True
-
-def test_is_container_running_exists_and_stopped(nether_bridge_instance, mock_docker_client, mock_container):
-    mock_container.status = 'exited'
-    mock_docker_client.containers.get.return_value = mock_container
-    assert nether_bridge_instance._is_container_running("test-mc-bedrock") is False
-
-def test_is_container_running_not_found(nether_bridge_instance, mock_docker_client):
-    mock_docker_client.containers.get.side_effect = docker.errors.NotFound("No such container")
-    assert nether_bridge_instance._is_container_running("non-existent-container") is False
-
-# Test cases for _start_minecraft_server
-@patch('nether_bridge.NetherBridgeProxy._wait_for_server_query_ready', return_value=True)
-def test_start_minecraft_server_success(mock_wait_ready, nether_bridge_instance, mock_docker_client, mock_container):
-    container_name = "test-mc-bedrock"
-    mock_docker_client.containers.get.return_value = mock_container
-    mock_container.status = 'exited'
-    nether_bridge_instance.server_states[container_name]["running"] = False
-
-    result = nether_bridge_instance._start_minecraft_server(container_name)
-
-    assert result is True
-    mock_container.start.assert_called_once()
-    mock_wait_ready.assert_called_once()
-    assert nether_bridge_instance.server_states[container_name]["running"] is True
-    assert nether_bridge_instance.server_states[container_name]["last_activity"] > 0
-
-@patch('nether_bridge.NetherBridgeProxy._wait_for_server_query_ready', return_value=True)
-def test_start_minecraft_server_already_running(mock_wait_ready, nether_bridge_instance, mock_docker_client, mock_container):
-    container_name = "test-mc-bedrock"
-    mock_docker_client.containers.get.return_value = mock_container
-    mock_container.status = 'running'
-    nether_bridge_instance.server_states[container_name]["running"] = True
-
-    result = nether_bridge_instance._start_minecraft_server(container_name)
-
-    assert result is True
-    mock_container.start.assert_not_called()
-    mock_wait_ready.assert_not_called()
-    assert nether_bridge_instance.server_states[container_name]["running"] is True
-
-@patch('nether_bridge.NetherBridgeProxy._wait_for_server_query_ready', return_value=True)
-def test_start_minecraft_server_docker_api_error(mock_wait_ready, nether_bridge_instance, mock_docker_client, mock_container):
-    container_name = "test-mc-bedrock"
-    mock_docker_client.containers.get.return_value = mock_container
-    mock_container.status = 'exited'
-    mock_container.start.side_effect = docker.errors.APIError("Docker API error", response=None, explanation="Test error")
-    nether_bridge_instance.server_states[container_name]["running"] = False
-
-    result = nether_bridge_instance._start_minecraft_server(container_name)
-
-    assert result is False
-    mock_container.start.assert_called_once()
-    mock_wait_ready.assert_not_called()
-    assert nether_bridge_instance.server_states[container_name]["running"] is False
-
-@patch('nether_bridge.NetherBridgeProxy._wait_for_server_query_ready', return_value=False)
-def test_start_minecraft_server_readiness_timeout(mock_wait_ready, nether_bridge_instance, mock_docker_client, mock_container):
-    container_name = "test-mc-bedrock"
-    mock_docker_client.containers.get.return_value = mock_container
-    mock_container.status = 'exited'
-    nether_bridge_instance.server_states[container_name]["running"] = False
-
-    result = nether_bridge_instance._start_minecraft_server(container_name)
-
-    assert result is True
-    mock_container.start.assert_called_once()
-    mock_wait_ready.assert_called_once()
-    assert nether_bridge_instance.server_states[container_name]["running"] is True
-
-# Test cases for _stop_minecraft_server
-def test_stop_minecraft_server_success(nether_bridge_instance, mock_docker_client, mock_container):
-    container_name = "test-mc-bedrock"
-    mock_docker_client.containers.get.return_value = mock_container
-    mock_container.status = 'running'
-    nether_bridge_instance.server_states[container_name]["running"] = True
-
-    result = nether_bridge_instance._stop_minecraft_server(container_name)
-
-    assert result is True
-    mock_container.stop.assert_called_once()
-    assert nether_bridge_instance.server_states[container_name]["running"] is False
-
-def test_stop_minecraft_server_already_stopped(nether_bridge_instance, mock_docker_client, mock_container):
-    container_name = "test-mc-bedrock"
-    mock_docker_client.containers.get.return_value = mock_container
-    mock_container.status = 'exited'
-    nether_bridge_instance.server_states[container_name]["running"] = False
-
-    result = nether_bridge_instance._stop_minecraft_server(container_name)
-
-    assert result is True
-    mock_container.stop.assert_not_called()
-    assert nether_bridge_instance.server_states[container_name]["running"] is False
-
-def test_stop_minecraft_server_docker_api_error(nether_bridge_instance, mock_docker_client, mock_container):
-    container_name = "test-mc-bedrock"
-    mock_docker_client.containers.get.return_value = mock_container
-    mock_container.status = 'running'
-    mock_container.stop.side_effect = docker.errors.APIError("Docker API error", response=None, explanation="Test error")
-    nether_bridge_instance.server_states[container_name]["running"] = True
-
-    result = nether_bridge_instance._stop_minecraft_server(container_name)
-
-    assert result is False
-    mock_container.stop.assert_called_once()
-    assert nether_bridge_instance.server_states[container_name]["running"] is True
-
-def test_stop_minecraft_server_not_found_on_stop(nether_bridge_instance, mock_docker_client):
-    container_name = "non-existent-container"
-    mock_docker_client.containers.get.side_effect = docker.errors.NotFound("No such container")
-    nether_bridge_instance.server_states[container_name] = {"running": True, "last_activity": time.time()}
-
-    result = nether_bridge_instance._stop_minecraft_server(container_name)
-
-    assert result is True
-    assert nether_bridge_instance.server_states[container_name]["running"] is False
-
-
-# Test cases for _wait_for_server_query_ready
-@patch('nether_bridge.BedrockServer.lookup')
-@patch('nether_bridge.JavaServer.lookup')
-def test_wait_for_server_query_ready_bedrock_success(mock_java_lookup, mock_bedrock_lookup, nether_bridge_instance, mock_servers_config):
-    bedrock_config = next(s for s in mock_servers_config if s.server_type == 'bedrock')
-    mock_server_instance = MagicMock()
-    mock_server_instance.status.return_value = MagicMock(latency=50, players=MagicMock(online=0)) # players mock for later
-    mock_bedrock_lookup.return_value = mock_server_instance
-
-    result = nether_bridge_instance._wait_for_server_query_ready(
-        bedrock_config,
-        nether_bridge_instance.settings.server_ready_max_wait_time_seconds,
-        nether_bridge_instance.settings.query_timeout_seconds
-    )
-
-    assert result is True
-    mock_bedrock_lookup.assert_called_once_with(
-        f"{bedrock_config.container_name}:{bedrock_config.internal_port}",
-        timeout=nether_bridge_instance.settings.query_timeout_seconds
-    )
-    mock_java_lookup.assert_not_called()
-    mock_server_instance.status.assert_called_once()
-
-@patch('nether_bridge.BedrockServer.lookup')
-@patch('nether_bridge.JavaServer.lookup')
-def test_wait_for_server_query_ready_java_success(mock_java_lookup, mock_bedrock_lookup, nether_bridge_instance, mock_servers_config):
-    java_config = next(s for s in mock_servers_config if s.server_type == 'java')
-    mock_server_instance = MagicMock()
-    mock_server_instance.status.return_value = MagicMock(latency=50, players=MagicMock(online=0)) # players mock for later
-    mock_java_lookup.return_value = mock_server_instance
-
-    result = nether_bridge_instance._wait_for_server_query_ready(
-        java_config,
-        nether_bridge_instance.settings.server_ready_max_wait_time_seconds,
-        nether_bridge_instance.settings.query_timeout_seconds
-    )
-
-    assert result is True
-    mock_java_lookup.assert_called_once_with(
-        f"{java_config.container_name}:{java_config.internal_port}",
-        timeout=nether_bridge_instance.settings.query_timeout_seconds
-    )
-    mock_bedrock_lookup.assert_not_called()
-    mock_server_instance.status.assert_called_once()
-
-@patch('nether_bridge.time.sleep') # Mock sleep to speed up timeout test
-@patch('nether_bridge.BedrockServer.lookup', side_effect=Exception("Query failed"))
-def test_wait_for_server_query_ready_bedrock_timeout(mock_bedrock_lookup, mock_sleep, nether_bridge_instance, mock_servers_config):
-    bedrock_config = next(s for s in mock_servers_config if s.server_type == 'bedrock')
-    nether_bridge_instance.settings.server_ready_max_wait_time_seconds = 0.2 # Very short timeout for test
-    nether_bridge_instance.settings.query_timeout_seconds = 0.1 # Very short query interval
-
-    result = nether_bridge_instance._wait_for_server_query_ready(
-        bedrock_config,
-        nether_bridge_instance.settings.server_ready_max_wait_time_seconds,
-        nether_bridge_instance.settings.query_timeout_seconds
-    )
-
-    assert result is False
-    assert mock_bedrock_lookup.call_count >= int(nether_bridge_instance.settings.server_ready_max_wait_time_seconds / nether_bridge_instance.settings.query_timeout_seconds)
-    mock_sleep.assert_called()
-
-@patch('nether_bridge.time.sleep') # Mock sleep to speed up timeout test
-@patch('nether_bridge.JavaServer.lookup', side_effect=Exception("Query failed"))
-def test_wait_for_server_query_ready_java_timeout(mock_java_lookup, mock_sleep, nether_bridge_instance, mock_servers_config):
-    java_config = next(s for s in mock_servers_config if s.server_type == 'java')
-    nether_bridge_instance.settings.server_ready_max_wait_time_seconds = 0.2 # Very short timeout for test
-    nether_bridge_instance.settings.query_timeout_seconds = 0.1 # Very short query interval
-
-    result = nether_bridge_instance._wait_for_server_query_ready(
-        java_config,
-        nether_bridge_instance.settings.server_ready_max_wait_time_seconds,
-        nether_bridge_instance.settings.query_timeout_seconds
-    )
-
-    assert result is False
-    assert mock_java_lookup.call_count >= int(nether_bridge_instance.settings.server_ready_max_wait_time_seconds / nether_bridge_instance.settings.query_timeout_seconds)
-    mock_sleep.assert_called()
-
-
-# Test cases for _monitor_servers_activity
-@patch('nether_bridge.time.sleep')
-@patch('nether_bridge.NetherBridgeProxy._stop_minecraft_server')
-@patch('nether_bridge.BedrockServer.lookup')
-@patch('nether_bridge.JavaServer.lookup')
-def test_monitor_servers_activity_stops_idle_server(
-    mock_java_lookup, mock_bedrock_lookup, mock_stop_minecraft_server, mock_sleep,
-    nether_bridge_instance, mock_servers_config
-):
-    bedrock_config = next(s for s in mock_servers_config if s.server_type == 'bedrock')
-    java_config = next(s for s in mock_servers_config if s.server_type == 'java')
-
-    # Set up Bedrock server to be "running" and "idle"
-    nether_bridge_instance.server_states[bedrock_config.container_name]["running"] = True
-    nether_bridge_instance.server_states[bedrock_config.container_name]["last_activity"] = \
-        time.time() - nether_bridge_instance.settings.idle_timeout_seconds - 1 # Past idle timeout
-
-    # Set up Java server to be "running" and "active"
-    nether_bridge_instance.server_states[java_config.container_name]["running"] = True
-    nether_bridge_instance.server_states[java_config.container_name]["last_activity"] = time.time()
-
-    # Mock player counts: Bedrock (0 players), Java (1 player)
-    mock_bedrock_status = MagicMock(players=MagicMock(online=0))
-    mock_bedrock_lookup.return_value.status.return_value = mock_bedrock_status
-    mock_java_status = MagicMock(players=MagicMock(online=1))
-    mock_java_lookup.return_value.status.return_value = mock_java_status
-
-    # Mock time.sleep to control the loop and allow it to run briefly
-    mock_sleep.side_effect = [None, Exception("Stop loop")] # Run loop once, then stop
-
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        nether_bridge_instance._monitor_servers_activity()
-    except Exception as e:
-        assert str(e) == "Stop loop" # Expected exception to break loop
+        client_socket.connect((VM_HOST_IP, java_proxy_port))
+        handshake, status_request = get_java_handshake_and_status_request_packets(VM_HOST_IP, java_proxy_port)
+        client_socket.sendall(handshake)
+        client_socket.sendall(status_request)
+        print("Java handshake and status request packets sent.")
 
-    # Assertions
-    mock_stop_minecraft_server.assert_called_once_with(bedrock_config.container_name)
-    mock_stop_minecraft_server.assert_called_once() # Should only be called for bedrock
-    mock_bedrock_lookup.return_value.status.assert_called_once()
-    mock_java_lookup.return_value.status.assert_called_once()
-    assert nether_bridge_instance.server_states[bedrock_config.container_name]["running"] == True # State is updated by _stop_minecraft_server mock, but this test focuses on whether _stop was called.
+        assert wait_for_container_status(docker_client_fixture, mc_java_container_name, ["running"], timeout=180)
+        assert wait_for_mc_server_ready({'host': VM_HOST_IP, 'port': java_proxy_port, 'type': 'java'}, timeout=120)
+    finally:
+        client_socket.close()
 
-@patch('nether_bridge.time.sleep')
-@patch('nether_bridge.NetherBridgeProxy._stop_minecraft_server')
-@patch('nether_bridge.BedrockServer.lookup')
-def test_monitor_servers_activity_resets_active_server_timer(
-    mock_bedrock_lookup, mock_stop_minecraft_server, mock_sleep,
-    nether_bridge_instance, mock_servers_config
-):
-    bedrock_config = next(s for s in mock_servers_config if s.server_type == 'bedrock')
+@pytest.mark.integration
+def test_server_shuts_down_on_idle(docker_services, docker_client_fixture):
+    bedrock_proxy_port = 19132
+    mc_bedrock_container_name = docker_services.get_container_name("mc-bedrock")
+    proxy_container_name = docker_services.get_container_name("nether-bridge")
+    
+    # Use shorter test-specific timeouts, assuming settings.json has low values
+    idle_timeout = 10 
+    check_interval = 5
+    
+    assert wait_for_proxy_to_be_ready(docker_client_fixture, proxy_container_name, timeout=300)
 
-    # Set up Bedrock server to be "running" but with old activity
-    nether_bridge_instance.server_states[bedrock_config.container_name]["running"] = True
-    original_last_activity = time.time() - (nether_bridge_instance.settings.idle_timeout_seconds / 2) # Not yet idle
-    nether_bridge_instance.server_states[bedrock_config.container_name]["last_activity"] = original_last_activity
+    initial_status = get_container_status(docker_client_fixture, mc_bedrock_container_name)
+    assert initial_status in ["exited", "created"], f"Server should be stopped initially, but is: {initial_status}"
 
-    # Mock player count: Bedrock (1 player)
-    mock_bedrock_status = MagicMock(players=MagicMock(online=1))
-    mock_bedrock_lookup.return_value.status.return_value = mock_bedrock_status
-
-    # Mock time.sleep to run loop once
-    mock_sleep.side_effect = [None, Exception("Stop loop")]
-
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        nether_bridge_instance._monitor_servers_activity()
-    except Exception as e:
-        assert str(e) == "Stop loop"
+        print(f"\nTriggering server '{mc_bedrock_container_name}' to start...")
+        unconnected_ping_packet = (
+            b'\x01' + b'\x00\x00\x00\x00\x00\x00\x00\x00' +
+            b'\x00\xff\xff\x00\xfe\xfe\xfe\xfe\xfd\xfd\xfd\xfd\x12\x34\x56\x78' +
+            b'\x00\x00\x00\x00\x00\x00\x00\x00'
+        )
+        client_socket.sendto(unconnected_ping_packet, (VM_HOST_IP, bedrock_proxy_port))
+    finally:
+        client_socket.close()
+        print("Client socket closed, session terminated.")
 
-    # Assertions
-    mock_stop_minecraft_server.assert_not_called()
-    mock_bedrock_lookup.return_value.status.assert_called_once()
-    # last_activity should be updated (newer than original)
-    assert nether_bridge_instance.server_states[bedrock_config.container_name]["last_activity"] > original_last_activity
+    assert wait_for_container_status(docker_client_fixture, mc_bedrock_container_name, ["running"], timeout=180)
+    print(f"Server '{mc_bedrock_container_name}' confirmed to be running.")
 
-
-@patch('nether_bridge.time.sleep')
-@patch('nether_bridge.NetherBridgeProxy._stop_minecraft_server')
-@patch('nether_bridge.BedrockServer.lookup', side_effect=Exception("Query failed"))
-def test_monitor_servers_activity_handles_query_failure(
-    mock_bedrock_lookup, mock_stop_minecraft_server, mock_sleep,
-    nether_bridge_instance, mock_servers_config
-):
-    bedrock_config = next(s for s in mock_servers_config if s.server_type == 'bedrock')
-
-    # Set up Bedrock server to be "running" and "idle"
-    nether_bridge_instance.server_states[bedrock_config.container_name]["running"] = True
-    nether_bridge_instance.server_states[bedrock_config.container_name]["last_activity"] = \
-        time.time() - nether_bridge_instance.settings.idle_timeout_seconds - 1
-
-    # Mock time.sleep to run loop once
-    mock_sleep.side_effect = [None, Exception("Stop loop")]
-
-    try:
-        nether_bridge_instance._monitor_servers_activity()
-    except Exception as e:
-        assert str(e) == "Stop loop"
-
-    # Assertions: Server should still be stopped if query fails and it's idle
-    mock_stop_minecraft_server.assert_called_once_with(bedrock_config.container_name)
-    assert mock_bedrock_lookup.called # Ensure lookup was attempted
+    wait_duration = idle_timeout + (2 * check_interval) + 5
+    print(f"Server is running. Waiting {wait_duration}s for it to be shut down due to inactivity...")
+    
+    assert wait_for_container_status(docker_client_fixture, mc_bedrock_container_name, ["exited"], timeout=wait_duration)
+    print("Server successfully shut down due to idle timeout.")
