@@ -25,7 +25,7 @@ def docker_services(docker_compose_project_name, pytestconfig):
     """
     compose_file_name = pytestconfig.getoption("compose_file")
     compose_file_path = str(pytestconfig.rootdir / compose_file_name)
-
+    
     # A class to manage getting container info
     class ServiceManager:
         def __init__(self, project_name):
@@ -49,7 +49,6 @@ def docker_services(docker_compose_project_name, pytestconfig):
             return self.get_container(service_name).name
 
     # Step 1: Create all containers but do not start them.
-    # This allows us to get their dynamically assigned names.
     print("\nCreating Docker containers for test session...")
     create_command = ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'create']
     try:
@@ -73,7 +72,6 @@ def docker_services(docker_compose_project_name, pytestconfig):
             }
         ]
     }
-    # Place the temporary config file in the root of the project
     servers_json_path = pytestconfig.rootdir / "servers.tests.json"
     with open(servers_json_path, "w") as f:
         json.dump(servers_config, f, indent=2)
@@ -99,7 +97,7 @@ def docker_services(docker_compose_project_name, pytestconfig):
             check=True, capture_output=True, text=True
         )
         print(f"Docker Compose project '{docker_compose_project_name}' stopped and removed.")
-        os.remove(servers_json_path) # Clean up the temporary json file
+        os.remove(servers_json_path)
         print(f"Removed temporary config file '{servers_json_path.name}'.")
     except Exception as e:
         print(f"Error during teardown: {e}")

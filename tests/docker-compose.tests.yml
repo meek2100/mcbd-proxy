@@ -18,11 +18,11 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       # Mounts the configuration files from the project root.
       - ../settings.json:/app/settings.json
-      - ../servers.tests.json:/app/servers.json # Uses the temp file
+      - ../servers.tests.json:/app/servers.json
 
   mc-bedrock:
     image: itzg/minecraft-bedrock-server:latest
-    restart: "no" # Ensures the container does not restart automatically.
+    restart: "no"
     networks:
       - mc-network
     environment:
@@ -30,7 +30,7 @@ services:
 
   mc-java:
     image: itzg/minecraft-server:latest
-    restart: "no" # Ensures the container does not restart automatically.
+    restart: "no"
     networks:
       - mc-network
     environment:
