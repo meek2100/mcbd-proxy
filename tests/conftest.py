@@ -25,7 +25,6 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
     compose_file_name = pytestconfig.getoption("compose_file")
     compose_file_path = str(pytestconfig.rootdir / compose_file_name)
     
-    # Add --build flag to ensure the image is built from source in CI
     command = [
         'docker', 'compose', 
         '-p', docker_compose_project_name, 
@@ -35,21 +34,19 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
 
     print(f"\nStarting Docker Compose project '{docker_compose_project_name}' from {compose_file_path}...")
     try:
-        subprocess.run(
-            command,
-            check=True,
-            capture_output=True,
-            text=True
-        )
+        # We remove 'capture_output=True' to allow logs to stream in real-time.
+        subprocess.run(command, check=True)
         print(f"Docker Compose project '{docker_compose_project_name}' started.")
     except subprocess.CalledProcessError as e:
-        print(f"Error starting Docker Compose services: {e.stderr}")
+        # Error information will be visible directly in the log now.
+        print(f"Error starting Docker Compose services.")
         raise
 
     yield
 
     print(f"\nTests finished. Tearing down Docker Compose project '{docker_compose_project_name}'...")
     try:
+        # We can keep capture_output here as 'down' is usually fast.
         subprocess.run(
             ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'down', '--volumes', '--remove-orphans'],
             check=True,
