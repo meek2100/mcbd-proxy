@@ -456,8 +456,12 @@ class NetherBridgeProxy:
             for session_key in sessions_to_remove:
                 session_info = self.active_sessions.pop(session_key, None)
                 if session_info:
-                    self.logger.info(f"[{session_info['target_container']}] Client session for {session_key[0]} ({session_info['protocol']}) idle for >{self.settings.idle_timeout_seconds}s. Disconnecting.")
+                    container_name = session_info['target_container']
+                    self.logger.info(f"[{container_name}] Client session for {session_key[0]} ({session_info['protocol']}) idle for >{self.settings.idle_timeout_seconds}s. Disconnecting.")
                     self._close_session_sockets(session_info)
+                    
+                    self.server_states[container_name]["last_activity"] = time.time()
+                    
                     self.socket_to_session_map.pop(session_info.get("client_socket"), None)
                     self.socket_to_session_map.pop(session_info.get("server_socket"), None)
 
