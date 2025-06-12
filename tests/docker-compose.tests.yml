@@ -9,7 +9,7 @@ services:
     build:
       context: ../
       dockerfile: Dockerfile # Ensure this points to the correct Dockerfile
-    # container_name: nether-bridge # REMOVED: Docker Compose will now generate unique names
+    # container_name: nether-bridge # Docker Compose will now generate unique names
     restart: "no"
     networks:
       - mc-network
@@ -60,13 +60,14 @@ services:
       start_period: 20s # Give it some time to start up before first check
 
   mc-bedrock:
-    # container_name: mc-bedrock # REMOVED: Docker Compose will now generate unique names
+    # container_name: mc-bedrock # Docker Compose will now generate unique names
     image: itzg/minecraft-bedrock-server:latest
     restart: "no"
     networks:
       - mc-network
     environment:
       - EULA=TRUE
+      - VERSION=1.20.72.01 # <--- ADDED: Pinning Bedrock server version for stability
     healthcheck: # Docker Compose healthcheck for Bedrock server to ensure it's up
       test: ["CMD", "mcstatus", "bedrock", "127.0.0.1:19132", "status"]
       interval: 5s
@@ -75,7 +76,7 @@ services:
       start_period: 10s
 
   mc-java:
-    # container_name: mc-java # REMOVED: Docker Compose will now generate unique names
+    # container_name: mc-java # Docker Compose will now generate unique names
     image: itzg/minecraft-server:latest
     restart: "no"
     networks:
