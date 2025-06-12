@@ -1,23 +1,19 @@
 services:
   nether-bridge:
     container_name: nether-bridge
-    build: . # Build the image from the Dockerfile in the current directory
+    build: . # Build the image from the Dockerfile
     restart: unless-stopped
     networks:
       - mc-network
     ports:
       - "19132:19132/udp"
-      - "25565:25565/udp"
       - "25565:25565/tcp"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      # Use relative paths for the CI environment
+      # Mount the configuration files for the test environment
       - ./settings.json:/app/settings.json
       - ./servers.json:/app/servers.json
-    environment:
-      # Environment variables are still used for config precedence
-      - NB_1_LISTEN_PORT=19132
-      # Add any other necessary env vars for testing here
+    # REMOVED all environment variables to rely solely on the JSON files
 
   mc-bedrock:
     container_name: mc-bedrock
@@ -27,7 +23,6 @@ services:
       - mc-network
     environment:
       - EULA=TRUE
-    # No volume mount needed for ephemeral test data
 
   mc-java:
     container_name: mc-java
@@ -38,7 +33,6 @@ services:
     environment:
       - EULA=TRUE
       - TYPE=PAPER
-    # No volume mount needed for ephemeral test data
 
 networks:
   mc-network:
