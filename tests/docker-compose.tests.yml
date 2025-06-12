@@ -21,7 +21,7 @@ services:
       # Remove explicit JSON config mounts and use environment variables instead
       # - ../settings.json:/app/settings.json
       # - ../servers.tests.json:/app/servers.json
-      - [cite_start]../:/app # Mount the entire app directory for code access, as in original. [cite: 4]
+      - ../:/app # Mount the entire app directory for code access, as in original. [cite: 4]
 
     environment:
       # General settings adjusted for faster testing
