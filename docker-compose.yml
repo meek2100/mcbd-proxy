@@ -2,33 +2,32 @@ services:
   # The on-demand Minecraft proxy service
   nether-bridge:
     container_name: nether-bridge
-    #build: . # Build from Dockerfile in the current directory
-    image: ghcr.io/meek2100/mcbd-proxy:develop
+    build: .
+    # image: ghcr.io/meek2100/mcbd-proxy:latest
     restart: unless-stopped
     networks:
       - mc-network
     ports:
-      - "19132:19132/udp" # Default MCBE port players connect to first
-      - "25565:25565/udp" # Port for Java server discovery (NB_2_LISTEN_PORT)
-      - "25565:25565/tcp" # Port for Java server gameplay (needs to be exposed by Docker)
+      - "19132:19132/udp"
+      - "25565:25565/udp"
+      - "25565:25565/tcp"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock # Required for Docker management
-      - /home/meek2100/docker/nether-bridge/settings.json:/app/settings.json
-      - /home/meek2100/docker/nether-bridge/servers.json:/app/servers.json
-    #  - .:/app # Local mount for live code changes
+      - /var/run/docker.sock:/var/run/docker.sock
+      # - ./settings.json:/app/settings.json
+      # - ./servers.json:/app/servers.json
     environment:
       # General settings
-      # - LOG_LEVEL=INFO
-      # - NB_IDLE_TIMEOUT=300
-      # - NB_PLAYER_CHECK_INTERVAL=60
-      #- NB_QUERY_TIMEOUT=5
-      #- NB_SERVER_READY_MAX_WAIT=120
-      #- NB_INITIAL_BOOT_READY_MAX_WAIT=180
-      #- NB_SERVER_STARTUP_DELAY=5
-      #- NB_INITIAL_SERVER_QUERY_DELAY=10
+      - LOG_LEVEL=INFO
+      - NB_IDLE_TIMEOUT=300
+      - NB_PLAYER_CHECK_INTERVAL=60
+      - NB_QUERY_TIMEOUT=5
+      - NB_SERVER_READY_MAX_WAIT=120
+      - NB_INITIAL_BOOT_READY_MAX_WAIT=180
+      - NB_SERVER_STARTUP_DELAY=5
+      - NB_INITIAL_SERVER_QUERY_DELAY=10
 
       # --- Server Definitions ---
-      # Server 1: Bedrock Survival (COMMENTED OUT FOR TESTING)
+      # Server 1: Bedrock Survival
       - NB_1_NAME=Bedrock Survival
       - NB_1_SERVER_TYPE=bedrock
       - NB_1_LISTEN_PORT=19132
@@ -41,8 +40,8 @@ services:
       - NB_2_LISTEN_PORT=25565
       - NB_2_CONTAINER_NAME=mc-java
       - NB_2_INTERNAL_PORT=25565
-    
-  # A managed Minecraft Bedrock server (COMMENTED OUT FOR TESTING)
+
+  # A managed Minecraft Bedrock server
   mc-bedrock:
     container_name: mc-bedrock
     image: itzg/minecraft-bedrock-server:latest
@@ -51,8 +50,8 @@ services:
       - mc-network
     environment:
       - EULA=TRUE
-    volumes:
-      - /home/meek2100/docker/mc-bedrock:/data
+  # volumes:
+  #    - /home/meek2100/docker/mc-bedrock:/data
 
   # A managed Minecraft Java server
   mc-java:
@@ -65,8 +64,8 @@ services:
       - EULA=TRUE
       - TYPE=PAPER
       - JVM_ARGS=-Xmx1G -Xms1G
-    volumes:
-      - /home/meek2100/docker/mc-java:/data
+   # volumes:
+   #   - /home/meek2100/docker/mc-java:/data
 
 networks:
   mc-network:

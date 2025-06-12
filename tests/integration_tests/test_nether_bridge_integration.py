@@ -8,9 +8,9 @@ from mcstatus import BedrockServer, JavaServer
 # and listening on their respective ports.
 # The 'docker_compose_up' fixture from conftest.py will automatically manage the stack.
 
-# IMPORTANT: Set this to your Debian VM's Host IP address (e.g., 192.168.1.176)
+# IMPORTANT: Set this to your Debian VM's Host IP address (e.g., 127.0.0.1,192.168.1.150)
 # This is where your Windows machine connects to the published ports.
-VM_HOST_IP = "192.168.1.176" # <--- IMPORTANT: UPDATE THIS TO YOUR ACTUAL VM'S IP
+VM_HOST_IP = "127.0.0.1" 
 
 # Helper function to check container status via Docker API
 def get_container_status(docker_client_fixture, container_name):
