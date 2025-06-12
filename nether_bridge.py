@@ -221,12 +221,26 @@ class NetherBridgeProxy:
             else:
                 self.logger.info(f"[{container_name}] Is confirmed to be stopped.")
 
-    def _monitor_servers_activity(self):
+def _monitor_servers_activity(self):
         """Periodically checks running servers for player count and stops them if idle."""
         while True:
             time.sleep(self.settings.player_check_interval_seconds)
             current_time = time.time()
 
+            # First, clean up any client sessions that have seen no packets
+            idle_sessions_to_remove = [
+                key for key, info in self.active_sessions.items() 
+                if current_time - info["last_packet_time"] > self.settings.idle_timeout_seconds
+            ]
+            for session_key in idle_sessions_to_remove:
+                session_info = self.active_sessions.pop(session_key, None)
+                if session_info:
+                    self.logger.info(f"[{session_info['target_container']}] Cleaning up idle client session for {session_key[0]}.")
+                    self._close_session_sockets(session_info)
+                    self.socket_to_session_map.pop(session_info.get("client_socket"), None)
+                    self.socket_to_session_map.pop(session_info.get("server_socket"), None)
+
+            # Now, check each server for shutdown conditions
             for server_conf in self.servers_list:
                 container_name = server_conf.container_name
                 state = self.server_states.get(container_name)
@@ -234,34 +248,19 @@ class NetherBridgeProxy:
                 if not (state and state.get("running")):
                     continue
 
-                active_players_on_server = 0
-                try:
-                    status = None
-                    server_type = server_conf.server_type
-                    target_ip = container_name
-                    target_port = server_conf.internal_port
+                # Check if there are any active sessions for this server
+                has_active_sessions = any(
+                    info["target_container"] == container_name for info in self.active_sessions.values()
+                )
 
-                    if server_type == 'bedrock':
-                        server = BedrockServer.lookup(f"{target_ip}:{target_port}", timeout=self.settings.query_timeout_seconds)
-                        status = server.status()
-                    elif server_type == 'java':
-                        server = JavaServer.lookup(f"{target_ip}:{target_port}", timeout=self.settings.query_timeout_seconds)
-                        status = server.status()
-                    
-                    if status and status.players:
-                        active_players_on_server = status.players.online
-                except Exception as e:
-                    self.logger.debug(f"[{container_name}] Failed to query for player count: {e}. Assuming 0 players for now.")
-
-                # If there are players, always reset the idle timer.
-                # If there are no players, THEN check if the idle timeout has been exceeded.
-                if active_players_on_server > 0:
-                    self.logger.debug(f"[{container_name}] Found {active_players_on_server} active player(s). Resetting idle timer.")
+                if has_active_sessions:
+                    # If there are sessions, reset the server's idle timer
                     state["last_activity"] = current_time
+                    self.logger.debug(f"[{container_name}] Server has active sessions. Resetting idle timer.")
                 else:
-                    # No players are online, check if the idle timeout has passed.
+                    # No sessions, now check if the idle timeout has passed
                     if (current_time - state.get("last_activity", 0) > self.settings.idle_timeout_seconds):
-                        self.logger.info(f"[{container_name}] Idle for over {self.settings.idle_timeout_seconds}s with 0 players. Initiating shutdown.")
+                        self.logger.info(f"[{container_name}] Idle for over {self.settings.idle_timeout_seconds}s with 0 sessions. Initiating shutdown.")
                         self._stop_minecraft_server(container_name)
     
     def _close_session_sockets(self, session_info):
@@ -452,22 +451,6 @@ class NetherBridgeProxy:
             except Exception as e:
                 self.logger.error(f"An unexpected error occurred in the main proxy loop: {e}", exc_info=True)
                 time.sleep(1)
-
-            # --- Cleanup Idle Sessions ---
-            current_time = time.time()
-            sessions_to_remove = [key for key, info in self.active_sessions.items() if current_time - info["last_packet_time"] > self.settings.idle_timeout_seconds]
-            for session_key in sessions_to_remove:
-                session_info = self.active_sessions.pop(session_key, None)
-                if session_info:
-                    container_name = session_info['target_container']
-                    self.logger.info(f"[{container_name}] Client session for {session_key[0]} ({session_info['protocol']}) idle for >{self.settings.idle_timeout_seconds}s. Disconnecting.")
-                    self._close_session_sockets(session_info)
-                    
-                    self.server_states[container_name]["last_activity"] = time.time()
-                    
-                    self.socket_to_session_map.pop(session_info.get("client_socket"), None)
-                    self.socket_to_session_map.pop(session_info.get("server_socket"), None)
-
 
     def run(self):
         """Starts the Nether-bridge proxy application."""
