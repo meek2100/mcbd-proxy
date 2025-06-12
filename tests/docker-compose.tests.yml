@@ -2,7 +2,6 @@
 services:
   nether-bridge:
     build: ../
-    # No container_name for dynamic test environments
     networks:
       - mc-network
     ports:
@@ -15,17 +14,21 @@ services:
 
   mc-bedrock:
     image: itzg/minecraft-bedrock-server:latest
-    restart: "no" # Ensures the container does not restart after being stopped by the proxy
+    restart: "no"
     networks:
       - mc-network
+    profiles:
+      - servers
     environment:
       - EULA=TRUE
 
   mc-java:
     image: itzg/minecraft-server:latest
-    restart: "no" # Ensures the container does not restart after being stopped by the proxy
+    restart: "no"
     networks:
       - mc-network
+    profiles:
+      - servers
     environment:
       - EULA=TRUE
       - TYPE=PAPER

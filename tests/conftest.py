@@ -20,38 +20,39 @@ def docker_compose_project_name():
 @pytest.fixture(scope='session')
 def docker_services(docker_compose_project_name, pytestconfig):
     """
-    Starts Docker Compose services, waits for them to be ready, and yields
-    a helper object to get service container names.
+    Starts Docker Compose services in stages for a clean test environment.
     """
     compose_file_name = pytestconfig.getoption("compose_file")
     compose_file_path = str(pytestconfig.rootdir / compose_file_name)
     
-    command = [
-        'docker', 'compose', 
-        '-p', docker_compose_project_name, 
-        '-f', compose_file_path, 
-        'up', '-d', '--build'
-    ]
-
     print(f"\nStarting Docker Compose project '{docker_compose_project_name}' from {compose_file_path}...")
     try:
-        subprocess.run(command, check=True)
-        print(f"Docker Compose project '{docker_compose_project_name}' started.")
+        # Step 1: Start the main nether-bridge service
+        print("Starting core 'nether-bridge' service...")
+        subprocess.run(
+            ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'up', '-d', '--build', 'nether-bridge'],
+            check=True
+        )
+        # Step 2: Create the server containers but do not start them
+        print("Creating server containers in a stopped state...")
+        subprocess.run(
+            ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'create', 'mc-bedrock', 'mc-java'],
+            check=True
+        )
+        print(f"Docker Compose project '{docker_compose_project_name}' is set up.")
     except subprocess.CalledProcessError as e:
-        print(f"Error starting Docker Compose services.")
+        print(f"Error setting up Docker Compose services.")
         raise
 
-    # --- New Helper Class to find container names ---
     class ServiceManager:
+        # ... (rest of the class is unchanged)
         def __init__(self, project_name):
             self.project_name = project_name
             self.client = docker.from_env()
 
         def get_container_name(self, service_name):
-            """Finds the full container name for a given service."""
-            # List all containers for this compose project
             filters = {'label': f'com.docker.compose.project={self.project_name}'}
-            containers = self.client.containers.list(filters=filters)
+            containers = self.client.containers.list(all=True, filters=filters)
             for container in containers:
                 service_label = container.labels.get('com.docker.compose.service')
                 if service_label == service_name:
