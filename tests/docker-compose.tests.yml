@@ -2,6 +2,8 @@
 services:
   nether-bridge:
     build: ../
+    environment:
+      - LOG_LEVEL=DEBUG
     networks:
       - mc-network
     ports:
