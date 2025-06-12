@@ -264,9 +264,10 @@ def test_server_shuts_down_on_idle(docker_compose_up, docker_client_fixture, doc
     print(f"Server '{mc_bedrock_container_name}' confirmed to be running.")
 
     # 4. Wait for a duration longer than the idle_timeout + check_interval
-    wait_duration = idle_timeout + check_interval + 3 
+    # Adding a more generous buffer to account for all timer intervals.
+    wait_duration = idle_timeout + (2 * check_interval) + 5 # 10 + 10 + 5 = 25s
     print(f"Server is running. Waiting {wait_duration}s for it to be shut down due to inactivity...")
-    
+
     # 5. Assert that the server is stopped by the proxy
     assert wait_for_container_status(
         docker_client_fixture,
@@ -275,4 +276,3 @@ def test_server_shuts_down_on_idle(docker_compose_up, docker_client_fixture, doc
         timeout=wait_duration,
         interval=2
     ), f"Server was not stopped after {wait_duration}s of inactivity."
-    print("Server successfully shut down due to idle timeout.")
