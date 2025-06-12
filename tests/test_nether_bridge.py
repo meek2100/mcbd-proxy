@@ -23,22 +23,18 @@ def mock_docker_client():
     mock_client.containers.get.return_value = mock_container_obj
     yield mock_client
 
-# In tests/test_nether_bridge.py
-
 @pytest.fixture
 def default_proxy_settings():
     """Provides default ProxySettings for testing."""
     return ProxySettings(
-        idle_timeout_seconds=0.2,
-        player_check_interval_seconds=0.1,
+        idle_timeout_seconds=0.2, # Reduced for faster tests
+        player_check_interval_seconds=0.1, # Reduced for faster tests
         query_timeout_seconds=0.1,
         server_ready_max_wait_time_seconds=0.5,
         initial_boot_ready_max_wait_time_seconds=0.5,
         server_startup_delay_seconds=0,
         initial_server_query_delay_seconds=0,
-        log_level="DEBUG",
-        healthcheck_stale_threshold_seconds=60,
-        proxy_heartbeat_interval_seconds=15
+        log_level="DEBUG"
     )
 
 @pytest.fixture

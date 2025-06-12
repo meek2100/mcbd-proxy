@@ -16,85 +16,47 @@ def pytest_addoption(parser):
 @pytest.fixture(scope='session')
 def docker_compose_project_name():
     """Generates a unique project name for docker-compose to isolate test runs."""
+    # Use a unique name to prevent conflicts if tests are run concurrently or repeatedly
     return f"netherbridge_test_{int(time.time())}"
 
 @pytest.fixture(scope='session')
-def docker_services(docker_compose_project_name, pytestconfig):
+def docker_compose_up(docker_compose_project_name, pytestconfig):
     """
-    Starts Docker Compose services, creates a dynamic servers.json for the test run,
-    and yields a helper object to manage services. This runs only once per session.
+    Starts Docker Compose services before tests and tears them down afterwards.
+    This fixture relies on the 'docker compose' CLI directly.
     """
-    compose_file_name = pytestconfig.getoption("compose_file")
-    compose_file_path = str(pytestconfig.rootdir / compose_file_name)
-    
-    class ServiceManager:
-        def __init__(self, project_name):
-            self.project_name = project_name
-            self.client = docker.from_env()
-            self._container_map = {}
-
-        def get_container(self, service_name):
-            if service_name in self._container_map:
-                return self._container_map[service_name]
-            
-            filters = {'label': f'com.docker.compose.project={self.project_name}'}
-            containers = self.client.containers.list(all=True, filters=filters)
-            for container in containers:
-                if container.labels.get('com.docker.compose.service') == service_name:
-                    self._container_map[service_name] = container
-                    return container
-            raise RuntimeError(f"Could not find container for service '{service_name}' in project '{self.project_name}'")
-
-        def get_container_name(self, service_name):
-            return self.get_container(service_name).name
-
-    # Step 1: Create all containers but do not start them.
-    print("\nCreating Docker containers for test session...")
-    create_command = ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'create']
+    compose_file_path = str(pytestconfig.rootdir / 'docker-compose.yml')
+    # Use subprocess to call 'docker compose' CLI
+    print(f"\nStarting Docker Compose project '{docker_compose_project_name}' from {compose_file_path}...")
     try:
-        subprocess.run(create_command, check=True, capture_output=True, text=True)
+        # Use docker compose up -d to start services in detached mode
+        subprocess.run(
+            ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'up', '-d'],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        print(f"Docker Compose project '{docker_compose_project_name}' started.")
     except subprocess.CalledProcessError as e:
-        print(f"Error creating initial containers: {e.stderr}")
+        print(f"Error starting Docker Compose services: {e.stderr}")
         raise
 
-    service_manager = ServiceManager(docker_compose_project_name)
-    
-    # Step 2: Dynamically generate the servers.json file.
-    servers_config = {
-        "servers": [
-            { "name": "Bedrock Test", "server_type": "bedrock", "listen_port": 19132, "container_name": service_manager.get_container_name("mc-bedrock"), "internal_port": 19132 },
-            { "name": "Java Test", "server_type": "java", "listen_port": 25565, "container_name": service_manager.get_container_name("mc-java"), "internal_port": 25565 }
-        ]
-    }
-    servers_json_path = Path(pytestconfig.rootdir) / "servers.tests.json"
-    with open(servers_json_path, "w") as f:
-        json.dump(servers_config, f, indent=2)
-    print(f"Dynamically generated '{servers_json_path.name}' for test run.")
-    
-    # Step 3: Start the proxy container.
-    print("Starting 'nether-bridge' service...")
-    start_command = ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'up', '-d', '--build', 'nether-bridge']
-    try:
-        subprocess.run(start_command, check=True)
-        print(f"Docker Compose project '{docker_compose_project_name}' is set up.")
-    except subprocess.CalledProcessError:
-        print("Error starting 'nether-bridge' service.")
-        raise
+    # Yield control to tests
+    yield
 
-    yield service_manager
-
-    # --- Teardown ---
+    # Teardown: Stop and remove services automatically after tests complete. 
     print(f"\nTests finished. Tearing down Docker Compose project '{docker_compose_project_name}'...")
     try:
         subprocess.run(
             ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'down', '--volumes', '--remove-orphans'],
-            check=True, capture_output=True, text=True
+            check=True,
+            capture_output=True,
+            text=True
         )
         print(f"Docker Compose project '{docker_compose_project_name}' stopped and removed.")
-        os.remove(servers_json_path)
-        print(f"Removed temporary config file '{servers_json_path.name}'.")
-    except Exception as e:
-        print(f"Error during teardown: {e}")
+    except subprocess.CalledProcessError as e:
+        print(f"Error stopping Docker Compose services: {e.stderr}")
+        # Don't re-raise, try to clean up as much as possible even if stopping fails
 
 @pytest.fixture(scope='session')
 def docker_client_fixture():
@@ -102,25 +64,3 @@ def docker_client_fixture():
     client = docker.from_env()
     yield client
     client.close()
-
-# --- NEW FIXTURE ---
-@pytest.fixture(autouse=True)
-def reset_server_state(docker_services):
-    """
-    Ensures all Minecraft servers are stopped before each test function runs,
-    creating a clean state for every test.
-    """
-    print("\n-- Resetting server state before test --")
-    
-    # Get container objects
-    mc_bedrock_container = docker_services.get_container("mc-bedrock")
-    mc_java_container = docker_services.get_container("mc-java")
-    
-    # Stop them if they are running
-    if mc_bedrock_container.status == 'running':
-        print(f"Stopping {mc_bedrock_container.name}...")
-        mc_bedrock_container.stop()
-
-    if mc_java_container.status == 'running':
-        print(f"Stopping {mc_java_container.name}...")
-        mc_java_container.stop()
