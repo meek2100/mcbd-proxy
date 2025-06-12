@@ -111,7 +111,7 @@ def test_bedrock_server_starts_on_connection(docker_services, docker_client_fixt
     assert wait_for_proxy_to_be_ready(docker_client_fixture, proxy_container_name, timeout=300)
     
     initial_status = get_container_status(docker_client_fixture, mc_bedrock_container_name)
-    assert initial_status == "exited"
+    assert initial_status in ["exited", "created"], f"Bedrock server should be stopped, but is: {initial_status}"
     print(f"\nInitial status of {mc_bedrock_container_name}: {initial_status}")
 
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -139,7 +139,7 @@ def test_java_server_starts_on_connection(docker_services, docker_client_fixture
     assert wait_for_proxy_to_be_ready(docker_client_fixture, proxy_container_name, timeout=300)
         
     initial_status = get_container_status(docker_client_fixture, mc_java_container_name)
-    assert initial_status == "exited"
+    assert initial_status in ["exited", "created"], f"Java server should be stopped, but is: {initial_status}"
     print(f"\nInitial status of {mc_java_container_name}: {initial_status}")
 
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -165,6 +165,10 @@ def test_server_shuts_down_on_idle(docker_services, docker_client_fixture):
     check_interval = 5
     
     assert wait_for_proxy_to_be_ready(docker_client_fixture, proxy_container_name, timeout=300)
+
+    # Confirm server is stopped before we start
+    initial_status = get_container_status(docker_client_fixture, mc_bedrock_container_name)
+    assert initial_status in ["exited", "created"], f"Server should be stopped initially, but is: {initial_status}"
 
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:

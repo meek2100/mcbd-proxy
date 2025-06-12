@@ -20,59 +20,89 @@ def docker_compose_project_name():
 @pytest.fixture(scope='session')
 def docker_services(docker_compose_project_name, pytestconfig):
     """
-    Starts Docker Compose services in stages for a clean test environment.
+    Starts Docker Compose services in stages for a clean test environment,
+    creates a dynamic servers.json, and yields a helper to manage services.
     """
     compose_file_name = pytestconfig.getoption("compose_file")
     compose_file_path = str(pytestconfig.rootdir / compose_file_name)
-    
-    print(f"\nStarting Docker Compose project '{docker_compose_project_name}' from {compose_file_path}...")
-    try:
-        # Step 1: Start the main nether-bridge service
-        print("Starting core 'nether-bridge' service...")
-        subprocess.run(
-            ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'up', '-d', '--build', 'nether-bridge'],
-            check=True
-        )
-        # Step 2: Create the server containers but do not start them
-        print("Creating server containers in a stopped state...")
-        subprocess.run(
-            ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'create', 'mc-bedrock', 'mc-java'],
-            check=True
-        )
-        print(f"Docker Compose project '{docker_compose_project_name}' is set up.")
-    except subprocess.CalledProcessError as e:
-        print(f"Error setting up Docker Compose services.")
-        raise
 
+    # A class to manage getting container info
     class ServiceManager:
-        # ... (rest of the class is unchanged)
         def __init__(self, project_name):
             self.project_name = project_name
             self.client = docker.from_env()
+            self._container_map = {}
 
-        def get_container_name(self, service_name):
+        def get_container(self, service_name):
+            if service_name in self._container_map:
+                return self._container_map[service_name]
+            
             filters = {'label': f'com.docker.compose.project={self.project_name}'}
             containers = self.client.containers.list(all=True, filters=filters)
             for container in containers:
-                service_label = container.labels.get('com.docker.compose.service')
-                if service_label == service_name:
-                    return container.name
+                if container.labels.get('com.docker.compose.service') == service_name:
+                    self._container_map[service_name] = container
+                    return container
             raise RuntimeError(f"Could not find container for service '{service_name}' in project '{self.project_name}'")
 
-    yield ServiceManager(docker_compose_project_name)
+        def get_container_name(self, service_name):
+            return self.get_container(service_name).name
+
+    # Step 1: Create all containers but do not start them.
+    # This allows us to get their dynamically assigned names.
+    print("\nCreating Docker containers for test session...")
+    create_command = ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'create']
+    try:
+        subprocess.run(create_command, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Error creating initial containers: {e.stderr}")
+        raise
+
+    service_manager = ServiceManager(docker_compose_project_name)
+    
+    # Step 2: Dynamically generate the servers.json file with the correct container names.
+    servers_config = {
+        "servers": [
+            {
+                "name": "Bedrock Test", "server_type": "bedrock", "listen_port": 19132,
+                "container_name": service_manager.get_container_name("mc-bedrock"), "internal_port": 19132
+            },
+            {
+                "name": "Java Test", "server_type": "java", "listen_port": 25565,
+                "container_name": service_manager.get_container_name("mc-java"), "internal_port": 25565
+            }
+        ]
+    }
+    # Place the temporary config file in the root of the project
+    servers_json_path = pytestconfig.rootdir / "servers.tests.json"
+    with open(servers_json_path, "w") as f:
+        json.dump(servers_config, f, indent=2)
+    print(f"Dynamically generated '{servers_json_path.name}' for test run.")
+    
+    # Step 3: Now, start the proxy container. It will use the new servers.tests.json
+    print("Starting 'nether-bridge' service...")
+    start_command = ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'up', '-d', '--build', 'nether-bridge']
+    try:
+        subprocess.run(start_command, check=True)
+        print(f"Docker Compose project '{docker_compose_project_name}' is set up.")
+    except subprocess.CalledProcessError:
+        print("Error starting 'nether-bridge' service.")
+        raise
+
+    yield service_manager
 
     # --- Teardown ---
     print(f"\nTests finished. Tearing down Docker Compose project '{docker_compose_project_name}'...")
     try:
         subprocess.run(
             ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'down', '--volumes', '--remove-orphans'],
-            check=True,
-            capture_output=True,
-            text=True
+            check=True, capture_output=True, text=True
         )
         print(f"Docker Compose project '{docker_compose_project_name}' stopped and removed.")
-    except subprocess.CalledProcessError as e:
-        print(f"Error stopping Docker Compose services: {e.stderr}")
+        os.remove(servers_json_path) # Clean up the temporary json file
+        print(f"Removed temporary config file '{servers_json_path.name}'.")
+    except Exception as e:
+        print(f"Error during teardown: {e}")
 
 @pytest.fixture(scope='session')
 def docker_client_fixture():

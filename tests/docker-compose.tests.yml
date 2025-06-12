@@ -1,9 +1,14 @@
 # tests/docker-compose.tests.yml
+# This file is used exclusively for running automated integration tests.
+
 services:
   nether-bridge:
-    build: ../
+    # Builds from the Dockerfile in the parent directory.
+    build:
+      context: ../
     environment:
       - LOG_LEVEL=DEBUG
+    restart: "no"
     networks:
       - mc-network
     ports:
@@ -11,26 +16,23 @@ services:
       - "25565:25565/tcp"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      # Mounts the configuration files from the project root.
       - ../settings.json:/app/settings.json
-      - ../servers.json:/app/servers.json
+      - ../servers.tests.json:/app/servers.json # Uses the temp file
 
   mc-bedrock:
     image: itzg/minecraft-bedrock-server:latest
-    restart: "no"
+    restart: "no" # Ensures the container does not restart automatically.
     networks:
       - mc-network
-    profiles:
-      - servers
     environment:
       - EULA=TRUE
 
   mc-java:
     image: itzg/minecraft-server:latest
-    restart: "no"
+    restart: "no" # Ensures the container does not restart automatically.
     networks:
       - mc-network
-    profiles:
-      - servers
     environment:
       - EULA=TRUE
       - TYPE=PAPER
