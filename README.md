@@ -252,7 +252,11 @@ Contributions are welcome! Please feel free to open issues or pull requests on t
 
     This will start the `nether-bridge` proxy and your defined Minecraft server containers (though the Minecraft servers will initially be stopped by the proxy until a player connects).
 
-    **Important Security Note:** The `nether-bridge` container requires access to `/var/run/docker.sock` to manage other Docker containers. This gives the `nether-bridge` container significant control over your Docker host. Ensure your Docker host is secured and only trusted applications run with such privileges.
+    > **Important Security Note**
+    >
+    > The `nether-bridge` container requires access to `/var/run/docker.sock` to manage other Docker containers. Mounting the Docker socket grants the container privileges equivalent to **root-level access** on the host system.
+    >
+    > Ensure your Docker host is properly secured and only run trusted applications with this level of access.
 
 ## Configuration
 
