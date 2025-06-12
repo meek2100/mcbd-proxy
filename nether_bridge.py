@@ -231,7 +231,6 @@ class NetherBridgeProxy:
                 container_name = server_conf.container_name
                 state = self.server_states.get(container_name)
 
-                # Skip if the server isn't supposed to be running
                 if not (state and state.get("running")):
                     continue
 
@@ -254,12 +253,16 @@ class NetherBridgeProxy:
                 except Exception as e:
                     self.logger.debug(f"[{container_name}] Failed to query for player count: {e}. Assuming 0 players for now.")
 
+                # If there are players, always reset the idle timer.
+                # If there are no players, THEN check if the idle timeout has been exceeded.
                 if active_players_on_server > 0:
                     self.logger.debug(f"[{container_name}] Found {active_players_on_server} active player(s). Resetting idle timer.")
                     state["last_activity"] = current_time
-                elif (current_time - state.get("last_activity", 0) > self.settings.idle_timeout_seconds):
-                    self.logger.info(f"[{container_name}] Idle for over {self.settings.idle_timeout_seconds}s with 0 players. Initiating shutdown.")
-                    self._stop_minecraft_server(container_name)
+                else:
+                    # No players are online, check if the idle timeout has passed.
+                    if (current_time - state.get("last_activity", 0) > self.settings.idle_timeout_seconds):
+                        self.logger.info(f"[{container_name}] Idle for over {self.settings.idle_timeout_seconds}s with 0 players. Initiating shutdown.")
+                        self._stop_minecraft_server(container_name)
     
     def _close_session_sockets(self, session_info):
         """Helper to safely close sockets associated with a session and remove from inputs."""
