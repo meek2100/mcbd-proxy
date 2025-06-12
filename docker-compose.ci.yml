@@ -1,0 +1,45 @@
+services:
+  nether-bridge:
+    container_name: nether-bridge
+    build: . # Build the image from the Dockerfile in the current directory
+    restart: unless-stopped
+    networks:
+      - mc-network
+    ports:
+      - "19132:19132/udp"
+      - "25565:25565/udp"
+      - "25565:25565/tcp"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Use relative paths for the CI environment
+      - ./settings.json:/app/settings.json
+      - ./servers.json:/app/servers.json
+    environment:
+      # Environment variables are still used for config precedence
+      - NB_1_LISTEN_PORT=19132
+      # Add any other necessary env vars for testing here
+
+  mc-bedrock:
+    container_name: mc-bedrock
+    image: itzg/minecraft-bedrock-server:latest
+    restart: "no"
+    networks:
+      - mc-network
+    environment:
+      - EULA=TRUE
+    # No volume mount needed for ephemeral test data
+
+  mc-java:
+    container_name: mc-java
+    image: itzg/minecraft-server:latest
+    restart: "no"
+    networks:
+      - mc-network
+    environment:
+      - EULA=TRUE
+      - TYPE=PAPER
+    # No volume mount needed for ephemeral test data
+
+networks:
+  mc-network:
+    driver: bridge

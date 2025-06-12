@@ -37,4 +37,5 @@ jobs:
       - name: Run Integration Tests
         env:
           VM_HOST_IP: 127.0.0.1
-        run: pytest -s --log-cli-level=INFO tests/integration_tests/
+        # Point conftest.py to the correct compose file
+        run: pytest -s --log-cli-level=INFO --compose-file=docker-compose.ci.yml tests/integration_tests/
