@@ -36,37 +36,6 @@ def wait_for_container_status(docker_client_fixture, container_name, target_stat
     print(f"Timeout waiting for container '{container_name}' to reach status in {target_statuses}. Current: {current_status}")
     return False
 
-# Helper function to wait for a port on the host to be open/listening
-def wait_for_host_port_open(host, port, protocol="udp", timeout=60, interval=1):
-    start_time = time.time()
-    print(f"Waiting for host port {host}:{port}/{protocol} to be open (max {timeout}s)...")
-    while time.time() - start_time < timeout:
-        if protocol == "udp":
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            try:
-                sock.settimeout(interval)
-                sock.sendto(b"test", (host, port))
-                print(f"  UDP port {host}:{port} seems responsive.")
-                return True
-            except socket.error as e:
-                pass
-            finally:
-                sock.close()
-        elif protocol == "tcp":
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            try:
-                sock.settimeout(interval)
-                sock.connect((host, port))
-                print(f"  TCP port {host}:{port} is open.")
-                return True
-            except (ConnectionRefusedError, socket.timeout, OSError) as e:
-                pass
-            finally:
-                sock.close()
-        time.sleep(interval)
-    print(f"Timeout waiting for host port {host}:{port}/{protocol} to open.")
-    return False
-
 # Helper function to wait for a server to be query-ready via mcstatus
 def wait_for_mc_server_ready(server_config, timeout=60, interval=1):
     host, port = server_config['host'], server_config['port']
@@ -92,7 +61,7 @@ def wait_for_mc_server_ready(server_config, timeout=60, interval=1):
         time.sleep(interval)
     print(f"[{server_type}@{host}:{port}] Timeout waiting for server to be ready.")
     return False
-
+    
 # Helper to encode VarInt for Java protocol
 def encode_varint(value):
     buf = b''
@@ -109,23 +78,43 @@ def encode_varint(value):
 # Java handshake + status request packets
 def get_java_handshake_and_status_request_packets(host, port):
     server_address_bytes = host.encode('utf-8')
-    server_address_varint_string = encode_varint(len(server_address_bytes)) + server_address_bytes
-    port_bytes = port.to_bytes(2, byteorder='big')
-    protocol_version_bytes = (-1).to_bytes(4, byteorder='big', signed=True) # Java protocol version -1 as 4-byte signed int
-
     handshake_payload = (
-        protocol_version_bytes +
-        server_address_varint_string +
-        port_bytes +
-        encode_varint(1) # Next State: Status (1)
+        encode_varint(754) +
+        encode_varint(len(server_address_bytes)) + server_address_bytes +
+        port.to_bytes(2, byteorder='big') +
+        encode_varint(1)
     )
-    handshake_packet = encode_varint(len(handshake_payload)) + b'\x00' + handshake_payload
+    handshake_packet = encode_varint(len(handshake_payload) + 1) + b'\x00' + handshake_payload
 
     status_request_packet_payload = b''
-    status_request_packet = encode_varint(len(status_request_packet_payload)) + b'\x00' + status_request_packet_payload
+    status_request_packet = encode_varint(len(status_request_packet_payload) + 1) + b'\x00' + status_request_packet_payload
     
     return handshake_packet, status_request_packet
 
+# --- NEW HELPER FUNCTION ---
+def wait_for_proxy_to_be_ready(docker_client_fixture, timeout=60):
+    """Waits for the nether-bridge proxy to be fully initialized by watching its logs."""
+    print("\nWaiting for nether-bridge proxy to be ready...")
+    start_time = time.time()
+    proxy_container = docker_client_fixture.containers.get("nether-bridge")
+    
+    # Check logs since the container started to avoid missing the message
+    logs = proxy_container.logs(since=int(start_time - 10)).decode('utf-8')
+    if "Starting main proxy packet forwarding loop" in logs:
+        print("Proxy is ready (found message in recent logs).")
+        return True
+
+    # If not found, stream new logs
+    for line in proxy_container.logs(stream=True, since=int(start_time)):
+        decoded_line = line.decode('utf-8').strip()
+        print(f"  [proxy log]: {decoded_line}")
+        if "Starting main proxy packet forwarding loop" in decoded_line:
+            print("Proxy is now ready.")
+            return True
+        if time.time() - start_time > timeout:
+            print("Timeout waiting for proxy to become ready.")
+            return False
+    return False
 
 # --- Integration Test Cases ---
 
@@ -135,68 +124,49 @@ def test_bedrock_server_starts_on_connection(docker_compose_up, docker_client_fi
     Test that the mc-bedrock server starts when a connection attempt is made
     to the nether-bridge proxy on its Bedrock port.
     """
-    bedrock_proxy_port = 19132 # As defined in docker-compose.yml
-    mc_bedrock_service_name = "mc-bedrock"
-    
-    # Expected container name from docker-compose.yml
-    expected_mc_bedrock_container_name = mc_bedrock_service_name
+    bedrock_proxy_port = 19132
+    mc_bedrock_container_name = "mc-bedrock"
 
-    # 1. Wait for nether-bridge proxy to fully initialize and stop the MC servers
-    print(f"\nWaiting for {mc_bedrock_service_name} to become stopped by proxy...")
-    assert wait_for_container_status(
-        docker_client_fixture,
-        expected_mc_bedrock_container_name,
-        ["exited", "stopped", "created"], # Target states after proxy stops it
-        timeout=240, # 4 minutes to account for full MC server startup + proxy stop
-        interval=5 # Check less frequently
-    ), f"{mc_bedrock_service_name} did not become stopped after proxy startup within timeout."
-    
-    initial_status = get_container_status(docker_client_fixture, expected_mc_bedrock_container_name)
-    assert initial_status in ["exited", "created", "stopped"], \
-        f"Bedrock server should be initially stopped or not running, but is: {initial_status} (Container: {expected_mc_bedrock_container_name})"
-    print(f"\nInitial status of {expected_mc_bedrock_container_name}: {initial_status}")
+    # 1. Wait for the proxy to be fully ready (after it has stopped all servers)
+    assert wait_for_proxy_to_be_ready(docker_client_fixture, timeout=300), \
+        "Proxy did not become ready within the timeout period."
 
-    # 2. Simulate a client connection to the proxy's Bedrock port
-    # Ensure nether-bridge proxy UDP port is open on the host
-    print(f"Ensuring nether-bridge proxy UDP port {bedrock_proxy_port} is open on host {VM_HOST_IP}...")
-    assert wait_for_host_port_open(VM_HOST_IP, bedrock_proxy_port, "udp", timeout=60, interval=1), \
-        f"Nether-bridge UDP port {bedrock_proxy_port} not open on host {VM_HOST_IP} after 60s."
+    # 2. Confirm the server is initially stopped
+    initial_status = get_container_status(docker_client_fixture, mc_bedrock_container_name)
+    assert initial_status in ["exited", "created", "stopped"], f"Bedrock server should be stopped, but is: {initial_status}"
+    print(f"\nInitial status of {mc_bedrock_container_name}: {initial_status}")
 
+    # 3. Simulate a client connection
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         print(f"Simulating connection to nether-bridge on port {bedrock_proxy_port} on host {VM_HOST_IP}...")
-        
-        # Minecraft Bedrock OPEN_CONNECTION_REQUEST_1 packet example
-        bedrock_connection_packet = (
-            b"\x05" + # Packet ID for OPEN_CONNECTION_REQUEST_1
-            b"\x00\xff\xff\x00\xfe\xfe\xfe\xfe\xfd\xfd\xfd\xfd\x12\x34\x56\x78" + # Magic
-            b"\xbe\x01" # Protocol Version (e.g., 671 for 1.21.84.1, in little-endian 0x01be)
+        unconnected_ping_packet = (
+            b'\x01' + b'\x00\x00\x00\x00\x00\x00\x00\x00' +
+            b'\x00\xff\xff\x00\xfe\xfe\xfe\xfe\xfd\xfd\xfd\xfd\x12\x34\x56\x78' +
+            b'\x00\x00\x00\x00\x00\x00\x00\x00'
         )
-        client_socket.sendto(bedrock_connection_packet, (VM_HOST_IP, bedrock_proxy_port))
-        print("Bedrock connection packet sent.")
+        client_socket.sendto(unconnected_ping_packet, (VM_HOST_IP, bedrock_proxy_port))
+        print("Bedrock 'Unconnected Ping' packet sent.")
 
-        # 3. Wait for the Minecraft server container to start and become running
+        # 4. Wait for the container to start
         assert wait_for_container_status(
             docker_client_fixture,
-            expected_mc_bedrock_container_name,
-            ["running"], # Target state is 'running'
-            timeout=180, # Increased to 180 seconds for Bedrock server startup
+            mc_bedrock_container_name,
+            ["running"],
+            timeout=180,
             interval=2
-        ), f"Bedrock server '{expected_mc_bedrock_container_name}' did not start after {180}s."
+        ), f"Bedrock server '{mc_bedrock_container_name}' did not start after 180s."
+        print(f"Server '{mc_bedrock_container_name}' is now running.")
 
-        current_status = get_container_status(docker_client_fixture, expected_mc_bedrock_container_name)
-        assert current_status == "running", f"Bedrock server '{expected_mc_bedrock_container_name}' is not running, but is: {current_status}"
-        print(f"Server '{expected_mc_bedrock_container_name}' is now running.")
-
-        # 4. Verify server is query-ready through the proxy
+        # 5. Verify server is query-ready
         assert wait_for_mc_server_ready(
             {'host': VM_HOST_IP, 'port': bedrock_proxy_port, 'type': 'bedrock'},
             timeout=60,
             interval=2
         ), "Bedrock server did not become query-ready through proxy."
-
     finally:
         client_socket.close()
+
 
 @pytest.mark.integration
 def test_java_server_starts_on_connection(docker_compose_up, docker_client_fixture, docker_compose_project_name):
@@ -204,66 +174,41 @@ def test_java_server_starts_on_connection(docker_compose_up, docker_client_fixtu
     Test that the mc-java server starts when a connection attempt is made
     to the nether-bridge proxy on its Java port.
     """
-    java_proxy_port = 25565 # As defined in docker-compose.yml (using 25565 for testing)
-    mc_java_service_name = "mc-java"
-    
-    # Expected container name from docker-compose.yml
-    expected_mc_java_container_name = mc_java_service_name
+    java_proxy_port = 25565
+    mc_java_container_name = "mc-java"
 
-    # 1. Wait for nether-bridge proxy to fully initialize and stop the MC servers
-    print(f"\nWaiting for {mc_java_service_name} to become stopped by proxy...")
-    assert wait_for_container_status(
-        docker_client_fixture,
-        expected_mc_java_container_name,
-        ["exited", "stopped", "created"], # Target states after proxy stops it
-        timeout=240, # Allow ample time for Java server to start and proxy to stop it
-        interval=5
-    ), f"{mc_java_service_name} did not become stopped after proxy startup within timeout."
-    
-    initial_status = get_container_status(docker_client_fixture, expected_mc_java_container_name)
-    assert initial_status in ["exited", "created", "stopped"], \
-        f"Java server should be initially stopped or not running, but is: {initial_status} (Container: {expected_mc_java_container_name})"
-    print(f"\nInitial status of {expected_mc_java_container_name}: {initial_status}")
+    # 1. Wait for the proxy to be fully ready
+    assert wait_for_proxy_to_be_ready(docker_client_fixture, timeout=300), \
+        "Proxy did not become ready within the timeout period."
+        
+    # 2. Confirm the server is initially stopped
+    initial_status = get_container_status(docker_client_fixture, mc_java_container_name)
+    assert initial_status in ["exited", "created", "stopped"], f"Java server should be stopped, but is: {initial_status}"
+    print(f"\nInitial status of {mc_java_container_name}: {initial_status}")
 
-    # 2. Simulate a client connection to the proxy's Java port
-    # Ensure nether-bridge proxy TCP port is open on the host
-    print(f"Ensuring nether-bridge proxy TCP port {java_proxy_port} is open on host {VM_HOST_IP}...")
-    assert wait_for_host_port_open(VM_HOST_IP, java_proxy_port, "tcp", timeout=120, interval=2), \
-        f"Nether-bridge TCP port {java_proxy_port} not open on host {VM_HOST_IP} after 120s."
-
+    # 3. Simulate a client connection
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         print(f"Simulating connection to nether-bridge on port {java_proxy_port} on host {VM_HOST_IP}...")
         client_socket.connect((VM_HOST_IP, java_proxy_port))
         print(f"Successfully connected to {VM_HOST_IP}:{java_proxy_port}.")
         
-        # Send a more robust Java handshake + status request for better triggering
         handshake_packet, status_request_packet = get_java_handshake_and_status_request_packets(VM_HOST_IP, java_proxy_port)
-
         client_socket.sendall(handshake_packet)
         client_socket.sendall(status_request_packet)
         print("Java handshake and status request packets sent.")
 
-        # IMPORTANT: Try to receive a response to keep connection active and verify proxy's behavior
-        # This will block until data is received or timeout occurs.
-        response = client_socket.recv(4096) 
-        print(f"Received response from proxy ({len(response)} bytes): {response[:50]}...") # Log response
-        time.sleep(2) # Give proxy additional time to process and for server to potentially start
-
-        # 3. Wait for the Minecraft server container to start and become running
+        # 4. Wait for the container to start
         assert wait_for_container_status(
             docker_client_fixture,
-            expected_mc_java_container_name,
-            ["running"], # Target state is 'running'
-            timeout=180, # Increased to 180 seconds for Java server startup
+            mc_java_container_name,
+            ["running"],
+            timeout=180,
             interval=2
-        ), f"Java server '{expected_mc_java_container_name}' did not start after {180}s."
+        ), f"Java server '{mc_java_container_name}' did not start after 180s."
+        print(f"Server '{mc_java_container_name}' is now running.")
 
-        current_status = get_container_status(docker_client_fixture, expected_mc_java_container_name)
-        assert current_status == "running", f"Java server '{expected_mc_java_container_name}' is not running, but is: {current_status}"
-        print(f"Server '{expected_mc_java_container_name}' is now running.")
-
-        # 4. Verify server is query-ready through the proxy
+        # 5. Verify server is query-ready
         assert wait_for_mc_server_ready(
             {'host': VM_HOST_IP, 'port': java_proxy_port, 'type': 'java'},
             timeout=60,
