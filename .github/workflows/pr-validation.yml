@@ -38,4 +38,4 @@ jobs:
         env:
           VM_HOST_IP: 127.0.0.1
         # Point conftest.py to the correct compose file
-        run: pytest -s --log-cli-level=INFO tests/integration_tests/
+        run: pytest -s --log-cli-level=DEBUG tests/integration_tests/
