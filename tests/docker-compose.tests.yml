@@ -23,7 +23,7 @@ services:
       # Remove explicit JSON config mounts and use environment variables instead
       # - ../settings.json:/app/settings.json
       # - ../servers.tests.json:/app/servers.json
-      - ../:/app # Mount the entire app directory for code access, as in original.
+      # - ../:/app # Mount the entire app directory for code access, as in original.
 
     environment:
       # General settings adjusted for faster testing
@@ -67,7 +67,7 @@ services:
       - mc-network
     environment:
       - EULA=TRUE
-      - VERSION=1.20.72.01 # <--- ADDED: Pinning Bedrock server version for stability
+      - VERSION=1.21.84.1 # Pinning Bedrock server version for stability
     healthcheck: # Docker Compose healthcheck for Bedrock server to ensure it's up
       test: ["CMD", "mcstatus", "bedrock", "127.0.0.1:19132", "status"]
       interval: 5s
@@ -84,6 +84,7 @@ services:
     environment:
       - EULA=TRUE
       - TYPE=PAPER
+      - VERSION=1.21.5 # Pinning Java server version for stability
       - JVM_ARGS=-Xmx512M -Xms512M # Limit memory for CI environment
     healthcheck: # Docker Compose healthcheck for Java server to ensure it's up
       test: ["CMD", "mcstatus", "java", "127.0.0.1:25565", "status"]
