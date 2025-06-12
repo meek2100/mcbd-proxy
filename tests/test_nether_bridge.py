@@ -34,7 +34,9 @@ def default_proxy_settings():
         initial_boot_ready_max_wait_time_seconds=0.5,
         server_startup_delay_seconds=0,
         initial_server_query_delay_seconds=0,
-        log_level="DEBUG"
+        log_level="DEBUG",
+        healthcheck_stale_threshold_seconds=0.5, # <--- ADDED for unit tests
+        proxy_heartbeat_interval_seconds=0.1 # <--- ADDED for unit tests
     )
 
 @pytest.fixture
@@ -344,7 +346,6 @@ def test_monitor_servers_activity_resets_active_server_timer(
 
     # Mock time.sleep to run loop once
     mock_sleep.side_effect = [None, Exception("Stop loop")]
-
     try:
         nether_bridge_instance._monitor_servers_activity()
     except Exception as e:
