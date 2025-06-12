@@ -2,7 +2,8 @@ services:
   # The on-demand Minecraft proxy service
   nether-bridge:
     container_name: nether-bridge
-    image: ghcr.io/meek2100/mcbd-proxy:develop
+    build: . # Build from Dockerfile in the current directory
+    # image: ghcr.io/meek2100/mcbd-proxy:develop
     restart: unless-stopped
     networks:
       - mc-network
