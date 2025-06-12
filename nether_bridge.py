@@ -221,7 +221,7 @@ class NetherBridgeProxy:
             else:
                 self.logger.info(f"[{container_name}] Is confirmed to be stopped.")
 
-def _monitor_servers_activity(self):
+    def _monitor_servers_activity(self):
         """Periodically checks running servers for player count and stops them if idle."""
         while True:
             time.sleep(self.settings.player_check_interval_seconds)
