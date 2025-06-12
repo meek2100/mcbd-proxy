@@ -221,7 +221,6 @@ def test_java_server_starts_on_connection(docker_compose_up, docker_client_fixtu
     finally:
         client_socket.close()
 
-@pytest.mark.integration
 def test_server_shuts_down_on_idle(docker_compose_up, docker_client_fixture, docker_compose_project_name):
     """
     Tests that a running server is automatically stopped by the proxy after a
@@ -248,31 +247,32 @@ def test_server_shuts_down_on_idle(docker_compose_up, docker_client_fixture, doc
             b'\x00\x00\x00\x00\x00\x00\x00\x00'
         )
         client_socket.sendto(unconnected_ping_packet, (VM_HOST_IP, bedrock_proxy_port))
-        
-        # 3. Confirm the server starts and becomes running
-        assert wait_for_container_status(
-            docker_client_fixture,
-            mc_bedrock_container_name,
-            ["running"],
-            timeout=180,
-            interval=2
-        ), "Bedrock server did not start after being triggered."
-        print(f"Server '{mc_bedrock_container_name}' confirmed to be running.")
-
-        # 4. Wait for a duration longer than the idle_timeout + check_interval
-        # This ensures at least one idle check will have occurred after the timeout period.
-        wait_duration = idle_timeout + check_interval + 3 # Adding a 3-second buffer
-        print(f"Server is running. Waiting {wait_duration}s for it to be shut down due to inactivity...")
-        
-        # 5. Assert that the server is stopped by the proxy
-        assert wait_for_container_status(
-            docker_client_fixture,
-            mc_bedrock_container_name,
-            ["exited"],
-            timeout=wait_duration,
-            interval=2
-        ), f"Server was not stopped after {wait_duration}s of inactivity."
-        print("Server successfully shut down due to idle timeout.")
-
     finally:
+        # *** THIS IS THE FIX ***
+        # Close the socket immediately to ensure the session is terminated on the proxy.
         client_socket.close()
+        print("Client socket closed, session terminated.")
+
+    # 3. Confirm the server starts and becomes running
+    assert wait_for_container_status(
+        docker_client_fixture,
+        mc_bedrock_container_name,
+        ["running"],
+        timeout=180,
+        interval=2
+    ), "Bedrock server did not start after being triggered."
+    print(f"Server '{mc_bedrock_container_name}' confirmed to be running.")
+
+    # 4. Wait for a duration longer than the idle_timeout + check_interval
+    wait_duration = idle_timeout + check_interval + 3 
+    print(f"Server is running. Waiting {wait_duration}s for it to be shut down due to inactivity...")
+    
+    # 5. Assert that the server is stopped by the proxy
+    assert wait_for_container_status(
+        docker_client_fixture,
+        mc_bedrock_container_name,
+        ["exited"],
+        timeout=wait_duration,
+        interval=2
+    ), f"Server was not stopped after {wait_duration}s of inactivity."
+    print("Server successfully shut down due to idle timeout.")
