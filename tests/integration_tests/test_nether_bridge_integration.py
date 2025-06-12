@@ -2,15 +2,17 @@ import pytest
 import time
 import socket
 import docker
+import os # Import os to read environment variables
 from mcstatus import BedrockServer, JavaServer
 
-# Assuming Nether-bridge and Minecraft servers are defined in docker-compose.yml
-# and listening on their respective ports.
-# The 'docker_compose_up' fixture from conftest.py will automatically manage the stack.
+# Constants for test server addresses and ports
+# PROXY_HOST will be dynamically set by environment variable (set in conftest.py or GitHub Actions)
+BEDROCK_PROXY_PORT = 19132
+JAVA_PROXY_PORT = 25565
 
-# IMPORTANT: Set this to your Debian VM's Host IP address (e.g., 192.168.1.176)
-# This is where your Windows machine connects to the published ports.
-VM_HOST_IP = "192.168.1.176" # <--- IMPORTANT: UPDATE THIS TO YOUR ACTUAL VM'S IP
+# Helper function to get the VM_HOST_IP from environment, defaulting to 127.0.0.1
+def get_proxy_host():
+    return os.environ.get('VM_HOST_IP', '127.0.0.1') #
 
 # Helper function to check container status via Docker API
 def get_container_status(docker_client_fixture, container_name):
@@ -127,7 +129,8 @@ def test_bedrock_server_starts_on_connection(docker_compose_up, docker_client_fi
     Test that the mc-bedrock server starts when a connection attempt is made
     to the nether-bridge proxy on its Bedrock port.
     """
-    bedrock_proxy_port = 19132
+    proxy_host = get_proxy_host()
+    bedrock_proxy_port = BEDROCK_PROXY_PORT
     mc_bedrock_container_name = "mc-bedrock"
 
     # 1. Wait for the proxy to be fully ready (after it has stopped all servers)
@@ -142,13 +145,13 @@ def test_bedrock_server_starts_on_connection(docker_compose_up, docker_client_fi
     # 3. Simulate a client connection
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        print(f"Simulating connection to nether-bridge on port {bedrock_proxy_port} on host {VM_HOST_IP}...")
+        print(f"Simulating connection to nether-bridge on port {bedrock_proxy_port} on host {proxy_host}...")
         unconnected_ping_packet = (
             b'\x01' + b'\x00\x00\x00\x00\x00\x00\x00\x00' +
             b'\x00\xff\xff\x00\xfe\xfe\xfe\xfe\xfd\xfd\xfd\xfd\x12\x34\x56\x78' +
             b'\x00\x00\x00\x00\x00\x00\x00\x00'
         )
-        client_socket.sendto(unconnected_ping_packet, (VM_HOST_IP, bedrock_proxy_port))
+        client_socket.sendto(unconnected_ping_packet, (proxy_host, bedrock_proxy_port))
         print("Bedrock 'Unconnected Ping' packet sent.")
 
         # 4. Wait for the container to start
@@ -163,7 +166,7 @@ def test_bedrock_server_starts_on_connection(docker_compose_up, docker_client_fi
 
         # 5. Verify server is query-ready
         assert wait_for_mc_server_ready(
-            {'host': VM_HOST_IP, 'port': bedrock_proxy_port, 'type': 'bedrock'},
+            {'host': proxy_host, 'port': bedrock_proxy_port, 'type': 'bedrock'},
             timeout=60,
             interval=2
         ), "Bedrock server did not become query-ready through proxy."
@@ -177,7 +180,8 @@ def test_java_server_starts_on_connection(docker_compose_up, docker_client_fixtu
     Test that the mc-java server starts when a connection attempt is made
     to the nether-bridge proxy on its Java port.
     """
-    java_proxy_port = 25565
+    proxy_host = get_proxy_host()
+    java_proxy_port = JAVA_PROXY_PORT
     mc_java_container_name = "mc-java"
 
     # 1. Wait for the proxy to be fully ready
@@ -192,11 +196,11 @@ def test_java_server_starts_on_connection(docker_compose_up, docker_client_fixtu
     # 3. Simulate a client connection
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        print(f"Simulating connection to nether-bridge on port {java_proxy_port} on host {VM_HOST_IP}...")
-        client_socket.connect((VM_HOST_IP, java_proxy_port))
-        print(f"Successfully connected to {VM_HOST_IP}:{java_proxy_port}.")
+        print(f"Simulating connection to nether-bridge on port {java_proxy_port} on host {proxy_host}...")
+        client_socket.connect((proxy_host, java_proxy_port))
+        print(f"Successfully connected to {proxy_host}:{java_proxy_port}.")
         
-        handshake_packet, status_request_packet = get_java_handshake_and_status_request_packets(VM_HOST_IP, java_proxy_port)
+        handshake_packet, status_request_packet = get_java_handshake_and_status_request_packets(proxy_host, java_proxy_port)
         client_socket.sendall(handshake_packet)
         client_socket.sendall(status_request_packet)
         print("Java handshake and status request packets sent.")
@@ -213,7 +217,7 @@ def test_java_server_starts_on_connection(docker_compose_up, docker_client_fixtu
 
         # 5. Verify server is query-ready
         assert wait_for_mc_server_ready(
-            {'host': VM_HOST_IP, 'port': java_proxy_port, 'type': 'java'},
+            {'host': proxy_host, 'port': java_proxy_port, 'type': 'java'},
             timeout=60,
             interval=2
         ), "Java server did not become query-ready through proxy."
@@ -221,17 +225,19 @@ def test_java_server_starts_on_connection(docker_compose_up, docker_client_fixtu
     finally:
         client_socket.close()
 
+@pytest.mark.integration
 def test_server_shuts_down_on_idle(docker_compose_up, docker_client_fixture, docker_compose_project_name):
     """
     Tests that a running server is automatically stopped by the proxy after a
     period of inactivity.
     """
-    bedrock_proxy_port = 19132
+    proxy_host = get_proxy_host()
+    bedrock_proxy_port = BEDROCK_PROXY_PORT
     mc_bedrock_container_name = "mc-bedrock"
     
-    # Values from settings.json used for testing
-    idle_timeout = 10 
-    check_interval = 5
+    # Values from docker-compose.tests.yml for testing
+    idle_timeout = 30 # NB_IDLE_TIMEOUT in compose
+    check_interval = 5 # NB_PLAYER_CHECK_INTERVAL in compose
     
     # 1. Wait for the proxy to be ready
     assert wait_for_proxy_to_be_ready(docker_client_fixture, timeout=300), \
@@ -246,9 +252,8 @@ def test_server_shuts_down_on_idle(docker_compose_up, docker_client_fixture, doc
             b'\x00\xff\xff\x00\xfe\xfe\xfe\xfe\xfd\xfd\xfd\xfd\x12\x34\x56\x78' +
             b'\x00\x00\x00\x00\x00\x00\x00\x00'
         )
-        client_socket.sendto(unconnected_ping_packet, (VM_HOST_IP, bedrock_proxy_port))
+        client_socket.sendto(unconnected_ping_packet, (proxy_host, bedrock_proxy_port))
     finally:
-        # *** THIS IS THE FIX ***
         # Close the socket immediately to ensure the session is terminated on the proxy.
         client_socket.close()
         print("Client socket closed, session terminated.")
@@ -265,7 +270,7 @@ def test_server_shuts_down_on_idle(docker_compose_up, docker_client_fixture, doc
 
     # 4. Wait for a duration longer than the idle_timeout + check_interval
     # Adding a more generous buffer to account for all timer intervals.
-    wait_duration = idle_timeout + (2 * check_interval) + 5 # 10 + 10 + 5 = 25s
+    wait_duration = idle_timeout + (2 * check_interval) + 5 # 30 + 10 + 5 = 45s for the current test values
     print(f"Server is running. Waiting {wait_duration}s for it to be shut down due to inactivity...")
 
     # 5. Assert that the server is stopped by the proxy
