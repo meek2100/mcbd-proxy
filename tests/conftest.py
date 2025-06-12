@@ -4,6 +4,7 @@ import subprocess
 import time
 import os
 import json
+from pathlib import Path
 
 def pytest_addoption(parser):
     """Add a command line option to specify the docker-compose file."""
@@ -26,7 +27,6 @@ def docker_services(docker_compose_project_name, pytestconfig):
     compose_file_name = pytestconfig.getoption("compose_file")
     compose_file_path = str(pytestconfig.rootdir / compose_file_name)
     
-    # A class to manage getting container info
     class ServiceManager:
         def __init__(self, project_name):
             self.project_name = project_name
@@ -72,7 +72,7 @@ def docker_services(docker_compose_project_name, pytestconfig):
             }
         ]
     }
-    servers_json_path = pytestconfig.rootdir / "servers.tests.json"
+    servers_json_path = Path(pytestconfig.rootdir) / "servers.tests.json"
     with open(servers_json_path, "w") as f:
         json.dump(servers_config, f, indent=2)
     print(f"Dynamically generated '{servers_json_path.name}' for test run.")
