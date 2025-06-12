@@ -3,6 +3,7 @@ import docker
 import subprocess
 import time
 import os
+import json
 
 def pytest_addoption(parser):
     """Add a command line option to specify the docker-compose file."""
@@ -17,11 +18,11 @@ def docker_compose_project_name():
     return f"netherbridge_test_{int(time.time())}"
 
 @pytest.fixture(scope='session')
-def docker_compose_up(docker_compose_project_name, pytestconfig):
+def docker_services(docker_compose_project_name, pytestconfig):
     """
-    Starts Docker Compose services before tests and tears them down afterwards.
+    Starts Docker Compose services, waits for them to be ready, and yields
+    a helper object to get service container names.
     """
-    # Use the compose file specified on the command line, or the default
     compose_file_name = pytestconfig.getoption("compose_file")
     compose_file_path = str(pytestconfig.rootdir / compose_file_name)
     
@@ -34,19 +35,34 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
 
     print(f"\nStarting Docker Compose project '{docker_compose_project_name}' from {compose_file_path}...")
     try:
-        # We remove 'capture_output=True' to allow logs to stream in real-time.
         subprocess.run(command, check=True)
         print(f"Docker Compose project '{docker_compose_project_name}' started.")
     except subprocess.CalledProcessError as e:
-        # Error information will be visible directly in the log now.
         print(f"Error starting Docker Compose services.")
         raise
 
-    yield
+    # --- New Helper Class to find container names ---
+    class ServiceManager:
+        def __init__(self, project_name):
+            self.project_name = project_name
+            self.client = docker.from_env()
 
+        def get_container_name(self, service_name):
+            """Finds the full container name for a given service."""
+            # List all containers for this compose project
+            filters = {'label': f'com.docker.compose.project={self.project_name}'}
+            containers = self.client.containers.list(filters=filters)
+            for container in containers:
+                service_label = container.labels.get('com.docker.compose.service')
+                if service_label == service_name:
+                    return container.name
+            raise RuntimeError(f"Could not find container for service '{service_name}' in project '{self.project_name}'")
+
+    yield ServiceManager(docker_compose_project_name)
+
+    # --- Teardown ---
     print(f"\nTests finished. Tearing down Docker Compose project '{docker_compose_project_name}'...")
     try:
-        # We can keep capture_output here as 'down' is usually fast.
         subprocess.run(
             ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'down', '--volumes', '--remove-orphans'],
             check=True,
