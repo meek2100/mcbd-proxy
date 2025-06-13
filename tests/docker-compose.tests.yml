@@ -53,7 +53,7 @@ services:
       - mc-network
     volumes:
     # Mount a local directory to /data in the container
-      - ./data/mc-bedrock:/data
+      - mc-bedrock-data:/data
     environment:
       - EULA=TRUE
       - VERSION=1.21.84.1
@@ -69,7 +69,7 @@ services:
       - mc-network
     volumes:
     # Mount a local directory to /data in the container
-      - ./data/mc-java:/data
+      - mc-java-data:/data
     environment:
       - EULA=TRUE
       # Use Fabric for the fastest startup in tests
@@ -94,6 +94,6 @@ networks:
 
 # Define named volumes if you decide to switch back to them later,
 # but for local manual placement, direct bind mounts are simpler.
-# volumes:
-#   mc-bedrock-data:
-#   mc-java-data:
+volumes:
+  mc-bedrock-data:
+  mc-java-data:
