@@ -3,12 +3,11 @@
 # It sets up a minimal environment with Nether-bridge and two Minecraft servers.
 services:
   nether-bridge:
-    image: ghcr.io/meek2100/mcbd-proxy:develop
-    # image: nether-bridge-test:local
+    image: nether-bridge-test:local
     container_name: nether-bridge
-    # build:
-    #  context: ../
-    #  dockerfile: Dockerfile
+    build:
+      context: ../
+      dockerfile: Dockerfile
 
     restart: "no"
     networks:
