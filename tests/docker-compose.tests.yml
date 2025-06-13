@@ -54,8 +54,8 @@ services:
       - mc-bedrock-data:/data
     environment:
       - EULA=TRUE
-      - VERSION=1.21.84.1
-      - DIRECT_DOWNLOAD_URL=https://minecraft.azure.microsoft.com/snapshot/bedrock-server-1.21.84.1.zip
+      - VERSION=1.20.81.01
+      # - DIRECT_DOWNLOAD_URL=https://minecraft.azure.microsoft.com/snapshot/bedrock-server-1.21.84.1.zip
       - IDLE_TIMEOUT=-1
 
   mc-java:
