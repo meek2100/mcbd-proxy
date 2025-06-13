@@ -112,6 +112,7 @@ services:
     restart: unless-stopped
     ports:
       - "19132:19132/udp"
+      - "25565:25565/udp"
       - "25565:25565/tcp"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
