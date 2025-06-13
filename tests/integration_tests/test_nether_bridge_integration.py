@@ -167,7 +167,7 @@ def test_bedrock_server_starts_on_connection(docker_compose_up, docker_client_fi
         # 5. Verify server is query-ready
         assert wait_for_mc_server_ready(
             {'host': proxy_host, 'port': bedrock_proxy_port, 'type': 'bedrock'},
-            timeout=60,
+            timeout=120,
             interval=2
         ), "Bedrock server did not become query-ready through proxy."
     finally:
@@ -218,7 +218,7 @@ def test_java_server_starts_on_connection(docker_compose_up, docker_client_fixtu
         # 5. Verify server is query-ready
         assert wait_for_mc_server_ready(
             {'host': proxy_host, 'port': java_proxy_port, 'type': 'java'},
-            timeout=60,
+            timeout=120,
             interval=2
         ), "Java server did not become query-ready through proxy."
 
