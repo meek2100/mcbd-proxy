@@ -73,10 +73,14 @@ services:
       - ./data/mc-java:/data
     environment:
       - EULA=TRUE
-      - TYPE=PAPER
-      - MINECRAFT_VERSION=1.18.2
+      # Use Fabric for the fastest startup in tests
+      - TYPE=FABRIC
+      # Use a much older, faster-starting version
+      - MINECRAFT_VERSION=1.16.5
       - JVM_ARGS=-Xmx512M -Xms512M
       - IDLE_TIMEOUT=-1
+      # Disable online mode to prevent network delays on startup
+      - ONLINE_MODE=FALSE
     # healthcheck: # <--- REMOVED: Healthcheck for mc-java
     #   test: ["CMD", "mcstatus", "java", "127.0.0.1:25565", "status"]
     #   interval: 5s
