@@ -3,9 +3,10 @@
 # It sets up a minimal environment with Nether-bridge and two Minecraft servers.
 services:
   nether-bridge:
-    build:
-      context: ../
-      dockerfile: Dockerfile
+    image: meek2100/mcbd-proxy:latest
+    #build:
+    #  context: ../
+    #  dockerfile: Dockerfile
     container_name: nether-bridge
     restart: "no"
     networks:
@@ -56,6 +57,7 @@ services:
     environment:
       - EULA=TRUE
       - VERSION=1.21.84.1
+      - IDLE_TIMEOUT=-1
     #  - DIRECT_DOWNLOAD_URL=https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.21.84.1.zip
     # Removed explicit healthcheck, relying on container running state for now.
 
