@@ -6,6 +6,7 @@ services:
     build:
       context: ../
       dockerfile: Dockerfile
+    container_name: nether-bridge
     restart: "no"
     networks:
       - mc-network
@@ -46,6 +47,7 @@ services:
   mc-bedrock:
     image: itzg/minecraft-bedrock-server:latest
     restart: "no"
+    container_name: mc-bedrock
     networks:
       - mc-network
     volumes:
@@ -60,6 +62,7 @@ services:
   mc-java:
     image: itzg/minecraft-server:latest
     restart: "no"
+    container_name: mc-java
     networks:
       - mc-network
     volumes:

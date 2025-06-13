@@ -29,7 +29,7 @@ try:
 except ImportError:
     print("local_env.py not found in tests/. Relying on environment or default 127.0.0.1 for CI/CD.")
 finally:
-    if current_tests_dir in sys.path:
+    if 'current_tests_dir' in locals() and current_tests_dir in sys.path:
         sys.path.remove(current_tests_dir)
 
 
@@ -70,19 +70,17 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
     # Aggressive Pre-cleanup for ANY previous test containers
     print("Performing aggressive pre-cleanup of any stale 'netherbridge_test_' containers...")
     try:
-        list_cmd = ['docker', 'ps', '-aq', '--filter', 'status=running', '--filter', 'name=netherbridge_test_'] # Only running containers
-        result = subprocess.run(list_cmd, capture_output=True, text=True, check=False, env=env_vars)
-        container_ids = result.stdout.strip().splitlines()
-
-        if container_ids:
-            print(f"Found running stale test containers: {', '.join(container_ids)}. Stopping and removing...")
-            stop_rm_cmd = ['docker', 'rm', '-f'] + container_ids
+        # Stop and remove any running containers with the test name prefix
+        list_cmd_running = ['docker', 'ps', '-aq', '--filter', 'status=running', '--filter', 'name=netherbridge_test_']
+        result_running = subprocess.run(list_cmd_running, capture_output=True, text=True, check=False, env=env_vars)
+        container_ids_running = result_running.stdout.strip().splitlines()
+        if container_ids_running:
+            print(f"Found running stale test containers: {', '.join(container_ids_running)}. Stopping and removing...")
+            stop_rm_cmd = ['docker', 'rm', '-f'] + container_ids_running
             subprocess.run(stop_rm_cmd, capture_output=True, text=True, check=False, env=env_vars)
-            print("Stale test containers removed.")
-        else:
-            print("No running stale 'netherbridge_test_' containers found.")
-
-        # Also clean up exited ones just in case
+            print("Running stale test containers removed.")
+        
+        # Remove any exited containers with the test name prefix
         list_cmd_exited = ['docker', 'ps', '-aq', '--filter', 'status=exited', '--filter', 'name=netherbridge_test_']
         result_exited = subprocess.run(list_cmd_exited, capture_output=True, text=True, check=False, env=env_vars)
         container_ids_exited = result_exited.stdout.strip().splitlines()
@@ -91,6 +89,15 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
             rm_cmd_exited = ['docker', 'rm'] + container_ids_exited
             subprocess.run(rm_cmd_exited, capture_output=True, text=True, check=False, env=env_vars)
             print("Exited stale test containers removed.")
+
+        # Also specifically remove the hardcoded container name if it exists from a failed run
+        list_cmd_hardcoded = ['docker', 'ps', '-aq', '--filter', 'name=nether-bridge']
+        result_hardcoded = subprocess.run(list_cmd_hardcoded, capture_output=True, text=True, check=False, env=env_vars)
+        hardcoded_ids = result_hardcoded.stdout.strip().splitlines()
+        if hardcoded_ids:
+            print(f"Found stale 'nether-bridge' container: {', '.join(hardcoded_ids)}. Forcibly removing...")
+            subprocess.run(['docker', 'rm', '-f'] + hardcoded_ids, check=False, capture_output=True, text=True, env=env_vars)
+            print("Stale 'nether-bridge' container removed.")
 
     except Exception as e:
         print(f"Warning during aggressive pre-cleanup: {e}")
@@ -102,21 +109,41 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
         subprocess.run(build_command, check=True, capture_output=True, text=True, env=env_vars)
         print("Nether-bridge image built successfully for testing.")
 
-        # Use docker compose up -d to start services in detached mode
-        up_command = [
-            'docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path,
-            'up', '-d', '--wait', '--wait-timeout', '240'
-        ]
-        print(f"Running command: {' '.join(up_command)}")
-        subprocess.run(
-            up_command,
-            check=True,
-            capture_output=True,
-            text=True,
-            env=env_vars
-        )
-        print(f"Docker Compose project '{docker_compose_project_name}' started and healthy.")
-        time.sleep(5)
+        # 1. Create all services, but do not start them.
+        # This ensures mc-java and mc-bedrock exist in a 'created' state.
+        create_command = ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'create']
+        print(f"Running command: {' '.join(create_command)}")
+        subprocess.run(create_command, check=True, capture_output=True, text=True, env=env_vars)
+        print("All test containers created successfully.")
+
+        # 2. Start only the nether-bridge service.
+        start_command = ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'start', 'nether-bridge']
+        print(f"Running command: {' '.join(start_command)}")
+        subprocess.run(start_command, check=True, capture_output=True, text=True, env=env_vars)
+        print("Nether-bridge container started.")
+
+        # 3. Manually wait for the nether-bridge container to become healthy.
+        print("Waiting for nether-bridge container to become healthy...")
+        client = docker.from_env()
+        try:
+            # We use the hardcoded name because we set it in the compose file
+            container = client.containers.get('nether-bridge')
+            timeout = 120  # 2 minutes
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                container.reload()
+                health_status = container.attrs.get('State', {}).get('Health', {}).get('Status')
+                if health_status == 'healthy':
+                    print("Nether-bridge is healthy.")
+                    break
+                time.sleep(2)
+            else: # This 'else' belongs to the 'while' loop
+                health_log = container.attrs.get('State', {}).get('Health', {}).get('Log')
+                last_log = health_log[-1] if health_log else "No health log."
+                raise Exception(f"Timeout waiting for nether-bridge container to become healthy. Last status: {health_status}. Last log: {last_log}")
+        finally:
+            client.close()
+        
     except subprocess.CalledProcessError as e:
         print(f"Error starting Docker Compose services: {e.stderr}")
         print(f"\n--- Logs for project '{docker_compose_project_name}' (if available) ---")
