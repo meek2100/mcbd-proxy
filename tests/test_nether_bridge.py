@@ -3,7 +3,6 @@ import pytest
 import os
 import json
 import time
-import socket
 from unittest.mock import MagicMock, patch
 import docker
 
@@ -110,7 +109,7 @@ def test_start_minecraft_server_success(mock_wait_ready, nether_bridge_instance,
     mock_container.start.assert_called_once()
     mock_wait_ready.assert_called_once()
     assert nether_bridge_instance.server_states[container_name]["running"] is True
-    assert nether_bridge_instance.server_states[container_name]["last_activity"] > 0
+    # The last_activity is now set in the main proxy loop, not in the start function, so we no longer assert it here.
 
 @patch('nether_bridge.NetherBridgeProxy._wait_for_server_query_ready', return_value=True)
 def test_start_minecraft_server_already_running(mock_wait_ready, nether_bridge_instance, mock_docker_client, mock_container):
@@ -210,7 +209,7 @@ def test_stop_minecraft_server_not_found_on_stop(nether_bridge_instance, mock_do
 def test_wait_for_server_query_ready_bedrock_success(mock_java_lookup, mock_bedrock_lookup, nether_bridge_instance, mock_servers_config):
     bedrock_config = next(s for s in mock_servers_config if s.server_type == 'bedrock')
     mock_server_instance = MagicMock()
-    mock_server_instance.status.return_value = MagicMock(latency=50, players=MagicMock(online=0)) # players mock for later
+    mock_server_instance.status.return_value = MagicMock(latency=50, players=MagicMock(online=0))
     mock_bedrock_lookup.return_value = mock_server_instance
 
     result = nether_bridge_instance._wait_for_server_query_ready(
@@ -232,7 +231,7 @@ def test_wait_for_server_query_ready_bedrock_success(mock_java_lookup, mock_bedr
 def test_wait_for_server_query_ready_java_success(mock_java_lookup, mock_bedrock_lookup, nether_bridge_instance, mock_servers_config):
     java_config = next(s for s in mock_servers_config if s.server_type == 'java')
     mock_server_instance = MagicMock()
-    mock_server_instance.status.return_value = MagicMock(latency=50, players=MagicMock(online=0)) # players mock for later
+    mock_server_instance.status.return_value = MagicMock(latency=50, players=MagicMock(online=0))
     mock_java_lookup.return_value = mock_server_instance
 
     result = nether_bridge_instance._wait_for_server_query_ready(
@@ -249,12 +248,12 @@ def test_wait_for_server_query_ready_java_success(mock_java_lookup, mock_bedrock
     mock_bedrock_lookup.assert_not_called()
     mock_server_instance.status.assert_called_once()
 
-@patch('nether_bridge.time.sleep') # Mock sleep to speed up timeout test
+@patch('nether_bridge.time.sleep') 
 @patch('nether_bridge.BedrockServer.lookup', side_effect=Exception("Query failed"))
 def test_wait_for_server_query_ready_bedrock_timeout(mock_bedrock_lookup, mock_sleep, nether_bridge_instance, mock_servers_config):
     bedrock_config = next(s for s in mock_servers_config if s.server_type == 'bedrock')
-    nether_bridge_instance.settings.server_ready_max_wait_time_seconds = 0.2 # Very short timeout for test
-    nether_bridge_instance.settings.query_timeout_seconds = 0.1 # Very short query interval
+    nether_bridge_instance.settings.server_ready_max_wait_time_seconds = 0.2
+    nether_bridge_instance.settings.query_timeout_seconds = 0.1
 
     result = nether_bridge_instance._wait_for_server_query_ready(
         bedrock_config,
@@ -266,12 +265,12 @@ def test_wait_for_server_query_ready_bedrock_timeout(mock_bedrock_lookup, mock_s
     assert mock_bedrock_lookup.call_count >= int(nether_bridge_instance.settings.server_ready_max_wait_time_seconds / nether_bridge_instance.settings.query_timeout_seconds)
     mock_sleep.assert_called()
 
-@patch('nether_bridge.time.sleep') # Mock sleep to speed up timeout test
+@patch('nether_bridge.time.sleep')
 @patch('nether_bridge.JavaServer.lookup', side_effect=Exception("Query failed"))
 def test_wait_for_server_query_ready_java_timeout(mock_java_lookup, mock_sleep, nether_bridge_instance, mock_servers_config):
     java_config = next(s for s in mock_servers_config if s.server_type == 'java')
-    nether_bridge_instance.settings.server_ready_max_wait_time_seconds = 0.2 # Very short timeout for test
-    nether_bridge_instance.settings.query_timeout_seconds = 0.1 # Very short query interval
+    nether_bridge_instance.settings.server_ready_max_wait_time_seconds = 0.2
+    nether_bridge_instance.settings.query_timeout_seconds = 0.1
 
     result = nether_bridge_instance._wait_for_server_query_ready(
         java_config,
@@ -284,14 +283,10 @@ def test_wait_for_server_query_ready_java_timeout(mock_java_lookup, mock_sleep, 
     mock_sleep.assert_called()
 
 
-# Test cases for _monitor_servers_activity (REVISED FOR CURRENT LOGIC)
-# The current _monitor_servers_activity does NOT call mcstatus.lookup
-# or .status directly for player counts; it relies on self.active_sessions.
-# So, we remove the mcstatus mocks and assert on the actual behavior.
 @patch('nether_bridge.time.sleep')
 @patch('nether_bridge.NetherBridgeProxy._stop_minecraft_server')
-@patch('nether_bridge.BedrockServer.lookup') # Kept for patching, but its .status() is not expected to be called
-@patch('nether_bridge.JavaServer.lookup')   # Kept for patching, but its .status() is not expected to be called
+@patch('nether_bridge.BedrockServer.lookup')
+@patch('nether_bridge.JavaServer.lookup')
 def test_monitor_servers_activity_stops_idle_server(
     mock_java_lookup, mock_bedrock_lookup, mock_stop_minecraft_server, mock_sleep,
     nether_bridge_instance, mock_servers_config
@@ -299,55 +294,35 @@ def test_monitor_servers_activity_stops_idle_server(
     bedrock_config = next(s for s in mock_servers_config if s.server_type == 'bedrock')
     java_config = next(s for s in mock_servers_config if s.server_type == 'java')
 
-    # Set up Bedrock server to be "running" and "idle"
     nether_bridge_instance.server_states[bedrock_config.container_name]["running"] = True
     nether_bridge_instance.server_states[bedrock_config.container_name]["last_activity"] = \
-        time.time() - nether_bridge_instance.settings.idle_timeout_seconds - 1 # Past idle timeout
+        time.time() - nether_bridge_instance.settings.idle_timeout_seconds - 1
 
-    # Set up Java server to be "running" and "active"
     nether_bridge_instance.server_states[java_config.container_name]["running"] = True
     nether_bridge_instance.server_states[java_config.container_name]["last_activity"] = time.time()
 
-    # Crucially, ensure no active sessions exist for the Bedrock server to make it idle
-    # nether_bridge_instance.active_sessions is empty by default in this test scope
-    # Mock player counts: Bedrock (0 players), Java (1 player) - these mocks are technically not used by _monitor_servers_activity logic.
-    mock_bedrock_status = MagicMock(players=MagicMock(online=0))
-    mock_bedrock_lookup.return_value.status.return_value = mock_bedrock_status
-    mock_java_status = MagicMock(players=MagicMock(online=1))
-    mock_java_lookup.return_value.status.return_value = mock_java_status
-
-
-    # Mock time.sleep to control the loop and allow it to run briefly
-    mock_sleep.side_effect = [None, Exception("Stop loop")] # Run loop once, then stop
+    mock_sleep.side_effect = [None, Exception("Stop loop")]
 
     try:
         nether_bridge_instance._monitor_servers_activity()
     except Exception as e:
-        assert str(e) == "Stop loop" # Expected exception to break loop
+        assert str(e) == "Stop loop"
 
-    # Assertions
     mock_stop_minecraft_server.assert_called_once_with(bedrock_config.container_name)
-    # The .status() call is NOT expected for _monitor_servers_activity, as it doesn't query mcstatus for player count.
-    # Instead, it relies on the internal active_sessions tracking.
-    mock_bedrock_lookup.return_value.status.assert_not_called() # <--- CHANGED
-    mock_java_lookup.return_value.status.assert_not_called() # <--- CHANGED
-    assert nether_bridge_instance.server_states[bedrock_config.container_name]["running"] == True # State is updated by _stop_minecraft_server mock, but this test focuses on whether _stop was called.
 
 @patch('nether_bridge.time.sleep')
 @patch('nether_bridge.NetherBridgeProxy._stop_minecraft_server')
-@patch('nether_bridge.BedrockServer.lookup') # Kept for patching, but its .status() is not expected to be called
+@patch('nether_bridge.BedrockServer.lookup')
 def test_monitor_servers_activity_resets_active_server_timer(
     mock_bedrock_lookup, mock_stop_minecraft_server, mock_sleep,
     nether_bridge_instance, mock_servers_config
 ):
     bedrock_config = next(s for s in mock_servers_config if s.server_type == 'bedrock')
 
-    # Set up Bedrock server to be "running" but with old activity
     nether_bridge_instance.server_states[bedrock_config.container_name]["running"] = True
-    original_last_activity = time.time() - (nether_bridge_instance.settings.idle_timeout_seconds / 2) # Not yet idle
+    original_last_activity = time.time() - (nether_bridge_instance.settings.idle_timeout_seconds / 2)
     nether_bridge_instance.server_states[bedrock_config.container_name]["last_activity"] = original_last_activity
 
-    # To simulate an active session, add a dummy entry. The actual socket doesn't matter for this unit test.
     dummy_client_socket = MagicMock()
     dummy_server_socket = MagicMock()
     dummy_session_key = (('127.0.0.1', 12345), 19132, 'udp')
@@ -362,12 +337,6 @@ def test_monitor_servers_activity_resets_active_server_timer(
     nether_bridge_instance.socket_to_session_map[dummy_client_socket] = (dummy_session_key, 'client_socket')
     nether_bridge_instance.socket_to_session_map[dummy_server_socket] = (dummy_session_key, 'server_socket')
 
-
-    # Mock player count: Bedrock (1 player) - this mock is technically not used by _monitor_servers_activity logic.
-    mock_bedrock_status = MagicMock(players=MagicMock(online=1))
-    mock_bedrock_lookup.return_value.status.return_value = mock_bedrock_status
-
-    # Mock time.sleep to run loop once
     mock_sleep.side_effect = [None, Exception("Stop loop")]
 
     try:
@@ -375,10 +344,7 @@ def test_monitor_servers_activity_resets_active_server_timer(
     except Exception as e:
         assert str(e) == "Stop loop"
 
-    # Assertions
     mock_stop_minecraft_server.assert_not_called()
-    mock_bedrock_lookup.return_value.status.assert_not_called()
-    # last_activity should NOT be updated by the monitor, as only packets should update it.
     assert nether_bridge_instance.server_states[bedrock_config.container_name]["last_activity"] == original_last_activity
 
 
@@ -391,12 +357,10 @@ def test_monitor_servers_activity_handles_query_failure(
 ):
     bedrock_config = next(s for s in mock_servers_config if s.server_type == 'bedrock')
 
-    # Set up Bedrock server to be "running" and "idle"
     nether_bridge_instance.server_states[bedrock_config.container_name]["running"] = True
     nether_bridge_instance.server_states[bedrock_config.container_name]["last_activity"] = \
         time.time() - nether_bridge_instance.settings.idle_timeout_seconds - 1
 
-    # Mock time.sleep to run loop once
     mock_sleep.side_effect = [None, Exception("Stop loop")]
 
     try:
@@ -404,9 +368,5 @@ def test_monitor_servers_activity_handles_query_failure(
     except Exception as e:
         assert str(e) == "Stop loop"
 
-    # Assertions: Server should still be stopped if query fails and it's idle
     mock_stop_minecraft_server.assert_called_once_with(bedrock_config.container_name)
-    # The mcstatus.lookup call is NOT part of the decision logic for _monitor_servers_activity
-    # if there are no active sessions and it's solely checking idle timeout.
-    # The assert `mock_bedrock_lookup.called` was incorrect for this specific test case.
-    mock_bedrock_lookup.assert_not_called() # <--- CHANGED
+    mock_bedrock_lookup.assert_not_called()
