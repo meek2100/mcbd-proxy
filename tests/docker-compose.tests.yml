@@ -8,7 +8,6 @@ services:
     build:
       context: ../
       dockerfile: Dockerfile
-
     restart: "no"
     networks:
       - mc-network
@@ -52,9 +51,9 @@ services:
     restart: "no"
     networks:
       - mc-network
-    volumes:
-      # Mount a local directory to /data in the container
-      - ./data/mc-bedrock:/data
+    # volumes:
+    # Mount a local directory to /data in the container
+    #  - ./data/mc-bedrock:/data
     environment:
       - EULA=TRUE
       - VERSION=1.21.84.1
@@ -68,9 +67,9 @@ services:
     restart: "no"
     networks:
       - mc-network
-    volumes:
-      # Mount a local directory to /data in the container
-      - ./data/mc-java:/data
+    # volumes:
+    # Mount a local directory to /data in the container
+    #  - ./data/mc-java:/data
     environment:
       - EULA=TRUE
       # Use Fabric for the fastest startup in tests
