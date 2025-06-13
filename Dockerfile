@@ -4,19 +4,19 @@ FROM python:3.10-slim-buster
 # Set working directory in the container
 WORKDIR /app
 
-# Argument to accept the Docker group ID from the host
+# Argument to accept the Docker group ID from the host, default to 999
 ARG DOCKER_GID=999
 
-# Create a 'docker' group with the specified GID, if it doesn't exist.
-RUN if ! getent group docker > /dev/null 2>&1; then \
-        addgroup --gid ${DOCKER_GID} docker; \
-    fi
+# Create a 'docker' group with the specified GID.
+RUN addgroup --gid ${DOCKER_GID} docker
 
-# Create a non-privileged user and add them to the 'docker' group
+# Create a non-privileged user and add them to the 'docker' group.
+# This makes 'docker' the primary group for the user.
 RUN adduser --system --ingroup docker --no-create-home nonroot
 
 # Create a writable directory for the application's runtime files
-RUN mkdir -p /run/app && chown nonroot:nonroot /run/app
+# and give ownership to the new user.
+RUN mkdir -p /run/app && chown nonroot:docker /run/app
 
 # Arguments for build metadata
 ARG BUILD_DATE
