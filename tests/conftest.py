@@ -61,20 +61,38 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
 
     print(f"\nStarting Docker Compose project '{docker_compose_project_name}' from {compose_file_path}...")
 
-    # --- NEW: Pre-cleanup step to ensure a clean slate ---
-    print(f"Pre-cleaning up any previous Docker Compose project '{docker_compose_project_name}'...")
+    # --- NEW: Aggressive Pre-cleanup for ANY previous test containers ---
+    print("Performing aggressive pre-cleanup of any stale 'netherbridge_test_' containers...")
     try:
-        subprocess.run(
-            ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'down', '--volumes', '--remove-orphans'],
-            check=False, # Do not raise an error if down fails (e.g., nothing to tear down)
-            capture_output=True,
-            text=True,
-            env=env_vars
-        )
-        print("Pre-cleanup complete (or nothing to clean).")
+        # Find all containers whose names start with 'netherbridge_test_'
+        list_cmd = ['docker', 'ps', '-aq', '--filter', 'name=netherbridge_test_']
+        result = subprocess.run(list_cmd, capture_output=True, text=True, check=False, env=env_vars)
+        container_ids = result.stdout.strip().splitlines()
+
+        if container_ids:
+            print(f"Found stale test containers: {', '.join(container_ids)}. Stopping and removing...")
+            stop_rm_cmd = ['docker', 'rm', '-f'] + container_ids
+            subprocess.run(stop_rm_cmd, capture_output=True, text=True, check=False, env=env_vars)
+            print("Stale test containers removed.")
+        else:
+            print("No stale 'netherbridge_test_' containers found.")
     except Exception as e:
-        print(f"Warning during pre-cleanup: {e}")
+        print(f"Warning during aggressive pre-cleanup: {e}")
     # --- END NEW ---
+
+    # Optional: Initial down for the current project name (redundant with aggressive cleanup, but safe)
+    # print(f"Pre-cleaning up any previous Docker Compose project '{docker_compose_project_name}'...")
+    # try:
+    #     subprocess.run(
+    #         ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'down', '--volumes', '--remove-orphans'],
+    #         check=False, # Do not raise an error if down fails (e.g., nothing to tear down)
+    #         capture_output=True,
+    #         text=True,
+    #         env=env_vars
+    #     )
+    #     print("Pre-cleanup complete (or nothing to clean).")
+    # except Exception as e:
+    #     print(f"Warning during pre-cleanup: {e}")
 
 
     try:
