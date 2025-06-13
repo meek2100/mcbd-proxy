@@ -2,7 +2,7 @@ services:
   # The on-demand Minecraft proxy service
   nether-bridge:
     container_name: nether-bridge
-    image: ghcr.io/meek2100/mcbd-proxy:develop
+    image: ghcr.io/meek2100/mcbd-proxy:latest
     restart: unless-stopped
     networks:
       - mc-network
