@@ -1,5 +1,4 @@
 # tests/docker-compose.tests.yml
-# This file is configured for self-contained integration testing.
 services:
   nether-bridge:
     image: nether-bridge-test:local
@@ -21,7 +20,7 @@ services:
       - NB_IDLE_TIMEOUT=30
       - NB_PLAYER_CHECK_INTERVAL=5
       - NB_QUERY_TIMEOUT=2
-      - NB_SERVER_READY_MAX_WAIT=30
+      - NB_SERVER_READY_MAX_WAIT=120
       - NB_INITIAL_BOOT_READY_MAX_WAIT=45
       - NB_SERVER_STARTUP_DELAY=2
       - NB_INITIAL_SERVER_QUERY_DELAY=2
@@ -51,7 +50,6 @@ services:
     networks:
       - mc-network
     volumes:
-      # Use a named volume instead of a bind mount
       - mc-bedrock-data:/data
     environment:
       - EULA=TRUE
@@ -66,7 +64,6 @@ services:
     networks:
       - mc-network
     volumes:
-      # Use a named volume instead of a bind mount
       - mc-java-data:/data
     environment:
       - EULA=TRUE
@@ -81,7 +78,6 @@ networks:
   mc-network:
     driver: bridge
 
-# Define the named volumes at the top level
 volumes:
   mc-bedrock-data:
   mc-java-data:

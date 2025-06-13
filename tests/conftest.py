@@ -1,4 +1,3 @@
-# tests/conftest.py
 import pytest
 import docker
 import subprocess
@@ -9,7 +8,6 @@ import sys
 
 _local_vm_host_ip = None
 _local_docker_host_from_file = None 
-_local_docker_gid = None
 
 try:
     current_tests_dir = str(Path(__file__).parent)
@@ -25,16 +23,11 @@ try:
     _local_docker_host_from_file = LOCAL_DOCKER_HOST_VALUE
     print(f"Using local DOCKER_HOST from local_env.py: {LOCAL_DOCKER_HOST_VALUE}")
 
-    from local_env import DOCKER_GID as LOCAL_DOCKER_GID
-    _local_docker_gid = str(LOCAL_DOCKER_GID)
-    print(f"Using local DOCKER_GID from local_env.py: {_local_docker_gid}")
-
 except ImportError:
-    print("local_env.py not found or incomplete. Relying on environment or defaults for CI/CD and local Docker Desktop.")
+    print("local_env.py not found or incomplete. Relying on defaults for local/CI.")
 finally:
     if 'current_tests_dir' in locals() and current_tests_dir in sys.path:
         sys.path.remove(current_tests_dir)
-
 
 def pytest_addoption(parser):
     parser.addoption(
@@ -55,10 +48,6 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
         subprocess_env['DOCKER_HOST'] = _local_docker_host_from_file
         print(f"Passing DOCKER_HOST={subprocess_env['DOCKER_HOST']} to subprocess commands.")
 
-    if _local_docker_gid:
-        subprocess_env['DOCKER_GID'] = _local_docker_gid
-        print(f"Passing DOCKER_GID={subprocess_env['DOCKER_GID']} to subprocess commands.")
-
     print(f"\nStarting Docker Compose project '{docker_compose_project_name}' from {compose_file_path}...")
 
     print("Performing aggressive pre-cleanup of any stale test containers...")
@@ -75,10 +64,10 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
         print(f"Warning during aggressive pre-cleanup: {e}")
 
     try:
-        build_command = ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'build', '--no-cache', 'nether-bridge']
+        build_command = ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'build', '--no-cache']
         print(f"Running command: {' '.join(build_command)}")
         subprocess.run(build_command, check=True, capture_output=True, text=True, env=subprocess_env)
-        print("Nether-bridge image built successfully for testing.")
+        print("All test images built successfully.")
 
         create_command = ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'create']
         print(f"Running command: {' '.join(create_command)}")
