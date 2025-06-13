@@ -20,6 +20,7 @@ try:
 
     from local_env import DOCKER_HOST as LOCAL_DOCKER_HOST
     _local_docker_host = LOCAL_DOCKER_HOST
+    os.environ['DOCKER_HOST'] = LOCAL_DOCKER_HOST # Ensure it's set in os.environ for docker.from_env()
     print(f"Using local DOCKER_HOST from local_env.py: {LOCAL_DOCKER_HOST}")
 
 except ImportError:
@@ -49,22 +50,21 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
     """
     compose_file_path = str(pytestconfig.rootdir / 'tests' / 'docker-compose.tests.yml')
     
-    # Create a copy of the current environment to pass to subprocesses
     env_vars = os.environ.copy()
-    if _local_docker_host:
+    if _local_docker_host: # This branch is for local testing, where _local_docker_host will be set
         env_vars['DOCKER_HOST'] = _local_docker_host
         print(f"Passing DOCKER_HOST={env_vars['DOCKER_HOST']} to subprocess commands.")
-    elif 'DOCKER_HOST' in env_vars:
+    elif 'DOCKER_HOST' in env_vars: # This branch for CI or if DOCKER_HOST is set otherwise
         print(f"DOCKER_HOST is already set in environment: {env_vars['DOCKER_HOST']}")
-    else:
+    else: # Fallback if no DOCKER_HOST is set anywhere
         print("DOCKER_HOST not set in local_env.py or environment. Subprocesses will use default Docker context.")
+
 
     print(f"\nStarting Docker Compose project '{docker_compose_project_name}' from {compose_file_path}...")
 
-    # --- NEW: Aggressive Pre-cleanup for ANY previous test containers ---
+    # Aggressive Pre-cleanup for ANY previous test containers
     print("Performing aggressive pre-cleanup of any stale 'netherbridge_test_' containers...")
     try:
-        # Find all containers whose names start with 'netherbridge_test_'
         list_cmd = ['docker', 'ps', '-aq', '--filter', 'name=netherbridge_test_']
         result = subprocess.run(list_cmd, capture_output=True, text=True, check=False, env=env_vars)
         container_ids = result.stdout.strip().splitlines()
@@ -78,22 +78,6 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
             print("No stale 'netherbridge_test_' containers found.")
     except Exception as e:
         print(f"Warning during aggressive pre-cleanup: {e}")
-    # --- END NEW ---
-
-    # Optional: Initial down for the current project name (redundant with aggressive cleanup, but safe)
-    # print(f"Pre-cleaning up any previous Docker Compose project '{docker_compose_project_name}'...")
-    # try:
-    #     subprocess.run(
-    #         ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'down', '--volumes', '--remove-orphans'],
-    #         check=False, # Do not raise an error if down fails (e.g., nothing to tear down)
-    #         capture_output=True,
-    #         text=True,
-    #         env=env_vars
-    #     )
-    #     print("Pre-cleanup complete (or nothing to clean).")
-    # except Exception as e:
-    #     print(f"Warning during pre-cleanup: {e}")
-
 
     try:
         # Build the nether-bridge image first (explicitly for the test build context)
@@ -116,19 +100,18 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
             env=env_vars
         )
         print(f"Docker Compose project '{docker_compose_project_name}' started and healthy.")
-        time.sleep(5) # Give a small buffer for proxy to fully initialize after healthchecks
+        time.sleep(5)
     except subprocess.CalledProcessError as e:
         print(f"Error starting Docker Compose services: {e.stderr}")
         print(f"\n--- Logs for project '{docker_compose_project_name}' (if available) ---")
         try:
-            logs_command = ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'logs']
-            logs = subprocess.run(logs_command, capture_output=True, text=True, check=False, env=env_vars)
+            logs_cmd = ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'logs']
+            logs = subprocess.run(logs_cmd, capture_output=True, text=True, check=False, env=env_vars)
             print(logs.stdout)
             if logs.stderr:
                 print(f"Stderr logs: {logs.stderr}")
         except Exception as log_e:
             print(f"Could not retrieve logs: {log_e}")
-        # Always attempt a forceful teardown on setup failure
         print(f"\nAttempting forceful teardown after setup failure for '{docker_compose_project_name}'...")
         try:
             subprocess.run(
@@ -141,10 +124,9 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
             print("Forceful teardown initiated.")
         except Exception as teardown_e:
             print(f"Error during forceful teardown: {teardown_e}")
-        raise # Re-raise the original exception to mark the test as failed
+        raise
     except Exception as e:
         print(f"An unexpected error occurred during Docker Compose setup: {e}")
-        # Also attempt forceful teardown on unexpected errors
         print(f"\nAttempting forceful teardown after unexpected setup error for '{docker_compose_project_name}'...")
         try:
             subprocess.run(
@@ -166,7 +148,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
     try:
         subprocess.run(
             ['docker', 'compose', '-p', docker_compose_project_name, '-f', compose_file_path, 'down', '--volumes', '--remove-orphans'],
-            check=True, # Should ideally succeed here
+            check=True,
             capture_output=True,
             text=True,
             env=env_vars
@@ -174,6 +156,27 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
         print(f"Docker Compose project '{docker_compose_project_name}' stopped and removed.")
     except subprocess.CalledProcessError as e:
         print(f"Error tearing down Docker Compose services: {e.stderr}")
-        # Don't re-raise, try to clean up as much as possible even if stopping fails
     except Exception as e:
         print(f"An unexpected error occurred during Docker Compose teardown: {e}")
+
+
+@pytest.fixture(scope='session')
+def docker_client_fixture():
+    """Provides a Docker client instance for integration tests."""
+    client = None
+    try:
+        # Attempt to create the Docker client.
+        # It will use DOCKER_HOST from os.environ or default to local socket.
+        client = docker.from_env()
+        # Optional: Ping the Docker daemon to check connection
+        client.ping()
+        print("\nSuccessfully connected to Docker daemon for Docker client fixture.")
+    except docker.errors.DockerException as e:
+        pytest.fail(f"Could not connect to Docker daemon for client fixture. Ensure Docker is running and DOCKER_HOST is correctly set. Error: {e}")
+    except Exception as e:
+        pytest.fail(f"An unexpected error occurred while setting up Docker client fixture: {e}")
+    
+    yield client
+    
+    if client:
+        client.close()
