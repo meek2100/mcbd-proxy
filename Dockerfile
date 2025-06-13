@@ -8,17 +8,15 @@ WORKDIR /app
 ARG DOCKER_GID=999
 
 # Create a 'docker' group with the specified GID.
-# This is for interacting with the Docker socket.
 RUN addgroup --gid ${DOCKER_GID} docker
 
-# Create a 'nonroot' group and user, then add the user to the 'docker' group.
-RUN addgroup --system nonroot && \
-    adduser --system --ingroup nonroot --no-create-home nonroot && \
-    adduser nonroot docker
+# Create a non-privileged user and add them to the 'docker' group.
+# This makes 'docker' the primary group for the user.
+RUN adduser --system --ingroup docker --no-create-home nonroot
 
 # Create a writable directory for the application's runtime files
-# and give ownership to the new nonroot user and group.
-RUN mkdir -p /run/app && chown nonroot:nonroot /run/app
+# and give ownership to the new user.
+RUN mkdir -p /run/app && chown nonroot:docker /run/app
 
 # Arguments for build metadata
 ARG BUILD_DATE
