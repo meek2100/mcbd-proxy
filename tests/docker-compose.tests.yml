@@ -3,10 +3,12 @@
 # It sets up a minimal environment with Nether-bridge and two Minecraft servers.
 services:
   nether-bridge:
+    image: nether-bridge-test:local
+    container_name: nether-bridge
     build:
       context: ../
       dockerfile: Dockerfile
-    container_name: nether-bridge
+
     restart: "no"
     networks:
       - mc-network
@@ -46,8 +48,8 @@ services:
 
   mc-bedrock:
     image: itzg/minecraft-bedrock-server:latest
-    restart: "no"
     container_name: mc-bedrock
+    restart: "no"
     networks:
       - mc-network
     volumes:
@@ -62,8 +64,8 @@ services:
 
   mc-java:
     image: itzg/minecraft-server:latest
-    restart: "no"
     container_name: mc-java
+    restart: "no"
     networks:
       - mc-network
     volumes:
