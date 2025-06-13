@@ -28,13 +28,15 @@ jobs:
           pip install pytest pytest-mock # Install testing-specific dependencies
 
       # Step 4: Run the fast Unit Tests first
+      # Use the marker system to run all tests that are NOT marked as 'integration'
       - name: Run Unit Tests
-        run: pytest tests/test_nether_bridge.py
+        run: pytest -m "not integration" tests/
 
       # Step 5: Run the full Integration Tests
-      # VM_HOST_IP is set to 127.0.0.1 because in the GitHub Actions runner,
+      # We set VM_HOST_IP to 127.0.0.1 because in the GitHub Actions runner,
       # the Docker containers and the test script are on the same "machine".
+      # Use the marker system to run ONLY tests marked as 'integration'
       - name: Run Integration Tests
         env:
           VM_HOST_IP: 127.0.0.1
-        run: pytest -m integration -s --log-cli-level=DEBUG tests/
+        run: pytest -m "integration" -s --log-cli-level=DEBUG tests/
