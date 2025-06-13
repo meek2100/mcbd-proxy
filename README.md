@@ -189,7 +189,7 @@ services:
 
 These settings control the proxy's behavior, such as idle timeouts and query intervals.
 
-| Environment Variable | settings.json Key | Default Value | Description |
+| Environment Variable | `settings.json` Key | Default Value | Description |
 | :------------------------------- | :----------------------------------- | :------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `LOG_LEVEL` | `log_level` | `INFO` | Sets the logging verbosity. Options: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
 | `NB_IDLE_TIMEOUT` | `idle_timeout_seconds` | `600` | Time in seconds a server must have 0 players before it's automatically stopped. |
