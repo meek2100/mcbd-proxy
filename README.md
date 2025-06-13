@@ -94,7 +94,7 @@ Nether-bridge can be configured using environment variables or JSON files. Envir
 
 These methods can be mixed, but it's important to understand the order of precedence:
 
-**Environment Variables > Mounted JSON Files > Built-in Defaults**
+### Environment Variables > Mounted JSON Files > Built-in Defaults
 
 Any setting defined as an environment variable will override the same setting found in a mounted `settings.json` or `servers.json` file. The application uses built-in defaults for any setting not provided by either method.
 
