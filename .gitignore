@@ -16,6 +16,7 @@ __pycache__/
 data/
 
 # Logs
+.coverage
 *.log
 logs/
 
@@ -33,3 +34,4 @@ desktop.ini # Windows
 
 # Local test environment overrides
 tests/local_env.py
+
