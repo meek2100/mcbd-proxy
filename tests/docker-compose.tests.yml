@@ -51,9 +51,9 @@ services:
     restart: "no"
     networks:
       - mc-network
-    # volumes:
+    volumes:
     # Mount a local directory to /data in the container
-    #  - ./data/mc-bedrock:/data
+      - ./data/mc-bedrock:/data
     environment:
       - EULA=TRUE
       - VERSION=1.21.84.1
@@ -67,9 +67,9 @@ services:
     restart: "no"
     networks:
       - mc-network
-    # volumes:
+    volumes:
     # Mount a local directory to /data in the container
-    #  - ./data/mc-java:/data
+      - ./data/mc-java:/data
     environment:
       - EULA=TRUE
       # Use Fabric for the fastest startup in tests
