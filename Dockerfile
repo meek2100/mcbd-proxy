@@ -4,6 +4,9 @@ FROM python:3.10-slim-buster
 # Set working directory in the container
 WORKDIR /app
 
+# Create a non-privileged user and group to run the application
+RUN addgroup --system nonroot && adduser --system --ingroup nonroot nonroot
+
 # Arguments for build metadata (populated by GitHub Actions)
 ARG BUILD_DATE
 ARG APP_VERSION
@@ -25,6 +28,9 @@ RUN mkdir -p /app/data/nether-bridge
 EXPOSE 19132/udp
 EXPOSE 25565/udp
 EXPOSE 25565/tcp
+
+# Switch to the non-privileged user
+USER nonroot
 
 # Define entrypoint script to run your main Python application
 ENTRYPOINT ["python", "nether_bridge.py"]
