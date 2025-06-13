@@ -32,10 +32,9 @@ jobs:
         run: pytest tests/test_nether_bridge.py
 
       # Step 5: Run the full Integration Tests
-      # We set VM_HOST_IP to 127.0.0.1 because in the GitHub Actions runner,
+      # VM_HOST_IP is set to 127.0.0.1 because in the GitHub Actions runner,
       # the Docker containers and the test script are on the same "machine".
       - name: Run Integration Tests
         env:
           VM_HOST_IP: 127.0.0.1
-        # Point conftest.py to the correct compose file
-        run: pytest -s --log-cli-level=DEBUG tests/integration_tests/
+        run: pytest -m integration -s --log-cli-level=DEBUG tests/

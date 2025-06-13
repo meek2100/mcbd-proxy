@@ -9,7 +9,7 @@ import sys
 
 # Try to load local environment specific IP and DOCKER_HOST for testing
 _local_vm_host_ip = None
-_local_docker_host = None
+_local_docker_host_from_file = None # Renamed to avoid confusion with os.environ.get
 
 try:
     current_tests_dir = str(Path(__file__).parent)
@@ -17,14 +17,14 @@ try:
         sys.path.insert(0, current_tests_dir)
     
     from local_env import VM_HOST_IP as LOCAL_VM_HOST_IP
-    _local_vm_host_ip = LOCAL_VM_HOST_IP # Store for test logic
-    os.environ['VM_HOST_IP'] = LOCAL_VM_HOST_IP # Set for test_integration.py
+    _local_vm_host_ip = LOCAL_VM_HOST_IP
+    os.environ['VM_HOST_IP'] = LOCAL_VM_HOST_IP # Set for test_integration.py to use
     print(f"Using local VM_HOST_IP from local_env.py: {LOCAL_VM_HOST_IP}")
 
-    from local_env import DOCKER_HOST as LOCAL_DOCKER_HOST
-    _local_docker_host = LOCAL_DOCKER_HOST # Store for subprocess commands AND docker client
-    os.environ['DOCKER_HOST'] = LOCAL_DOCKER_HOST # Ensure it's set in os.environ for docker.from_env()
-    print(f"Using local DOCKER_HOST from local_env.py: {LOCAL_DOCKER_HOST}")
+    from local_env import DOCKER_HOST as LOCAL_DOCKER_HOST_VALUE
+    _local_docker_host_from_file = LOCAL_DOCKER_HOST_VALUE # Store for explicit use in fixture
+    os.environ['DOCKER_HOST'] = LOCAL_DOCKER_HOST_VALUE # Also set in os.environ for subprocess
+    print(f"Using local DOCKER_HOST from local_env.py: {LOCAL_DOCKER_HOST_VALUE}")
 
 except ImportError:
     print("local_env.py not found in tests/. Relying on environment or default 127.0.0.1 for CI/CD.")
@@ -54,13 +54,15 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
     compose_file_path = str(pytestconfig.rootdir / 'tests' / 'docker-compose.tests.yml')
     
     env_vars = os.environ.copy()
-    if _local_docker_host:
-        env_vars['DOCKER_HOST'] = _local_docker_host
+    # Always ensure DOCKER_HOST is correctly set for subprocess commands
+    # This takes precedence over any DOCKER_HOST already in os.environ if local_env.py is used.
+    if _local_docker_host_from_file:
+        env_vars['DOCKER_HOST'] = _local_docker_host_from_file
         print(f"Passing DOCKER_HOST={env_vars['DOCKER_HOST']} to subprocess commands.")
     elif 'DOCKER_HOST' in env_vars:
-        print(f"DOCKER_HOST is already set in environment: {env_vars['DOCKER_HOST']}")
+        print(f"DOCKER_HOST is already set in environment for subprocesses: {env_vars['DOCKER_HOST']}")
     else:
-        print("DOCKER_HOST not set in local_env.py or environment. Subprocesses will use default Docker context.")
+        print("DOCKER_HOST not set by local_env.py or host environment. Subprocesses will use default Docker context.")
 
 
     print(f"\nStarting Docker Compose project '{docker_compose_project_name}' from {compose_file_path}...")
@@ -68,17 +70,28 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
     # Aggressive Pre-cleanup for ANY previous test containers
     print("Performing aggressive pre-cleanup of any stale 'netherbridge_test_' containers...")
     try:
-        list_cmd = ['docker', 'ps', '-aq', '--filter', 'name=netherbridge_test_']
+        list_cmd = ['docker', 'ps', '-aq', '--filter', 'status=running', '--filter', 'name=netherbridge_test_'] # Only running containers
         result = subprocess.run(list_cmd, capture_output=True, text=True, check=False, env=env_vars)
         container_ids = result.stdout.strip().splitlines()
 
         if container_ids:
-            print(f"Found stale test containers: {', '.join(container_ids)}. Stopping and removing...")
+            print(f"Found running stale test containers: {', '.join(container_ids)}. Stopping and removing...")
             stop_rm_cmd = ['docker', 'rm', '-f'] + container_ids
             subprocess.run(stop_rm_cmd, capture_output=True, text=True, check=False, env=env_vars)
             print("Stale test containers removed.")
         else:
-            print("No stale 'netherbridge_test_' containers found.")
+            print("No running stale 'netherbridge_test_' containers found.")
+
+        # Also clean up exited ones just in case
+        list_cmd_exited = ['docker', 'ps', '-aq', '--filter', 'status=exited', '--filter', 'name=netherbridge_test_']
+        result_exited = subprocess.run(list_cmd_exited, capture_output=True, text=True, check=False, env=env_vars)
+        container_ids_exited = result_exited.stdout.strip().splitlines()
+        if container_ids_exited:
+            print(f"Found exited stale test containers: {', '.join(container_ids_exited)}. Removing...")
+            rm_cmd_exited = ['docker', 'rm'] + container_ids_exited
+            subprocess.run(rm_cmd_exited, capture_output=True, text=True, check=False, env=env_vars)
+            print("Exited stale test containers removed.")
+
     except Exception as e:
         print(f"Warning during aggressive pre-cleanup: {e}")
 
@@ -168,17 +181,16 @@ def docker_client_fixture():
     """Provides a Docker client instance for integration tests."""
     client = None
     try:
-        # Get DOCKER_HOST from the environment, defaulting to local if not set by local_env.py
-        # On Windows, docker.from_env() might prefer local named pipes, so explicitly pass base_url
-        docker_host = os.environ.get('DOCKER_HOST')
-        if docker_host:
-            # For TCP, it might be 'tcp://host:port'. For named pipes, 'npipe:///'
-            client = docker.DockerClient(base_url=docker_host) # <--- EXPLICITLY pass base_url
-            print(f"\nAttempting to connect Docker client to: {docker_host}")
+        # If _local_docker_host_from_file is set, it means local_env.py was found,
+        # so explicitly connect to the remote DOCKER_HOST.
+        if _local_docker_host_from_file:
+            client = docker.DockerClient(base_url=_local_docker_host_from_file)
+            print(f"\nAttempting to connect Docker client to remote: {_local_docker_host_from_file}")
         else:
-            # Fallback to default behavior (e.g., local named pipe on Windows, socket on Linux)
+            # Otherwise, rely on docker.from_env() which will pick up local named pipes/sockets
+            # or DOCKER_HOST if set in the CI environment.
             client = docker.from_env()
-            print("\nAttempting to connect Docker client using default environment variables.")
+            print("\nAttempting to connect Docker client using default (local or CI) environment variables.")
         
         client.ping()
         print("Successfully connected to Docker daemon for Docker client fixture.")
