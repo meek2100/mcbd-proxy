@@ -377,9 +377,9 @@ def test_monitor_servers_activity_resets_active_server_timer(
 
     # Assertions
     mock_stop_minecraft_server.assert_not_called()
-    mock_bedrock_lookup.return_value.status.assert_not_called() # <--- CHANGED
-    # last_activity should be updated (newer than original)
-    assert nether_bridge_instance.server_states[bedrock_config.container_name]["last_activity"] > original_last_activity
+    mock_bedrock_lookup.return_value.status.assert_not_called()
+    # last_activity should NOT be updated by the monitor, as only packets should update it.
+    assert nether_bridge_instance.server_states[bedrock_config.container_name]["last_activity"] == original_last_activity
 
 
 @patch('nether_bridge.time.sleep')

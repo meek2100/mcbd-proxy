@@ -254,9 +254,9 @@ class NetherBridgeProxy:
                 )
 
                 if has_active_sessions:
-                    # If there are sessions, reset the server's idle timer.
-                    state["last_activity"] = current_time
-                    self.logger.debug(f"[{container_name}] Server has active sessions. Resetting idle timer.")
+                    # Server has active sessions, so we don't shut it down.
+                    # The last_activity timer is correctly updated upon packet receipt, not here.
+                    self.logger.debug(f"[{container_name}] Server has active sessions. Not stopping.")
                 else:
                     # No sessions, now check if the idle timeout has passed
                     if (current_time - state.get("last_activity", 0) > self.settings.idle_timeout_seconds):
