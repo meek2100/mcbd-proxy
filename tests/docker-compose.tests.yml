@@ -56,6 +56,7 @@ services:
     environment:
       - EULA=TRUE
       - VERSION=1.21.84.1
+      - IDLE_TIMEOUT=-1
     #  - DIRECT_DOWNLOAD_URL=https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.21.84.1.zip
     # Removed explicit healthcheck, relying on container running state for now.
 
