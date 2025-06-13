@@ -54,8 +54,6 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
     compose_file_path = str(pytestconfig.rootdir / 'tests' / 'docker-compose.tests.yml')
     
     env_vars = os.environ.copy()
-    # Always ensure DOCKER_HOST is correctly set for subprocess commands
-    # This takes precedence over any DOCKER_HOST already in os.environ if local_env.py is used.
     if _local_docker_host_from_file:
         env_vars['DOCKER_HOST'] = _local_docker_host_from_file
         print(f"Passing DOCKER_HOST={env_vars['DOCKER_HOST']} to subprocess commands.")
@@ -64,40 +62,28 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
     else:
         print("DOCKER_HOST not set by local_env.py or host environment. Subprocesses will use default Docker context.")
 
-
     print(f"\nStarting Docker Compose project '{docker_compose_project_name}' from {compose_file_path}...")
 
     # Aggressive Pre-cleanup for ANY previous test containers
-    print("Performing aggressive pre-cleanup of any stale 'netherbridge_test_' containers...")
+    print("Performing aggressive pre-cleanup of any stale test containers...")
     try:
-        # Stop and remove any running containers with the test name prefix
-        list_cmd_running = ['docker', 'ps', '-aq', '--filter', 'status=running', '--filter', 'name=netherbridge_test_']
-        result_running = subprocess.run(list_cmd_running, capture_output=True, text=True, check=False, env=env_vars)
-        container_ids_running = result_running.stdout.strip().splitlines()
-        if container_ids_running:
-            print(f"Found running stale test containers: {', '.join(container_ids_running)}. Stopping and removing...")
-            stop_rm_cmd = ['docker', 'rm', '-f'] + container_ids_running
-            subprocess.run(stop_rm_cmd, capture_output=True, text=True, check=False, env=env_vars)
-            print("Running stale test containers removed.")
+        # Remove any containers from previous test runs based on the project name prefix
+        list_cmd_prefix = ['docker', 'ps', '-aq', '--filter', 'name=netherbridge_test_']
+        result_prefix = subprocess.run(list_cmd_prefix, capture_output=True, text=True, check=False, env=env_vars)
+        prefix_ids = result_prefix.stdout.strip().splitlines()
+        if prefix_ids:
+            print(f"Found stale containers by prefix: {', '.join(prefix_ids)}. Forcibly removing...")
+            subprocess.run(['docker', 'rm', '-f'] + prefix_ids, check=False, capture_output=True, text=True, env=env_vars)
         
-        # Remove any exited containers with the test name prefix
-        list_cmd_exited = ['docker', 'ps', '-aq', '--filter', 'status=exited', '--filter', 'name=netherbridge_test_']
-        result_exited = subprocess.run(list_cmd_exited, capture_output=True, text=True, check=False, env=env_vars)
-        container_ids_exited = result_exited.stdout.strip().splitlines()
-        if container_ids_exited:
-            print(f"Found exited stale test containers: {', '.join(container_ids_exited)}. Removing...")
-            rm_cmd_exited = ['docker', 'rm'] + container_ids_exited
-            subprocess.run(rm_cmd_exited, capture_output=True, text=True, check=False, env=env_vars)
-            print("Exited stale test containers removed.")
-
-        # Also specifically remove the hardcoded container name if it exists from a failed run
-        list_cmd_hardcoded = ['docker', 'ps', '-aq', '--filter', 'name=nether-bridge']
-        result_hardcoded = subprocess.run(list_cmd_hardcoded, capture_output=True, text=True, check=False, env=env_vars)
-        hardcoded_ids = result_hardcoded.stdout.strip().splitlines()
-        if hardcoded_ids:
-            print(f"Found stale 'nether-bridge' container: {', '.join(hardcoded_ids)}. Forcibly removing...")
-            subprocess.run(['docker', 'rm', '-f'] + hardcoded_ids, check=False, capture_output=True, text=True, env=env_vars)
-            print("Stale 'nether-bridge' container removed.")
+        # Also specifically remove containers by their hardcoded names, in case they were left orphaned
+        hardcoded_names_to_remove = ["nether-bridge", "mc-bedrock", "mc-java"]
+        for name in hardcoded_names_to_remove:
+            list_cmd_hardcoded = ['docker', 'ps', '-aq', '--filter', f'name={name}']
+            result_hardcoded = subprocess.run(list_cmd_hardcoded, capture_output=True, text=True, check=False, env=env_vars)
+            hardcoded_ids = result_hardcoded.stdout.strip().splitlines()
+            if hardcoded_ids:
+                print(f"Found stale container(s) with name '{name}': {', '.join(hardcoded_ids)}. Forcibly removing...")
+                subprocess.run(['docker', 'rm', '-f'] + hardcoded_ids, check=False, capture_output=True, text=True, env=env_vars)
 
     except Exception as e:
         print(f"Warning during aggressive pre-cleanup: {e}")
@@ -124,9 +110,8 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
 
         # 3. Manually wait for the nether-bridge container to become healthy.
         print("Waiting for nether-bridge container to become healthy...")
-        client = docker.from_env()
+        client = docker.from_env(environment=env_vars)
         try:
-            # We use the hardcoded name because we set it in the compose file
             container = client.containers.get('nether-bridge')
             timeout = 120  # 2 minutes
             start_time = time.time()
@@ -186,7 +171,8 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
 
     yield # Yield control to tests
 
-    # Teardown: Stop and remove services automatically after tests complete.
+    # The existing teardown logic is already correct.
+    # `down --volumes` will remove the named volumes we created.
     print(f"\nTests finished. Tearing down Docker Compose project '{docker_compose_project_name}'...")
     try:
         subprocess.run(
