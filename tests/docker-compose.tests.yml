@@ -7,8 +7,11 @@ services:
     build:
       context: ../
       dockerfile: Dockerfile
+      # Pass the Docker GID as a build argument.
+      # Use an environment variable that defaults to 999 for local/Debian.
+      # In the CI workflow, we will set this to the correct value for that runner.
       args:
-        - DOCKER_GID=999
+        - DOCKER_GID=${DOCKER_GID:-999}
     restart: "no"
     networks:
       - mc-network

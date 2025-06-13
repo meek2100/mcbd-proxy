@@ -49,4 +49,6 @@ jobs:
       - name: Run Integration Tests
         env:
           VM_HOST_IP: 127.0.0.1
+          # Set the Docker GID for the GitHub Actions runner environment
+          DOCKER_GID: 121
         run: pytest -m "integration" -s --log-cli-level=DEBUG tests/

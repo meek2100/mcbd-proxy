@@ -4,21 +4,16 @@ FROM python:3.10-slim-buster
 # Set working directory in the container
 WORKDIR /app
 
-# Argument to accept the Docker group ID from the host, default to 999 for Linux systems
+# Argument to accept the Docker group ID from the host. Defaults to 999 for most systems.
 ARG DOCKER_GID=999
 
-# Create a 'docker' group with the specified GID for socket access
-RUN addgroup --gid ${DOCKER_GID} docker
+# Create a group with the host's Docker GID and a dedicated user for the app.
+# Add the new user to this group so it can access the Docker socket.
+RUN addgroup --gid ${DOCKER_GID} dockersocket && \
+    adduser --system --no-create-home --ingroup dockersocket nonroot
 
-# Create a 'nonroot' group and user for the application itself
-RUN addgroup --system nonroot && \
-    adduser --system --ingroup nonroot --no-create-home nonroot
-
-# Add the nonroot user to the 'docker' group for Docker socket access
-RUN adduser nonroot docker
-
-# Create a writable directory for runtime files and give ownership to the new nonroot user and group
-RUN mkdir -p /run/app && chown nonroot:nonroot /run/app
+# Create a writable directory for runtime files
+RUN mkdir -p /run/app && chown nonroot:dockersocket /run/app
 
 # Arguments for build metadata
 ARG BUILD_DATE
@@ -35,14 +30,14 @@ COPY settings.json .
 COPY servers.json .
 
 # Change ownership of the app directory and its contents to the non-root user
-RUN chown -R nonroot:nonroot /app
+RUN chown -R nonroot:dockersocket /app
 
 # Expose ports
 EXPOSE 19132/udp
 EXPOSE 25565/tcp
 EXPOSE 25565/udp
 
-# Switch to the non-privileged user
+# Switch to the non-privileged user before running the application
 USER nonroot
 
 # Define entrypoint
