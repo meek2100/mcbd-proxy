@@ -254,11 +254,11 @@ class NetherBridgeProxy:
                 )
 
                 if has_active_sessions:
-                    # Server has active sessions, so we don't shut it down.
-                    # The last_activity timer is correctly updated upon packet receipt, not here.
+                    # If there are sessions, the server remains active.
+                    # The last_activity timer is correctly updated upon packet receipt in the main loop, not here.
                     self.logger.debug(f"[{container_name}] Server has active sessions. Not stopping.")
                 else:
-                    # No sessions, now check if the idle timeout has passed
+                    # No sessions, now check if the idle timeout has passed since the last packet.
                     if (current_time - state.get("last_activity", 0) > self.settings.idle_timeout_seconds):
                         self.logger.info(f"[{container_name}] Idle for over {self.settings.idle_timeout_seconds}s with 0 sessions. Initiating shutdown.")
                         self._stop_minecraft_server(container_name)
