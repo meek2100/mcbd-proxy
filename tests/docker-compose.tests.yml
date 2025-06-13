@@ -80,6 +80,7 @@ services:
       - IDLE_TIMEOUT=-1
       # Disable online mode to prevent network delays on startup
       - ONLINE_MODE=FALSE
+      - LEVEL_TYPE=FLAT
     # healthcheck: # <--- REMOVED: Healthcheck for mc-java
     #   test: ["CMD", "mcstatus", "java", "127.0.0.1:25565", "status"]
     #   interval: 5s
