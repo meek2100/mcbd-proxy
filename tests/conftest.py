@@ -1,9 +1,9 @@
+# tests/conftest.py
 import pytest
 import docker
 import subprocess
 import time
 import os
-import json
 from pathlib import Path
 import sys
 

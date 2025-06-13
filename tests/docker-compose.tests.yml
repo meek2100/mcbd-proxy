@@ -1,6 +1,5 @@
 # tests/docker-compose.tests.yml
-# This file is configured for self-contained integration testing within a CI/CD environment.
-# It sets up a minimal environment with Nether-bridge and two Minecraft servers.
+# This file is configured for self-contained integration testing.
 services:
   nether-bridge:
     image: nether-bridge-test:local
@@ -12,9 +11,8 @@ services:
     networks:
       - mc-network
     ports:
-      - "19132:19132/udp" # Default MCBE port players connect to first
-      - "25565:25565/udp" # Port for Java server discovery
-      - "25565:25565/tcp" # Port for Java server gameplay
+      - "19132:19132/udp"
+      - "25565:25565/tcp"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
@@ -47,53 +45,42 @@ services:
 
   mc-bedrock:
     image: itzg/minecraft-bedrock-server:latest
-    container_name: mc-bedrock
     restart: "no"
+    container_name: mc-bedrock
     networks:
       - mc-network
     volumes:
-    # Mount a local directory to /data in the container
+      # Use a named volume instead of a bind mount
       - mc-bedrock-data:/data
     environment:
       - EULA=TRUE
       - VERSION=1.21.84.1
+      - DIRECT_DOWNLOAD_URL=https://minecraft.azure.microsoft.com/snapshot/bedrock-server-1.21.84.1.zip
       - IDLE_TIMEOUT=-1
-    #  - DIRECT_DOWNLOAD_URL=https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.21.84.1.zip
-    # Removed explicit healthcheck, relying on container running state for now.
 
   mc-java:
     image: itzg/minecraft-server:latest
-    container_name: mc-java
     restart: "no"
+    container_name: mc-java
     networks:
       - mc-network
     volumes:
-    # Mount a local directory to /data in the container
+      # Use a named volume instead of a bind mount
       - mc-java-data:/data
     environment:
       - EULA=TRUE
-      # Use Fabric for the fastest startup in tests
       - TYPE=FABRIC
-      # Use a much older, faster-starting version
       - MINECRAFT_VERSION=1.16.5
+      - LEVEL_TYPE=FLAT
       - JVM_ARGS=-Xmx512M -Xms512M
       - IDLE_TIMEOUT=-1
-      # Disable online mode to prevent network delays on startup
       - ONLINE_MODE=FALSE
-      - LEVEL_TYPE=FLAT
-    # healthcheck: # <--- REMOVED: Healthcheck for mc-java
-    #   test: ["CMD", "mcstatus", "java", "127.0.0.1:25565", "status"]
-    #   interval: 5s
-    #   timeout: 3s
-    #   retries: 5
-    #   start_period: 45s
 
 networks:
   mc-network:
     driver: bridge
 
-# Define named volumes if you decide to switch back to them later,
-# but for local manual placement, direct bind mounts are simpler.
+# Define the named volumes at the top level
 volumes:
   mc-bedrock-data:
   mc-java-data:
