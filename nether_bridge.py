@@ -230,7 +230,8 @@ class NetherBridgeProxy:
             # First, clean up any client sessions that have seen no packets
             idle_sessions_to_remove = [
                 key for key, info in self.active_sessions.items() 
-                if current_time - info["last_packet_time"] > self.settings.idle_timeout_seconds
+                if (current_time - info["last_packet_time"] > self.settings.idle_timeout_seconds and 
+                    self.server_states[info["target_container"]]["running"])
             ]
             for session_key in idle_sessions_to_remove:
                 session_info = self.active_sessions.pop(session_key, None)
