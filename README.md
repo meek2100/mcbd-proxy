@@ -64,7 +64,7 @@ sequenceDiagram
 1. **Clone the repository:**
 
     ```bash
-    git clone [https://github.com/meek2100/nether-bridge.git](https://github.com/meek2100/nether-bridge.git)
+    git clone https://github.com/meek2100/nether-bridge.git
     cd nether-bridge
     ```
 
