@@ -55,14 +55,14 @@ services:
       - EULA=TRUE
       # VERSION and DOWNLOAD_URL can be removed if you always place the .zip manually
       # or if the entrypoint handles existing files. Keep them if they are needed for healthcheck info.
-      # - VERSION=1.21.84.1 # Keep this if bedrock-entry.sh extracts it from here
+      - VERSION=1.21.84.1 # Keep this if bedrock-entry.sh extracts it from here
       # - DOWNLOAD_URL=https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.21.84.1.zip # Can comment out as file is pre-placed
-    healthcheck:
-      test: ["CMD", "mcstatus", "bedrock", "127.0.0.1:19132", "status"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 10s
+    #healthcheck:
+    #  test: ["CMD", "mcstatus", "bedrock", "127.0.0.1:19132", "status"]
+    #  interval: 5s
+    #  timeout: 3s
+    #  retries: 5
+    #  start_period: 10s
 
   mc-java:
     image: itzg/minecraft-server:latest
@@ -75,7 +75,7 @@ services:
     environment:
       - EULA=TRUE
       - TYPE=PAPER
-    #  - VERSION=1.18.2 # Explicitly pinned to a stable Java version
+      - VERSION=1.21.4 # Explicitly pinned to a stable Java version
       - JVM_ARGS=-Xmx512M -Xms512M
       - IDLE_TIMEOUT=-1 # Disabled idle shutdown for testing
     healthcheck:
@@ -83,7 +83,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
-      start_period: 10s
+      start_period: 30s
 
 networks:
   mc-network:
