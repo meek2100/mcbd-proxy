@@ -254,9 +254,8 @@ class NetherBridgeProxy:
                 )
 
                 if has_active_sessions:
-                    # If there are sessions, the server remains active, but we don't reset the timer here.
-                    # The timer is correctly updated upon packet receipt in the main loop.
-                    # state["last_activity"] = current_time # <-- REMOVE THIS LINE
+                    # If there are sessions, reset the server's idle timer.
+                    state["last_activity"] = current_time
                     self.logger.debug(f"[{container_name}] Server has active sessions. Resetting idle timer.")
                 else:
                     # No sessions, now check if the idle timeout has passed
@@ -430,17 +429,20 @@ class NetherBridgeProxy:
                             data, _ = sock.recvfrom(4096)
 
                         session_info["last_packet_time"] = time.time()
-                        self.server_states[container_name]["last_activity"] = time.time()
-
-                        # Forward the data
-                        if socket_role == 'client_socket': # Data from TCP client -> server
-                            session_info["server_socket"].sendall(data)
+                        
+                        # --- START OF FIX ---
+                        # Forward the data and update server activity timestamp in one motion
+                        if socket_role == 'client_socket': # Data from client -> server
+                            self.server_states[container_name]["last_activity"] = time.time()
+                            session_info["server_socket"].sendall(data) if protocol == 'tcp' else session_info["server_socket"].sendto(data, (container_name, self.servers_config_map[session_info["listen_port"]].internal_port))
                         elif socket_role == 'server_socket': # Data from server -> client
+                            self.server_states[container_name]["last_activity"] = time.time()
                             if protocol == 'tcp':
                                 session_info["client_socket"].sendall(data)
                             else: # UDP
                                 client_addr_original = session_key[0]
                                 session_info["client_socket"].sendto(data, client_addr_original)
+                        # --- END OF FIX ---
 
                     except (ConnectionResetError, socket.error, OSError) as e:
                         self.logger.warning(f"Session {session_key[0]} ({protocol}) disconnected: {e}. Cleaning up.")
@@ -494,34 +496,24 @@ class NetherBridgeProxy:
                 continue
 
             sock = socket.socket(socket.AF_INET, sock_type)
-            # Allow socket reuse for faster testing/restarts
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            # Optional: SO_REUSEPORT (Linux specific, might give OSError on Windows/some Docker setups)
-            # try:
-            #     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-            # except AttributeError: # SO_REUSEPORT is not available on all systems (e.g. Windows)
-            #     pass
-            # except OSError as e:
-            #     self.logger.warning(f"Could not set SO_REUSEPORT on port {listen_port}: {e}")
 
             try:
                 self.logger.debug(f"Attempting to bind {protocol_str} socket to 0.0.0.0:{listen_port}...")
                 sock.bind(('0.0.0.0', listen_port))
                 self.logger.debug(f"{protocol_str} socket bound to 0.0.0.0:{listen_port}.")
                 
-                # For TCP listener, must call listen() AFTER bind but BEFORE setblocking(False) for robust server setup
                 if sock_type == socket.SOCK_STREAM:
                     self.logger.debug(f"Attempting to listen on TCP socket 0.0.0.0:{listen_port}...")
-                    sock.listen(5) # Max 5 queued connections
+                    sock.listen(5)
                     self.logger.debug(f"TCP socket listening on 0.0.0.0:{listen_port}.")
                 
-                sock.setblocking(False) # Set to non-blocking after bind/listen
+                sock.setblocking(False)
 
                 self.listen_sockets[listen_port] = sock
                 self.inputs.append(sock)
                 self.logger.info(f"Proxy listening for '{srv_cfg.name}' on port {listen_port} ({protocol_str}) -> forwards to container '{srv_cfg.container_name}'")
             except OSError as e:
-                # Log with full traceback for debugging
                 self.logger.critical(f"FATAL: Could not bind to port {listen_port}. Is it already in use? ({e.errno}) - {e.strerror}", exc_info=True) 
                 sys.exit(1)
             except Exception as e:
@@ -558,13 +550,12 @@ def perform_health_check():
         sys.exit(1)
 
     # Stage 2: If configured, check for a live heartbeat from the main process.
-    # Use the value from settings, or a default if settings not fully loaded yet.
     HEALTHCHECK_STALE_THRESHOLD_SECONDS_DEFAULT = 60 
     proxy_settings_for_healthcheck = None
     try:
         proxy_settings_for_healthcheck, _ = load_application_config()
     except Exception:
-        pass # Healthcheck proceeds with defaults if config loading fails
+        pass 
 
     healthcheck_threshold = HEALTHCHECK_STALE_THRESHOLD_SECONDS_DEFAULT
     if proxy_settings_for_healthcheck and hasattr(proxy_settings_for_healthcheck, 'healthcheck_stale_threshold_seconds'):
@@ -632,12 +623,10 @@ def _load_servers_from_env() -> list[dict]:
     env_servers = []
     i = 1
     while True:
-        # Check for the listen port to determine if the server block exists
         listen_port_str = os.environ.get(f'NB_{i}_LISTEN_PORT')
         if not listen_port_str:
             break
 
-        # Assemble the server definition
         try:
             server_def = {
                 "name": os.environ.get(f'NB_{i}_NAME', f"Server {i}"),
@@ -646,7 +635,6 @@ def _load_servers_from_env() -> list[dict]:
                 "container_name": os.environ.get(f'NB_{i}_CONTAINER_NAME'),
                 "internal_port": int(os.environ.get(f'NB_{i}_INTERNAL_PORT'))
             }
-            # Validate required fields
             if not all(v is not None for v in [server_def['container_name'], server_def['internal_port']]):
                  raise ValueError(f"Incomplete definition for server index {i}. 'container_name' and 'internal_port' are required.")
             if server_def['server_type'] not in ['bedrock', 'java']:
@@ -665,14 +653,11 @@ def load_application_config() -> tuple[ProxySettings, list[ServerConfig]]:
     """
     logger = logging.getLogger(__name__)
 
-    # 1. Load settings from settings.json
     settings_from_json = _load_settings_from_json(Path('settings.json'))
     
-    # 2. Apply environment variables on top of JSON settings and defaults for main settings
     final_settings = {}
     for key, default_val in DEFAULT_SETTINGS.items():
         env_var_name = key.upper() 
-        # Specific environment variable names that differ from direct upper-casing
         if key == "log_level":
             env_var_name = "LOG_LEVEL"
         elif key == "idle_timeout_seconds":
@@ -690,10 +675,9 @@ def load_application_config() -> tuple[ProxySettings, list[ServerConfig]]:
         elif key == "initial_server_query_delay_seconds":
             env_var_name = "NB_INITIAL_SERVER_QUERY_DELAY"
         elif key == "healthcheck_stale_threshold_seconds":
-            env_var_name = "NB_HEALTHCHECK_STALE_THRESHOLD" # A new ENV var name
+            env_var_name = "NB_HEALTHCHECK_STALE_THRESHOLD"
         elif key == "proxy_heartbeat_interval_seconds":
-            env_var_name = "NB_HEARTBEAT_INTERVAL" # A new ENV var name
-
+            env_var_name = "NB_HEARTBEAT_INTERVAL"
 
         env_val = os.environ.get(env_var_name)
         if env_val is not None:
@@ -714,7 +698,6 @@ def load_application_config() -> tuple[ProxySettings, list[ServerConfig]]:
     proxy_settings = ProxySettings(**final_settings)
     logger.info(f"Loaded Proxy Settings: {proxy_settings}")
 
-    # 3. Load server definitions (Env Vars have highest priority)
     servers_list_raw = _load_servers_from_env()
     if not servers_list_raw:
         logger.info("No server definitions found in environment variables. Attempting to load from servers.json.")
@@ -735,9 +718,6 @@ def load_application_config() -> tuple[ProxySettings, list[ServerConfig]]:
 
 # --- Main Execution ---
 if __name__ == "__main__":
-    # Simplified Logging Setup (before full config load for healthcheck)
-    # This initial setup uses a default or LOG_LEVEL env var for early logging
-    # before full settings are parsed.
     LOG_LEVEL_EARLY = os.environ.get('LOG_LEVEL', 'INFO').upper()
     logging.basicConfig(
         level=getattr(logging, LOG_LEVEL_EARLY, logging.INFO),
@@ -746,24 +726,20 @@ if __name__ == "__main__":
     )
     logger = logging.getLogger(__name__)
 
-    # Handle healthcheck argument
     if '--healthcheck' in sys.argv:
         perform_health_check()
         sys.exit(0)
     
-    # --- Normal Startup Sequence ---
     settings, servers = load_application_config()
 
-    # Re-configure logging with the determined log level from settings
     logging.getLogger().setLevel(getattr(logging, settings.log_level, logging.INFO))
     logger.info(f"Log level set to {settings.log_level}.")
 
     if not servers:
         logger.critical("Entering dormant, unhealthy state due to missing server configurations.")
-        # Create a stale heartbeat file to ensure health checks fail correctly
         HEARTBEAT_FILE.write_text("0")
         while True:
-            time.sleep(3600) # Sleep indefinitely
+            time.sleep(3600)
 
     proxy = NetherBridgeProxy(settings, servers)
     proxy.run()
