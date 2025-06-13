@@ -376,6 +376,8 @@ The test suite can be configured to run on a local machine (e.g., Windows with V
     sudo ufw allow 2375/tcp
     sudo ufw reload
     ```
+    
+> **Note:** This setup assumes that your remote Docker host is located within a private network. For security best practices, refer to the official guide on [protecting access to the Docker daemon socket](https://docs.docker.com/engine/security/protect-access/).
 
 #### Client Host (Windows) Setup
 
