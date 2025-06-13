@@ -198,6 +198,8 @@ These settings control the proxy's behavior, such as idle timeouts and query int
 | `NB_INITIAL_BOOT_READY_MAX_WAIT` | `initial_boot_ready_max_wait_time_seconds` | `180` | Maximum time (in seconds) the proxy will wait for servers to become query-ready during initial startup (before issuing safe stops). This allows for longer initial boot times. |
 | `NB_SERVER_STARTUP_DELAY` | `server_startup_delay_seconds` | `5` | Delay (in seconds) after issuing a Docker start command before the proxy begins probing the server for readiness. Gives the server a moment to begin initializing. |
 | `NB_INITIAL_SERVER_QUERY_DELAY` | `initial_server_query_delay_seconds` | `10` | Delay (in seconds) before the proxy attempts to query a server that was found running on proxy startup. This allows time for the server to stabilize if it was previously mid-startup or in a crashed state. |
+| `NB_HEALTHCHECK_STALE_THRESHOLD` | `healthcheck_stale_threshold_seconds` | `60`    | Time in seconds before the main process heartbeat is considered stale by the health check. |
+| `NB_HEARTBEAT_INTERVAL`          | `proxy_heartbeat_interval_seconds`  | `15`    | How often (in seconds) the main proxy loop updates its heartbeat file.                |
 
 **Example `settings.json`:**
 
@@ -225,6 +227,7 @@ These settings define each Minecraft server managed by Nether-bridge. You can de
 *Replace `X` with a unique, sequential number (e.g., `1`, `2`, `3`) for each server when using environment variables.*
 
 **Example `docker-compose.yml` (using environment variables - recommended):**
+
 ```yaml
 services:
   # ... other services like mc-bedrock, mc-java ...
@@ -271,6 +274,7 @@ services:
 ```
 
 **Example `servers.json` (alternative to environment variables):**
+
 ```json
 {
   "servers": [
@@ -316,11 +320,12 @@ The connection flow for consoles is:
 
 ### Setup for Console Support
 
-1.  **Enable the Service**: In your `docker-compose.yml` file, uncomment the entire `bedrock-connect` service.
+1. **Enable the Service**: In your `docker-compose.yml` file, uncomment the entire `bedrock-connect` service.
 
-2.  **Update Nether-bridge Config**: Reconfigure the `nether-bridge` service to listen for Bedrock traffic on a new port (e.g., `19133`) since `bedrock-connect` will now be using the default port `19132`. You must update both the `ports` mapping and the `NB_1_LISTEN_PORT` environment variable.
+2. **Update Nether-bridge Config**: Reconfigure the `nether-bridge` service to listen for Bedrock traffic on a new port (e.g., `19133`) since `bedrock-connect` will now be using the default port `19132`. You must update both the `ports` mapping and the `NB_1_LISTEN_PORT` environment variable.
 
-3.  **Configure `BedrockConnect`**: Create a file at `data/bedrock-connect/servers.json` with the following content. This tells `BedrockConnect` to show a server list that points to your Nether-bridge proxy's new port.
+3. **Configure `BedrockConnect`**: Create a file at `data/bedrock-connect/servers.json` with the following content. This tells `BedrockConnect` to show a server list that points to your Nether-bridge proxy's new port.
+
     ```json
     [
       {
@@ -331,17 +336,56 @@ The connection flow for consoles is:
     ]
     ```
 
-4.  **Configure Console DNS**: On your gaming console, change your network's primary DNS server to the IP address of the machine running Docker.
+4. **Configure Console DNS**: On your gaming console, change your network's primary DNS server to the IP address of the machine running Docker.
 
-5.  **Connect**: Launch Minecraft on your console, navigate to the "Servers" tab, and any of the featured servers should now show your custom server list.
+5. **Connect**: Launch Minecraft on your console, navigate to the "Servers" tab, and any of the featured servers should now show your custom server list.
 
 > **Advanced Use**: While primarily for console support, `BedrockConnect` can be configured to list any server, including Java Edition servers. Note that for a Bedrock client to successfully connect to a Java server, an additional protocol-translation proxy (like GeyserMC) would also be required in the connection chain.
 
 ## Health Checks
 
 Nether-bridge includes a robust health check that can be used by Docker or Kubernetes to monitor its status. The health check performs two stages:
+
 1. Verifies that server configurations are loaded successfully (either via environment variables or JSON files).
 2. Checks for a recent "heartbeat" from the main proxy process, ensuring the core loop is active and not frozen.
+
+## Developer Guide
+
+This section contains information for developers working on the Nether-bridge project, specifically regarding advanced testing environments.
+
+### Testing with a Remote Docker Host
+
+The test suite can be configured to run on a local machine (e.g., Windows with VS Code) while targeting a Docker daemon running on a remote machine (e.g., a Debian VM). This is controlled by the `tests/local_env.py` file.
+
+#### Remote Host (Debian VM) Setup
+
+1. **Expose Docker Daemon**: Configure the Docker daemon to listen for remote connections by editing or creating `/etc/docker/daemon.json`:
+
+    ```json
+    {
+      "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2375"]
+    }
+    ```
+
+    Then, restart Docker: `sudo systemctl restart docker`.
+
+2. **Configure Firewall**: Allow connections to the Docker port (e.g., using `ufw`):
+
+    ```bash
+    sudo ufw allow 2375/tcp
+    sudo ufw reload
+    ```
+
+#### Client Host (Windows) Setup
+
+1. **Configure `local_env.py`**: In the `tests/local_env.py` file, set the `VM_HOST_IP` and `DOCKER_HOST` variables to the IP address of your Debian VM.
+
+    ```python
+    VM_HOST_IP = "192.168.1.100"
+    DOCKER_HOST = "tcp://192.168.1.100:2375"
+    ```
+
+2. **Run Tests**: With this file in place, running `pytest` on the client host will automatically target the remote Docker daemon. To switch back to using a local Docker installation, simply rename or comment out the contents of `local_env.py`.
 
 ## Contributing
 
