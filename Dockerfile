@@ -5,17 +5,15 @@ FROM python:3.10-slim-buster
 WORKDIR /app
 
 # Argument to accept the Docker group ID from the host
-ARG DOCKER_GID
+ARG DOCKER_GID=999
 
 # Create a 'docker' group with the specified GID, if it doesn't exist.
-# Then create the nonroot user and add it to both its own group and the 'docker' group.
-RUN if getent group ${DOCKER_GID:-999} > /dev/null 2>&1; then \
-        echo "Group with GID ${DOCKER_GID:-999} already exists."; \
-    else \
-        addgroup --gid ${DOCKER_GID:-999} docker; \
-    fi && \
-    addgroup --system nonroot && \
-    adduser --system --ingroup nonroot --gid ${DOCKER_GID:-999} nonroot
+RUN if ! getent group docker > /dev/null 2>&1; then \
+        addgroup --gid ${DOCKER_GID} docker; \
+    fi
+
+# Create a non-privileged user and add them to the 'docker' group
+RUN adduser --system --ingroup docker --no-create-home nonroot
 
 # Create a writable directory for the application's runtime files
 RUN mkdir -p /run/app && chown nonroot:nonroot /run/app
