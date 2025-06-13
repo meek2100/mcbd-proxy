@@ -7,6 +7,9 @@ WORKDIR /app
 # Create a non-privileged user and group to run the application
 RUN addgroup --system nonroot && adduser --system --ingroup nonroot nonroot
 
+# Create a writable directory for the application's runtime files
+RUN mkdir -p /run/app && chown nonroot:nonroot /run/app
+
 # Arguments for build metadata (populated by GitHub Actions)
 ARG BUILD_DATE
 ARG APP_VERSION

@@ -13,7 +13,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 
 # --- Constants ---
-HEARTBEAT_FILE = Path("/tmp/proxy_heartbeat")
+HEARTBEAT_FILE = Path("/run/app/proxy_heartbeat")
 # Default values for settings, used if not overridden by env vars or settings.json
 DEFAULT_SETTINGS = {
     "idle_timeout_seconds": 600,
