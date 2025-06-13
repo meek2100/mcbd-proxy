@@ -8,18 +8,21 @@ from pathlib import Path
 import sys
 
 # Try to load local environment specific IP and DOCKER_HOST for testing
+_local_vm_host_ip = None
 _local_docker_host = None
+
 try:
     current_tests_dir = str(Path(__file__).parent)
     if current_tests_dir not in sys.path:
         sys.path.insert(0, current_tests_dir)
     
     from local_env import VM_HOST_IP as LOCAL_VM_HOST_IP
-    os.environ['VM_HOST_IP'] = LOCAL_VM_HOST_IP
+    _local_vm_host_ip = LOCAL_VM_HOST_IP # Store for test logic
+    os.environ['VM_HOST_IP'] = LOCAL_VM_HOST_IP # Set for test_integration.py
     print(f"Using local VM_HOST_IP from local_env.py: {LOCAL_VM_HOST_IP}")
 
     from local_env import DOCKER_HOST as LOCAL_DOCKER_HOST
-    _local_docker_host = LOCAL_DOCKER_HOST
+    _local_docker_host = LOCAL_DOCKER_HOST # Store for subprocess commands AND docker client
     os.environ['DOCKER_HOST'] = LOCAL_DOCKER_HOST # Ensure it's set in os.environ for docker.from_env()
     print(f"Using local DOCKER_HOST from local_env.py: {LOCAL_DOCKER_HOST}")
 
@@ -51,12 +54,12 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
     compose_file_path = str(pytestconfig.rootdir / 'tests' / 'docker-compose.tests.yml')
     
     env_vars = os.environ.copy()
-    if _local_docker_host: # This branch is for local testing, where _local_docker_host will be set
+    if _local_docker_host:
         env_vars['DOCKER_HOST'] = _local_docker_host
         print(f"Passing DOCKER_HOST={env_vars['DOCKER_HOST']} to subprocess commands.")
-    elif 'DOCKER_HOST' in env_vars: # This branch for CI or if DOCKER_HOST is set otherwise
+    elif 'DOCKER_HOST' in env_vars:
         print(f"DOCKER_HOST is already set in environment: {env_vars['DOCKER_HOST']}")
-    else: # Fallback if no DOCKER_HOST is set anywhere
+    else:
         print("DOCKER_HOST not set in local_env.py or environment. Subprocesses will use default Docker context.")
 
 
@@ -165,12 +168,20 @@ def docker_client_fixture():
     """Provides a Docker client instance for integration tests."""
     client = None
     try:
-        # Attempt to create the Docker client.
-        # It will use DOCKER_HOST from os.environ or default to local socket.
-        client = docker.from_env()
-        # Optional: Ping the Docker daemon to check connection
+        # Get DOCKER_HOST from the environment, defaulting to local if not set by local_env.py
+        # On Windows, docker.from_env() might prefer local named pipes, so explicitly pass base_url
+        docker_host = os.environ.get('DOCKER_HOST')
+        if docker_host:
+            # For TCP, it might be 'tcp://host:port'. For named pipes, 'npipe:///'
+            client = docker.DockerClient(base_url=docker_host) # <--- EXPLICITLY pass base_url
+            print(f"\nAttempting to connect Docker client to: {docker_host}")
+        else:
+            # Fallback to default behavior (e.g., local named pipe on Windows, socket on Linux)
+            client = docker.from_env()
+            print("\nAttempting to connect Docker client using default environment variables.")
+        
         client.ping()
-        print("\nSuccessfully connected to Docker daemon for Docker client fixture.")
+        print("Successfully connected to Docker daemon for Docker client fixture.")
     except docker.errors.DockerException as e:
         pytest.fail(f"Could not connect to Docker daemon for client fixture. Ensure Docker is running and DOCKER_HOST is correctly set. Error: {e}")
     except Exception as e:
