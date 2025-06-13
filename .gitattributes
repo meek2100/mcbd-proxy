@@ -1,0 +1,2 @@
+# Enforce LF line endings for shell scripts to ensure they are runnable in Linux containers
+*.sh    text eol=lf
