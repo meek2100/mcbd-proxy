@@ -358,7 +358,7 @@ class NetherBridgeProxy:
                         server_config = self.servers_config_map[server_port]
                         container_name = server_config.container_name
 
-                        session_key = (client_addr, server_port, 'udp')
+                        session_key = (client_addr[0], server_port, 'udp') 
 
                         if session_key not in self.active_sessions:
                             self.logger.info(f"Establishing new UDP session for {client_addr} for '{server_config.name}'.")
