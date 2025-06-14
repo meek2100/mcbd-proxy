@@ -230,8 +230,7 @@ class NetherBridgeProxy:
             # First, clean up any client sessions that have seen no packets
             idle_sessions_to_remove = [
                 key for key, info in self.active_sessions.items() 
-                if (current_time - info["last_packet_time"] > self.settings.idle_timeout_seconds and 
-                    self.server_states[info["target_container"]]["running"])
+                if current_time - info["last_packet_time"] > self.settings.idle_timeout_seconds
             ]
             for session_key in idle_sessions_to_remove:
                 session_info = self.active_sessions.pop(session_key, None)
@@ -254,15 +253,14 @@ class NetherBridgeProxy:
                     info["target_container"] == container_name for info in self.active_sessions.values()
                 )
 
-                if has_active_sessions:
-                    # If there are sessions, the server remains active.
-                    # The last_activity timer is correctly updated upon packet receipt in the main loop, not here.
-                    self.logger.debug(f"[{container_name}] Server has active sessions. Not stopping.")
-                else:
-                    # No sessions, now check if the idle timeout has passed since the last packet.
+                # The logic is now simple: if there are no active sessions, check the server's own idle timer.
+                # If there are sessions, the server is considered active.
+                if not has_active_sessions:
                     if (current_time - state.get("last_activity", 0) > self.settings.idle_timeout_seconds):
                         self.logger.info(f"[{container_name}] Idle for over {self.settings.idle_timeout_seconds}s with 0 sessions. Initiating shutdown.")
                         self._stop_minecraft_server(container_name)
+                else:
+                    self.logger.debug(f"[{container_name}] Server has active sessions. Not stopping.")
     
     def _close_session_sockets(self, session_info):
         """Helper to safely close sockets associated with a session and remove from inputs."""
