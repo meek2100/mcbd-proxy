@@ -1,88 +1,71 @@
 services:
-  # --- Core Service ---
-  # The on-demand Minecraft proxy service.
+  # The on-demand Minecraft proxy service
   nether-bridge:
-    image: ghcr.io/meek2100/nether-bridge:latest
     container_name: nether-bridge
+    build: .
+    # image: ghcr.io/meek2100/mcbd-proxy:latest
     restart: unless-stopped
     networks:
       - mc-network
     ports:
-      # Default Port for PC/Mobile Bedrock players.
-      # This must be commented out if you enable bedrock-connect below.
       - "19132:19132/udp"
-      # Default Port for Java players.
-      - "25565:25565/tcp"
       - "25565:25565/udp"
-      # This port is used by bedrock-connect. Uncomment if you enable it.
-      # - "19133:19133/udp"
+      - "25565:25565/tcp"
     volumes:
-      # Required: Grants Nether-bridge control over other Docker containers.
       - /var/run/docker.sock:/var/run/docker.sock
-      # Optional: To use JSON files instead of environment variables, comment out the
-      # 'environment' section below and mount your files here. See README for details.
-      # - ./data/nether-bridge/settings.json:/app/settings.json
-      # - ./data/nether-bridge/servers.json:/app/servers.json
+      # - ./settings.json:/app/settings.json
+      # - ./servers.json:/app/servers.json
     environment:
-      # --- General Settings ---
+      # General settings
       - LOG_LEVEL=INFO
-      - NB_IDLE_TIMEOUT=600 
+      - NB_IDLE_TIMEOUT=300
+      - NB_PLAYER_CHECK_INTERVAL=60
+      - NB_QUERY_TIMEOUT=5
+      - NB_SERVER_READY_MAX_WAIT=120
+      - NB_INITIAL_BOOT_READY_MAX_WAIT=180
+      - NB_SERVER_STARTUP_DELAY=5
+      - NB_INITIAL_SERVER_QUERY_DELAY=10
 
-      # --- Server Definitions (Recommended Method) ---
+      # --- Server Definitions ---
       # Server 1: Bedrock Survival
       - NB_1_NAME=Bedrock Survival
       - NB_1_SERVER_TYPE=bedrock
-      # This must be changed to 19133 if you enable bedrock-connect.
       - NB_1_LISTEN_PORT=19132
-      - NB_1_CONTAINER_NAME=mc-bedrock # Must match the service name below
+      - NB_1_CONTAINER_NAME=mc-bedrock
       - NB_1_INTERNAL_PORT=19132
 
       # Server 2: Java Creative
       - NB_2_NAME=Java Creative
       - NB_2_SERVER_TYPE=java
       - NB_2_LISTEN_PORT=25565
-      - NB_2_CONTAINER_NAME=mc-java # Must match the service name below
+      - NB_2_CONTAINER_NAME=mc-java
       - NB_2_INTERNAL_PORT=25565
 
-  # --- Managed Minecraft Servers ---
+  # A managed Minecraft Bedrock server
   mc-bedrock:
-    image: itzg/minecraft-bedrock-server:latest
     container_name: mc-bedrock
-    restart: "no" # Nether-bridge will manage starting and stopping this container.
+    image: itzg/minecraft-bedrock-server:latest
+    restart: "no"
     networks:
       - mc-network
     environment:
       - EULA=TRUE
-    volumes:
-      - ./data/mc-bedrock:/data # Persists the world data
+  # volumes:
+  #    - /home/meek2100/docker/mc-bedrock:/data
 
+  # A managed Minecraft Java server
   mc-java:
-    image: itzg/minecraft-server:latest
     container_name: mc-java
-    restart: "no" # Nether-bridge will manage starting and stopping this container.
+    image: itzg/minecraft-server:latest
+    restart: "no"
     networks:
       - mc-network
     environment:
       - EULA=TRUE
       - TYPE=PAPER
-    volumes:
-      - ./data/mc-java:/data # Persists the world data
-
-  #-----------------------------------------------------------------#
-  # Optional Service for Console Support (Switch, Xbox, PlayStation)
-  # See the project README for full instructions on how to enable.
-  #-----------------------------------------------------------------#
-  # bedrock-connect:
-  #   image: pugmatt/bedrock-connect:latest
-  #   container_name: bedrock-connect
-  #   restart: unless-stopped
-  #   networks:
-  #     - mc-network
-  #   ports:
-  #     - "19132:19132/udp"
-  #     - "19132:19132/tcp"
-  #   volumes:
-  #     - ./data/bedrock-connect/servers.json:/app/servers.json
+      - JVM_ARGS=-Xmx1G -Xms1G
+   # volumes:
+   #   - /home/meek2100/docker/mc-java:/data
 
 networks:
   mc-network:
