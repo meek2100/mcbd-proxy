@@ -403,12 +403,12 @@ class NetherBridgeProxy:
                         # This race condition can happen: the monitor thread cleans up a session
                         # right after `select()` returns the socket as readable.
                         # We just need to safely remove this now-defunct socket from our list.
-                        self.logger.debug(f"Ignoring data on a stale socket that was just closed by the monitor thread.")
+                        self.logger.debug(f"Ignoring data on a stale socket that was just closed by the monitor thread (fileno: {sock.fileno()}).")
                         if sock in self.inputs:
                             self.inputs.remove(sock)
                         try:
-                            # The socket is already closed, but we call this again 
-                            # to be safe, ignoring any errors.
+                            # Attempt to close the socket again, just in case, but ignore errors
+                            # if it's already been closed by the other thread.
                             sock.close()
                         except OSError:
                             pass

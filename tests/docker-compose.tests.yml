@@ -51,7 +51,6 @@ services:
     networks:
       - mc-network
     volumes:
-      # Use a named volume instead of a bind mount
       - mc-bedrock-data:/data
     environment:
       - EULA=TRUE
@@ -66,7 +65,6 @@ services:
     networks:
       - mc-network
     volumes:
-      # Use a named volume instead of a bind mount
       - mc-java-data:/data
     environment:
       - EULA=TRUE
@@ -81,7 +79,6 @@ networks:
   mc-network:
     driver: bridge
 
-# Define the named volumes at the top level
 volumes:
   mc-bedrock-data:
   mc-java-data:
