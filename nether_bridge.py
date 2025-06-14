@@ -436,19 +436,24 @@ class NetherBridgeProxy:
 
                         session_info["last_packet_time"] = time.time()
                         
-                        # --- START OF FIX ---
-                        # Forward the data and update server activity timestamp in one motion
                         if socket_role == 'client_socket': # Data from client -> server
+                            # ONLY update activity timers when data comes from the client
                             self.server_states[container_name]["last_activity"] = time.time()
-                            session_info["server_socket"].sendall(data) if protocol == 'tcp' else session_info["server_socket"].sendto(data, (container_name, self.servers_config_map[session_info["listen_port"]].internal_port))
+                            session_info["last_packet_time"] = time.time()
+                            
+                            destination_socket = session_info["server_socket"]
+                            destination_address = (container_name, self.servers_config_map[session_info["listen_port"]].internal_port)
+                        
                         elif socket_role == 'server_socket': # Data from server -> client
-                            self.server_states[container_name]["last_activity"] = time.time()
-                            if protocol == 'tcp':
-                                session_info["client_socket"].sendall(data)
-                            else: # UDP
-                                client_addr_original = session_key[0]
-                                session_info["client_socket"].sendto(data, client_addr_original)
-                        # --- END OF FIX ---
+                            # DO NOT update any timers for server-side traffic
+                            destination_socket = session_info["client_socket"]
+                            destination_address = session_key[0] # The original client address
+                        
+                        # Forward the packet
+                        if protocol == 'tcp':
+                            destination_socket.sendall(data)
+                        else: # UDP
+                            destination_socket.sendto(data, destination_address)
 
                     except (ConnectionResetError, socket.error, OSError) as e:
                         self.logger.warning(f"Session {session_key[0]} ({protocol}) disconnected: {e}. Cleaning up.")
