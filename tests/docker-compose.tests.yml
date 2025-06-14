@@ -1,0 +1,87 @@
+# tests/docker-compose.tests.yml
+# This file is configured for self-contained integration testing.
+services:
+  nether-bridge:
+    image: nether-bridge-test:local
+    container_name: nether-bridge
+    build:
+      context: ../
+      dockerfile: Dockerfile
+    restart: "no"
+    networks:
+      - mc-network
+    ports:
+      - "19132:19132/udp"
+      - "25565:25565/udp"
+      - "25565:25565/tcp"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - LOG_LEVEL=DEBUG
+      - NB_IDLE_TIMEOUT=30
+      - NB_PLAYER_CHECK_INTERVAL=5
+      - NB_QUERY_TIMEOUT=2
+      - NB_SERVER_READY_MAX_WAIT=120
+      - NB_INITIAL_BOOT_READY_MAX_WAIT=45
+      - NB_SERVER_STARTUP_DELAY=2
+      - NB_INITIAL_SERVER_QUERY_DELAY=2
+      - NB_HEALTHCHECK_STALE_THRESHOLD=10
+      - NB_HEARTBEAT_INTERVAL=5
+      - NB_1_NAME=Bedrock Survival
+      - NB_1_SERVER_TYPE=bedrock
+      - NB_1_LISTEN_PORT=19132
+      - NB_1_CONTAINER_NAME=mc-bedrock
+      - NB_1_INTERNAL_PORT=19132
+      - NB_2_NAME=Java Creative
+      - NB_2_SERVER_TYPE=java
+      - NB_2_LISTEN_PORT=25565
+      - NB_2_CONTAINER_NAME=mc-java
+      - NB_2_INTERNAL_PORT=25565
+    healthcheck:
+      test: ["CMD", "python", "nether_bridge.py", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  mc-bedrock:
+    image: itzg/minecraft-bedrock-server:latest
+    restart: "no"
+    container_name: mc-bedrock
+    networks:
+      - mc-network
+    volumes:
+      # Use a named volume instead of a bind mount
+      - mc-bedrock-data:/data
+    environment:
+      - EULA=TRUE
+      - VERSION=1.20.81.01
+      - DIRECT_DOWNLOAD_URL=https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.20.81.01.zip
+      - IDLE_TIMEOUT=-1
+
+  mc-java:
+    image: itzg/minecraft-server:latest
+    restart: "no"
+    container_name: mc-java
+    networks:
+      - mc-network
+    volumes:
+      # Use a named volume instead of a bind mount
+      - mc-java-data:/data
+    environment:
+      - EULA=TRUE
+      - TYPE=FABRIC
+      - MINECRAFT_VERSION=1.16.5
+      - LEVEL_TYPE=FLAT
+      - JVM_ARGS=-Xmx512M -Xms512M
+      - IDLE_TIMEOUT=-1
+      - ONLINE_MODE=FALSE
+
+networks:
+  mc-network:
+    driver: bridge
+
+# Define the named volumes at the top level
+volumes:
+  mc-bedrock-data:
+  mc-java-data:

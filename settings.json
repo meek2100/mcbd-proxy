@@ -5,5 +5,6 @@
   "server_ready_max_wait_time_seconds": 120,
   "initial_boot_ready_max_wait_time_seconds": 180,
   "server_startup_delay_seconds": 5,
-  "initial_server_query_delay_seconds": 10
+  "initial_server_query_delay_seconds": 10,
+  "log_level": "INFO"
 }

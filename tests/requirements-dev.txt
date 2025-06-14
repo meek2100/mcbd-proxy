@@ -1,0 +1,9 @@
+# Main application dependencies
+-r ../requirements.txt
+
+# Testing, Linting, and Formatting Tools
+pytest
+pytest-mock
+pytest-cov
+flake8
+black

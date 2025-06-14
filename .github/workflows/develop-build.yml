@@ -28,9 +28,14 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ghcr.io/${{ github.repository_owner }}/mcbd-proxy # Updated image name
           tags: |
             type=raw,value=develop,enable=true
+          labels: |
+            org.opencontainers.image.source=${{ github.event.repository.html_url }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.created }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=develop # Set static version for develop branch
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -45,5 +50,5 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             BUILD_DATE=${{ steps.meta.outputs.created }}
-            APP_VERSION=develop
+            APP_VERSION=develop # Fixed version for develop builds
             VCS_REF=${{ github.sha }}
