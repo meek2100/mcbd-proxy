@@ -20,9 +20,8 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          # Install application and testing dependencies
-          pip install -r requirements.txt
-          pip install pytest pytest-mock pytest-cov
+          # Install all production and development dependencies from the lock file
+          pip install -r requirements-dev.txt
 
       - name: Run All Tests and Generate Coverage
         env:
