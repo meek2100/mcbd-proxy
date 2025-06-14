@@ -400,11 +400,18 @@ class NetherBridgeProxy:
                     # --- 3. Handle data on an existing client or server socket ---
                     session_info_tuple = self.socket_to_session_map.get(sock)
                     if not session_info_tuple:
-                        # This can happen if a socket receives data after its session has been cleaned up
-                        self.logger.debug(f"Received data on a socket {sock.getsockname()} with no active session. Closing it.")
+                        # This can happen in a race condition where the monitor thread cleans up a session
+                        # right after `select()` returns the socket as readable.
+                        # We just need to safely remove this now-closed socket.
+                        self.logger.debug(f"Ignoring data on a stale socket (fileno: {sock.fileno()}).")
                         if sock in self.inputs:
                             self.inputs.remove(sock)
-                        sock.close()
+                        try:
+                            # Attempt to close the socket again, just in case, but ignore errors
+                            # if it's already been closed by the other thread.
+                            sock.close()
+                        except OSError:
+                            pass 
                         continue
 
                     session_key, socket_role = session_info_tuple
