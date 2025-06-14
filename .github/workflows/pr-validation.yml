@@ -21,7 +21,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           # Install all production and development dependencies from the lock file
-          pip install -r requirements-dev.txt
+          pip install -r tests/requirements-dev.txt
 
       - name: Run All Tests and Generate Coverage
         env:
