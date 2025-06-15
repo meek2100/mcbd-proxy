@@ -1,8 +1,7 @@
-# requirements-dev.txt
+# Main application dependencies, referenced by absolute path inside the container
+-r /app/requirements.txt
+
 # Testing, Linting, and Formatting Tools
-
--r ../requirements.txt
-
 pytest
 pytest-mock
 pytest-cov

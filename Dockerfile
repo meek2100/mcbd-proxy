@@ -10,8 +10,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # This stage builds on 'base' and adds the development dependencies for testing.
 FROM base as testing
 WORKDIR /app
+# Copy BOTH requirements files into the build context for this stage
+COPY requirements.txt .
 COPY tests/requirements-dev.txt .
-# The -r requirements.txt line in the dev file ensures all deps are aligned.
+# Now, pip can find both files and correctly resolve the -r /app/requirements.txt path
 RUN pip install --no-cache-dir -r requirements-dev.txt
 
 # --- Stage 3: Final Production Image ---
