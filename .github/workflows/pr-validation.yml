@@ -12,21 +12,41 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install Dependencies
+      - name: Create and build test environment
         run: |
-          python -m pip install --upgrade pip
-          # Install all production and development dependencies from the lock file
-          pip install -r tests/requirements-dev.txt
+          # Build all images and create the containers, but do not start them
+          # This ensures mc-bedrock and mc-java exist in a 'created' state
+          docker compose -f tests/docker-compose.tests.yml build
 
-      - name: Run All Tests and Generate Coverage
-        env:
-          # Set the host IP for integration tests in the CI environment
-          VM_HOST_IP: 127.0.0.1
+      - name: Start nether-bridge proxy
         run: |
-          # Run all unit and integration tests and generate a coverage report in the log
-          pytest --cov=nether_bridge --cov-report term-missing tests/
+          # Start only the nether-bridge service for the tests
+          docker compose -f tests/docker-compose.tests.yml up -d nether-bridge
+
+      - name: Wait for proxy to become healthy
+        run: |
+          echo "Waiting for nether-bridge to be healthy..."
+          for i in {1..30}; do
+            STATUS=$(docker inspect --format '{{.State.Health.Status}}' nether-bridge || echo "inspecting")
+            if [ "$STATUS" = "healthy" ]; then
+              echo "Proxy is healthy!"
+              exit 0
+            fi
+            echo "Current status: $STATUS. Waiting..."
+            sleep 2
+          done
+          echo "Timeout waiting for proxy to become healthy."
+          docker logs nether-bridge
+          exit 1
+      
+      - name: Run all tests
+        run: |
+          # Use 'docker compose run' to execute pytest inside the 'tester' container.
+          # This command starts the tester service, runs pytest, and then removes the container.
+          docker compose -f tests/docker-compose.tests.yml run --rm tester pytest --cov=nether_bridge --cov-report term-missing tests/
+      
+      - name: Tear down test environment
+        if: always() # This step will run even if the tests fail
+        run: |
+          echo "Tearing down Docker Compose environment..."
+          docker compose -f tests/docker-compose.tests.yml down -v --remove-orphans
