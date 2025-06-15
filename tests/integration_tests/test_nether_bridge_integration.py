@@ -12,10 +12,13 @@ JAVA_PROXY_PORT = 25565
 
 def get_proxy_host():
     """Helper function to get the target host for tests."""
-    # In a CI environment, 'GITHUB_ACTIONS' is true, so we use the service name.
+    # In a CI environment, 'GITHUB_ACTIONS' is true. We must use the Docker
+    # service name, which resolves to the container's IP inside the network.
     if os.environ.get("GITHUB_ACTIONS") == "true":
         return "nether-bridge"
-    # Otherwise, use the VM_HOST_IP from local_env.py or default to localhost.
+
+    # For local testing (e.g., against a VM or Docker Desktop on Windows/Mac)
+    # it will use the IP from local_env.py or default to localhost.
     return os.environ.get("VM_HOST_IP", "127.0.0.1")
 
 
