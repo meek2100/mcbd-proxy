@@ -12,24 +12,30 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # This step ensures the CI runner uses Python 3.10
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
       - name: Set up Docker Compose
+        # This action is useful for docker compose, but not strictly
+        # necessary if the runner has it installed by default.
         uses: docker/setup-buildx-action@v3
 
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
+          # Installs dependencies using the Python 3.10 environment
           pip install -r tests/requirements-dev.txt
 
       - name: Lint and Format Check
         run: |
           # 1. Check if all files are correctly formatted with Black.
-          # The --check flag makes black fail if any files need reformatting.
           black . --check
 
           # 2. Run flake8 to find potential bugs and style issues.
-          # This command checks for major errors that will fail the build.
           flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-          # This command checks for other style issues but won't fail the build.
           flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
       - name: Start Test Environment
@@ -55,11 +61,13 @@ jobs:
       
       - name: Run All Tests and Generate Coverage
         env:
+          # This ensures the tests connect to the Docker host's localhost
           VM_HOST_IP: 127.0.0.1
         run: |
           pytest --cov=nether_bridge --cov-report term-missing tests/
 
       - name: Tear Down Test Environment
+        # This step will run even if the tests fail, ensuring cleanup.
         if: always()
         run: |
           echo "Tearing down Docker Compose environment..."
