@@ -2,3 +2,4 @@
 docker
 mcstatus
 prometheus_client
+python-json-logger
