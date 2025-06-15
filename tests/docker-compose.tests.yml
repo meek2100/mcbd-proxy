@@ -1,4 +1,5 @@
 # tests/docker-compose.tests.yml
+# This file is configured for self-contained integration testing.
 services:
   nether-bridge:
     image: nether-bridge-test:local
@@ -47,7 +48,7 @@ services:
       - mc-java-data:/data
     environment:
       - EULA=TRUE
-
+  
   # This service will run pytest from inside the Docker network
   tester:
     build:
@@ -60,6 +61,8 @@ services:
       - ../:/app
       # Mount the Docker socket so tests can interact with the daemon
       - /var/run/docker.sock:/var/run/docker.sock
+    # ADD THIS LINE to override the Dockerfile's entrypoint
+    entrypoint: ""
     depends_on:
       nether-bridge:
         condition: service_healthy
