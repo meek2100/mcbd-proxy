@@ -123,13 +123,13 @@ class NetherBridgeProxy:
             container = self.docker_client.containers.get(container_name)
             return container.status == 'running'
         except docker.errors.NotFound:
-            self.logger.debug(f"[Docker] Container '{container_name}' not found. Assuming not running.")
+            self.logger.debug(f"Container not found.", extra={"container_name": container_name})
             return False
         except docker.errors.APIError as e:
-            self.logger.error(f"[Docker] API error checking container '{container_name}': {e}")
+            self.logger.error(f"API error checking container.", extra={"container_name": container_name, "error": str(e)})
             return False
         except Exception as e:
-            self.logger.error(f"[Docker] Unexpected error checking container '{container_name}': {e}")
+            self.logger.error(f"Unexpected error checking container.", extra={"container_name": container_name, "error": str(e)})
             return False
 
     def _wait_for_server_query_ready(self, server_config: ServerConfig, max_wait_time_seconds: int, query_timeout_seconds: int) -> bool:
@@ -369,11 +369,11 @@ class NetherBridgeProxy:
                             # The start function now blocks until the server is ready
                             self._start_minecraft_server(container_name)
 
-                        # --- Simplified Forwarding Logic ---
                         # At this point, the server is guaranteed to be running.
                         # We now establish a session if it doesn't exist and forward the packet.
                         
-                        session_key = (client_addr[0], server_port, 'udp')
+                        # CORRECTED: Use the full client_addr tuple for the session key
+                        session_key = (client_addr, server_port, 'udp')
                         if session_key not in self.active_sessions:
                             self.logger.info("Establishing new UDP session for running server.", extra={"client_addr": client_addr, "server_name": server_config.name})
                             
@@ -429,7 +429,7 @@ class NetherBridgeProxy:
                         if protocol == 'tcp':
                             data = sock.recv(4096)
                             if not data: raise ConnectionResetError("Connection closed by peer")
-                        else:
+                        else: # UDP
                             data, _ = sock.recvfrom(4096)
 
                         session_info["last_packet_time"] = time.time()
@@ -439,13 +439,15 @@ class NetherBridgeProxy:
                             session_info["last_packet_time"] = time.time()
                             destination_socket = session_info["server_socket"]
                             destination_address = (container_name, self.servers_config_map[session_info["listen_port"]].internal_port)
+                        
                         elif socket_role == 'server_socket':
                             destination_socket = session_info["client_socket"]
-                            destination_address = session_key[0]
+                            # CORRECTED: The destination address is the full client tuple, which is the first element of the session key.
+                            destination_address = session_key[0] 
                         
                         if protocol == 'tcp':
                             destination_socket.sendall(data)
-                        else:
+                        else: # UDP
                             destination_socket.sendto(data, destination_address)
 
                     except (ConnectionResetError, socket.error, OSError) as e:
@@ -465,7 +467,6 @@ class NetherBridgeProxy:
         self.logger.info("Shutdown requested. Closing all listening sockets.")
         for sock in self.listen_sockets.values():
             sock.close()
-
 
     def run(self):
         """Starts the Nether-bridge proxy application."""
@@ -522,7 +523,8 @@ class NetherBridgeProxy:
         monitor_thread.start()
         self._run_proxy_loop()
 
-# --- Health Check and Config Loading (unchanged from original) ---
+
+# --- Health Check and Config Loading ---
 
 def perform_health_check():
     """Performs a self-sufficient two-stage health check."""
