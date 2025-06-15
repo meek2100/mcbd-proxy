@@ -12,62 +12,27 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # This step ensures the CI runner uses Python 3.10
+      # Setup Python on the runner (good practice, though tests run in container)
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Set up Docker Compose
-        # This action is useful for docker compose, but not strictly
-        # necessary if the runner has it installed by default.
-        uses: docker/setup-buildx-action@v3
-
-      - name: Install Python Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          # Installs dependencies using the Python 3.10 environment
-          pip install -r tests/requirements-dev.txt
-
-      - name: Lint and Format Check
-        run: |
-          # 1. Check if all files are correctly formatted with Black.
-          black . --check
-
-          # 2. Run flake8 to find potential bugs and style issues.
-          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-
       - name: Start Test Environment
         run: |
-          docker compose -f tests/docker-compose.tests.yml create --build
-          docker compose -f tests/docker-compose.tests.yml start nether-bridge
+          # Build all images (including 'tester') and start the proxy.
+          # The Minecraft servers will be created but not started.
+          docker compose -f tests/docker-compose.tests.yml up --build -d --remove-orphans nether-bridge
 
-      - name: Wait for Proxy to be Healthy
+      - name: Run all tests
         run: |
-          echo "Waiting for nether-bridge to be healthy..."
-          for i in {1..30}; do
-            STATUS=$(docker inspect --format '{{.State.Health.Status}}' nether-bridge || echo "inspecting")
-            if [ "$STATUS" = "healthy" ]; then
-              echo "Proxy is healthy!"
-              exit 0
-            fi
-            echo "Current status: $STATUS. Waiting..."
-            sleep 2
-          done
-          echo "Timeout waiting for proxy to become healthy."
-          docker logs nether-bridge
-          exit 1
+          # Execute pytest inside the 'tester' container.
+          # This ensures it's on the same network as 'nether-bridge'
+          # and can resolve its hostname.
+          docker compose -f tests/docker-compose.tests.yml run --rm tester pytest --cov=nether_bridge --cov-report term-missing tests/
       
-      - name: Run All Tests and Generate Coverage
-        env:
-          # This ensures the tests connect to the Docker host's localhost
-          VM_HOST_IP: 127.0.0.1
-        run: |
-          pytest --cov=nether_bridge --cov-report term-missing tests/
-
-      - name: Tear Down Test Environment
-        # This step will run even if the tests fail, ensuring cleanup.
+      - name: Tear down test environment
+        # This step runs even if tests fail, ensuring a clean exit.
         if: always()
         run: |
           echo "Tearing down Docker Compose environment..."

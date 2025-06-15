@@ -1,5 +1,4 @@
 # tests/docker-compose.tests.yml
-# This file is configured for self-contained integration testing.
 services:
   nether-bridge:
     image: nether-bridge-test:local
@@ -20,23 +19,6 @@ services:
       - LOG_LEVEL=DEBUG
       - NB_IDLE_TIMEOUT=30
       - NB_PLAYER_CHECK_INTERVAL=5
-      - NB_QUERY_TIMEOUT=2
-      - NB_SERVER_READY_MAX_WAIT=120
-      - NB_INITIAL_BOOT_READY_MAX_WAIT=45
-      - NB_SERVER_STARTUP_DELAY=2
-      - NB_INITIAL_SERVER_QUERY_DELAY=2
-      - NB_HEALTHCHECK_STALE_THRESHOLD=10
-      - NB_HEARTBEAT_INTERVAL=5
-      - NB_1_NAME=Bedrock Survival
-      - NB_1_SERVER_TYPE=bedrock
-      - NB_1_LISTEN_PORT=19132
-      - NB_1_CONTAINER_NAME=mc-bedrock
-      - NB_1_INTERNAL_PORT=19132
-      - NB_2_NAME=Java Creative
-      - NB_2_SERVER_TYPE=java
-      - NB_2_LISTEN_PORT=25565
-      - NB_2_CONTAINER_NAME=mc-java
-      - NB_2_INTERNAL_PORT=25565
     healthcheck:
       test: ["CMD", "python", "nether_bridge.py", "--healthcheck"]
       interval: 10s
@@ -54,9 +36,6 @@ services:
       - mc-bedrock-data:/data
     environment:
       - EULA=TRUE
-      - VERSION=1.20.81.01
-      - DIRECT_DOWNLOAD_URL=https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.20.81.01.zip
-      - IDLE_TIMEOUT=-1
 
   mc-java:
     image: itzg/minecraft-server:latest
@@ -68,12 +47,22 @@ services:
       - mc-java-data:/data
     environment:
       - EULA=TRUE
-      - TYPE=FABRIC
-      - MINECRAFT_VERSION=1.16.5
-      - LEVEL_TYPE=FLAT
-      - JVM_ARGS=-Xmx512M -Xms512M
-      - IDLE_TIMEOUT=-1
-      - ONLINE_MODE=FALSE
+
+  # This service will run pytest from inside the Docker network
+  tester:
+    build:
+      context: ../
+      dockerfile: Dockerfile
+    networks:
+      - mc-network
+    volumes:
+      # Mount the project code so test files are accessible
+      - ../:/app
+      # Mount the Docker socket so tests can interact with the daemon
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      nether-bridge:
+        condition: service_healthy
 
 networks:
   mc-network:
