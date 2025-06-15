@@ -12,18 +12,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Create and build test environment
-        run: |
-          # Build all images and create the containers, but do not start them
-          # This ensures mc-bedrock and mc-java exist in a 'created' state
-          docker compose -f tests/docker-compose.tests.yml build
+      - name: Set up Docker Compose
+        uses: docker/setup-buildx-action@v1
 
-      - name: Start nether-bridge proxy
+      - name: Start Test Environment
         run: |
-          # Start only the nether-bridge service for the tests
-          docker compose -f tests/docker-compose.tests.yml up -d nether-bridge
+          # Use docker compose to create the containers but not start them
+          docker compose -f tests/docker-compose.tests.yml create --build
+          # Start only the proxy service
+          docker compose -f tests/docker-compose.tests.yml start nether-bridge
 
-      - name: Wait for proxy to become healthy
+      - name: Wait for Proxy to be Healthy
         run: |
           echo "Waiting for nether-bridge to be healthy..."
           for i in {1..30}; do
@@ -39,14 +38,21 @@ jobs:
           docker logs nether-bridge
           exit 1
       
-      - name: Run all tests
+      - name: Install Python Dependencies
         run: |
-          # Use 'docker compose run' to execute pytest inside the 'tester' container.
-          # This command starts the tester service, runs pytest, and then removes the container.
-          docker compose -f tests/docker-compose.tests.yml run --rm tester pytest --cov=nether_bridge --cov-report term-missing tests/
-      
-      - name: Tear down test environment
-        if: always() # This step will run even if the tests fail
+          python -m pip install --upgrade pip
+          # Install all dependencies needed for testing
+          pip install -r tests/requirements-dev.txt
+
+      - name: Run All Tests and Generate Coverage
+        env:
+          # This ensures the tests connect to the Docker host's localhost
+          VM_HOST_IP: 127.0.0.1
+        run: |
+          pytest --cov=nether_bridge --cov-report term-missing tests/
+
+      - name: Tear Down Test Environment
+        if: always()
         run: |
           echo "Tearing down Docker Compose environment..."
           docker compose -f tests/docker-compose.tests.yml down -v --remove-orphans

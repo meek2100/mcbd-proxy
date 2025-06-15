@@ -6,16 +6,11 @@ import os # Import os to read environment variables
 from mcstatus import BedrockServer, JavaServer
 
 # Constants for test server addresses and ports
-# PROXY_HOST will be dynamically set by environment variable (set in conftest.py or GitHub Actions)
 BEDROCK_PROXY_PORT = 19132
 JAVA_PROXY_PORT = 25565
 
-# Helper function to get the VM_HOST_IP from environment, defaulting to 127.0.0.1
+# Helper function reverted to use VM_HOST_IP or 127.0.0.1
 def get_proxy_host():
-    # In a CI environment, 'GITHUB_ACTIONS' is always true.
-    # We can use the Docker service name 'nether-bridge' which resolves to the container's IP.
-    if os.environ.get('GITHUB_ACTIONS') == 'true':
-        return 'nether-bridge'
     return os.environ.get('VM_HOST_IP', '127.0.0.1')
 
 # Helper function to check container status via Docker API
@@ -106,14 +101,11 @@ def wait_for_proxy_to_be_ready(docker_client_fixture, timeout=60):
     print("\nWaiting for nether-bridge proxy to be ready...")
     proxy_container = docker_client_fixture.containers.get("nether-bridge")
     
-    # First, check the *entire log history* to see if the proxy is already ready.
-    # This handles subsequent tests in the same session.
     full_log = proxy_container.logs().decode('utf-8')
     if "Starting main proxy packet forwarding loop" in full_log:
         print("Proxy is already ready (found message in existing logs).")
         return True
 
-    # If not found, stream new logs (for the very first test run)
     start_time = time.time()
     for line in proxy_container.logs(stream=True, since=int(start_time)):
         decoded_line = line.decode('utf-8').strip()
@@ -137,16 +129,13 @@ def test_bedrock_server_starts_on_connection(docker_compose_up, docker_client_fi
     bedrock_proxy_port = BEDROCK_PROXY_PORT
     mc_bedrock_container_name = "mc-bedrock"
 
-    # 1. Wait for the proxy to be fully ready (after it has stopped all servers)
     assert wait_for_proxy_to_be_ready(docker_client_fixture, timeout=300), \
         "Proxy did not become ready within the timeout period."
 
-    # 2. Confirm the server is initially stopped
     initial_status = get_container_status(docker_client_fixture, mc_bedrock_container_name)
     assert initial_status in ["exited", "created", "stopped"], f"Bedrock server should be stopped, but is: {initial_status}"
     print(f"\nInitial status of {mc_bedrock_container_name}: {initial_status}")
 
-    # 3. Simulate a client connection
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         print(f"Simulating connection to nether-bridge on port {bedrock_proxy_port} on host {proxy_host}...")
@@ -158,7 +147,6 @@ def test_bedrock_server_starts_on_connection(docker_compose_up, docker_client_fi
         client_socket.sendto(unconnected_ping_packet, (proxy_host, bedrock_proxy_port))
         print("Bedrock 'Unconnected Ping' packet sent.")
 
-        # 4. Wait for the container to start
         assert wait_for_container_status(
             docker_client_fixture,
             mc_bedrock_container_name,
@@ -168,7 +156,6 @@ def test_bedrock_server_starts_on_connection(docker_compose_up, docker_client_fi
         ), f"Bedrock server '{mc_bedrock_container_name}' did not start after 180s."
         print(f"Server '{mc_bedrock_container_name}' is now running.")
 
-        # 5. Verify server is query-ready
         assert wait_for_mc_server_ready(
             {'host': proxy_host, 'port': bedrock_proxy_port, 'type': 'bedrock'},
             timeout=120,
@@ -188,16 +175,13 @@ def test_java_server_starts_on_connection(docker_compose_up, docker_client_fixtu
     java_proxy_port = JAVA_PROXY_PORT
     mc_java_container_name = "mc-java"
 
-    # 1. Wait for the proxy to be fully ready
     assert wait_for_proxy_to_be_ready(docker_client_fixture, timeout=300), \
         "Proxy did not become ready within the timeout period."
         
-    # 2. Confirm the server is initially stopped
     initial_status = get_container_status(docker_client_fixture, mc_java_container_name)
     assert initial_status in ["exited", "created", "stopped"], f"Java server should be stopped, but is: {initial_status}"
     print(f"\nInitial status of {mc_java_container_name}: {initial_status}")
 
-    # 3. Simulate a client connection
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         print(f"Simulating connection to nether-bridge on port {java_proxy_port} on host {proxy_host}...")
@@ -209,7 +193,6 @@ def test_java_server_starts_on_connection(docker_compose_up, docker_client_fixtu
         client_socket.sendall(status_request_packet)
         print("Java handshake and status request packets sent.")
 
-        # 4. Wait for the container to start
         assert wait_for_container_status(
             docker_client_fixture,
             mc_java_container_name,
@@ -219,13 +202,11 @@ def test_java_server_starts_on_connection(docker_compose_up, docker_client_fixtu
         ), f"Java server '{mc_java_container_name}' did not start after 180s."
         print(f"Server '{mc_java_container_name}' is now running.")
 
-        # 5. Verify server is query-ready
         assert wait_for_mc_server_ready(
             {'host': proxy_host, 'port': java_proxy_port, 'type': 'java'},
             timeout=120,
             interval=2
         ), "Java server did not become query-ready through proxy."
-
     finally:
         client_socket.close()
 
@@ -239,15 +220,12 @@ def test_server_shuts_down_on_idle(docker_compose_up, docker_client_fixture, doc
     bedrock_proxy_port = BEDROCK_PROXY_PORT
     mc_bedrock_container_name = "mc-bedrock"
     
-    # Values from docker-compose.tests.yml for testing
-    idle_timeout = 30 # NB_IDLE_TIMEOUT in compose
-    check_interval = 5 # NB_PLAYER_CHECK_INTERVAL in compose
+    idle_timeout = 30
+    check_interval = 5
     
-    # 1. Wait for the proxy to be ready
     assert wait_for_proxy_to_be_ready(docker_client_fixture, timeout=300), \
         "Proxy did not become ready within the timeout period."
 
-    # 2. Trigger the Bedrock server to start by sending a packet
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         print(f"\nTriggering server '{mc_bedrock_container_name}' to start...")
@@ -258,11 +236,9 @@ def test_server_shuts_down_on_idle(docker_compose_up, docker_client_fixture, doc
         )
         client_socket.sendto(unconnected_ping_packet, (proxy_host, bedrock_proxy_port))
     finally:
-        # Close the socket immediately to ensure the session is terminated on the proxy.
         client_socket.close()
         print("Client socket closed, session terminated.")
 
-    # 3. Confirm the server starts and becomes running
     assert wait_for_container_status(
         docker_client_fixture,
         mc_bedrock_container_name,
@@ -272,12 +248,9 @@ def test_server_shuts_down_on_idle(docker_compose_up, docker_client_fixture, doc
     ), "Bedrock server did not start after being triggered."
     print(f"Server '{mc_bedrock_container_name}' confirmed to be running.")
 
-    # 4. Wait for a duration longer than the idle_timeout + check_interval
-    # Adding a more generous buffer to account for all timer intervals.
-    wait_duration = idle_timeout + (2 * check_interval) + 5 # 30 + 10 + 5 = 45s for the current test values
+    wait_duration = idle_timeout + (2 * check_interval) + 5
     print(f"Server is running. Waiting {wait_duration}s for it to be shut down due to inactivity...")
 
-    # 5. Assert that the server is stopped by the proxy
     assert wait_for_container_status(
         docker_client_fixture,
         mc_bedrock_container_name,
