@@ -12,7 +12,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Setup Python on the runner (good practice, though tests run in container)
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
@@ -20,19 +19,14 @@ jobs:
 
       - name: Start Test Environment
         run: |
-          # Build all images (including 'tester') and start the proxy.
-          # The Minecraft servers will be created but not started.
           docker compose -f tests/docker-compose.tests.yml up --build -d --remove-orphans nether-bridge
 
       - name: Run all tests
         run: |
-          # Execute pytest inside the 'tester' container.
-          # This ensures it's on the same network as 'nether-bridge'
-          # and can resolve its hostname.
+          # This command now works because the `tester` service has its entrypoint overridden.
           docker compose -f tests/docker-compose.tests.yml run --rm tester pytest --cov=nether_bridge --cov-report term-missing tests/
       
       - name: Tear down test environment
-        # This step runs even if tests fail, ensuring a clean exit.
         if: always()
         run: |
           echo "Tearing down Docker Compose environment..."
