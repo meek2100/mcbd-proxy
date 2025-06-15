@@ -13,6 +13,7 @@ from mcstatus import BedrockServer, JavaServer
 from pathlib import Path
 from dataclasses import dataclass, field
 from pythonjsonlogger import jsonlogger
+from prometheus_client import start_http_server, Counter, Gauge, Histogram
 
 # --- Constants ---
 HEARTBEAT_FILE = Path("/tmp/proxy_heartbeat")
@@ -29,6 +30,22 @@ DEFAULT_SETTINGS = {
     "healthcheck_stale_threshold_seconds": 60, # Added to settings
     "proxy_heartbeat_interval_seconds": 15 # Added to settings
 }
+
+# --- Prometheus Metrics Definitions ---
+ACTIVE_SESSIONS = Gauge(
+    'netherbridge_active_sessions',
+    'Number of active player sessions',
+    ['server_name']
+)
+RUNNING_SERVERS = Gauge(
+    'netherbridge_running_servers',
+    'Number of Minecraft server containers currently running'
+)
+SERVER_STARTUP_DURATION = Histogram(
+    'netherbridge_server_startup_duration_seconds',
+    'Time taken for a server to start and become ready',
+    ['server_name']
+)
 
 @dataclass
 class ServerConfig:
@@ -150,11 +167,11 @@ class NetherBridgeProxy:
         if not self._is_container_running(container_name):
             self.logger.info("Attempting to start Minecraft server...", extra={"container_name": container_name})
             try:
+                startup_timer_start = time.time()
                 container = self.docker_client.containers.get(container_name)
                 container.start()
                 self.logger.info("Docker container start command issued.", extra={"container_name": container_name})
 
-                # Give the server a moment to initialize before probing
                 time.sleep(self.settings.server_startup_delay_seconds)
 
                 target_server_config = next((s for s in self.servers_list if s.container_name == container_name), None)
@@ -165,7 +182,12 @@ class NetherBridgeProxy:
                 self._wait_for_server_query_ready(target_server_config, self.settings.server_ready_max_wait_time_seconds, self.settings.query_timeout_seconds)
 
                 self.server_states[container_name]["running"] = True
-                self.logger.info("Startup process complete. Now handling traffic.", extra={"container_name": container_name})
+                RUNNING_SERVERS.inc()
+                
+                duration = time.time() - startup_timer_start
+                SERVER_STARTUP_DURATION.labels(server_name=target_server_config.name).observe(duration)
+                
+                self.logger.info("Startup process complete. Now handling traffic.", extra={"container_name": container_name, "duration_seconds": duration})
                 return True
             except docker.errors.NotFound:
                 self.logger.error("Docker container not found. Cannot start.", extra={"container_name": container_name})
@@ -177,7 +199,7 @@ class NetherBridgeProxy:
                 self.logger.error("Unexpected error during server startup.", extra={"container_name": container_name, "error": str(e)})
                 return False
         self.logger.debug("Server already running, no start action needed.", extra={"container_name": container_name})
-        return True # Considered successful if it's already running
+        return True
 
     def _stop_minecraft_server(self, container_name: str) -> bool:
         """Stops a Minecraft server container."""
@@ -187,11 +209,12 @@ class NetherBridgeProxy:
                 self.logger.info("Attempting to stop Minecraft server...", extra={"container_name": container_name})
                 container.stop()
                 self.server_states[container_name]["running"] = False
+                RUNNING_SERVERS.dec()
                 self.logger.info("Server stopped successfully.", extra={"container_name": container_name})
                 return True
             else:
                 self.logger.debug("Server already in non-running state, no stop action needed.", extra={"container_name": container_name, "status": container.status})
-                self.server_states[container_name]["running"] = False # Ensure internal state is false
+                self.server_states[container_name]["running"] = False
                 return True
         except docker.errors.NotFound:
             self.logger.debug("Docker container not found. Assuming already stopped.", extra={"container_name": container_name})
@@ -234,6 +257,9 @@ class NetherBridgeProxy:
             for session_key in idle_sessions_to_remove:
                 session_info = self.active_sessions.pop(session_key, None)
                 if session_info:
+                    server_config = self.servers_config_map.get(session_info["listen_port"])
+                    if server_config:
+                        ACTIVE_SESSIONS.labels(server_name=server_config.name).dec()
                     self.logger.info("Cleaning up idle client session.", extra={"container_name": session_info['target_container'], "client_addr": session_key[0]})
                     self._close_session_sockets(session_info)
                     self.socket_to_session_map.pop(session_info.get("client_socket"), None)
@@ -328,6 +354,7 @@ class NetherBridgeProxy:
                         self.active_sessions[session_key] = session_info
                         self.socket_to_session_map[conn] = (session_key, 'client_socket')
                         self.socket_to_session_map[server_sock] = (session_key, 'server_socket')
+                        ACTIVE_SESSIONS.labels(server_name=server_config.name).inc()
                         continue
 
                     elif sock.type == socket.SOCK_DGRAM and sock in self.listen_sockets.values():
@@ -339,10 +366,7 @@ class NetherBridgeProxy:
                         session_key = (client_addr[0], server_port, 'udp')
 
                         if session_key not in self.active_sessions:
-                            self.logger.info(
-                                "Establishing new UDP session",
-                                extra={ "client_addr": client_addr, "server_name": server_config.name, "container_name": container_name }
-                            )
+                            self.logger.info( "Establishing new UDP session", extra={ "client_addr": client_addr, "server_name": server_config.name, "container_name": container_name } )
                             
                             server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                             server_sock.setblocking(False)
@@ -351,6 +375,7 @@ class NetherBridgeProxy:
                             session_info = { "client_socket": sock, "server_socket": server_sock, "target_container": container_name, "last_packet_time": time.time(), "listen_port": server_port, "protocol": 'udp' }
                             self.active_sessions[session_key] = session_info
                             self.socket_to_session_map[server_sock] = (session_key, 'server_socket')
+                            ACTIVE_SESSIONS.labels(server_name=server_config.name).inc()
 
                             if not self._is_container_running(container_name):
                                 self.logger.info("First UDP packet from new session. Starting server...", extra={"client_addr": client_addr, "container_name": container_name})
@@ -423,6 +448,9 @@ class NetherBridgeProxy:
 
                     except (ConnectionResetError, socket.error, OSError) as e:
                         self.logger.warning("Session disconnected. Cleaning up.", extra={"session_key": session_key, "protocol": protocol, "error": str(e)})
+                        server_config = self.servers_config_map.get(session_info["listen_port"])
+                        if server_config:
+                            ACTIVE_SESSIONS.labels(server_name=server_config.name).dec()
                         self._close_session_sockets(session_info)
                         self.socket_to_session_map.pop(session_info.get("client_socket"), None)
                         self.socket_to_session_map.pop(session_info.get("server_socket"), None)
@@ -440,6 +468,13 @@ class NetherBridgeProxy:
     def run(self):
         """Starts the Nether-bridge proxy application."""
         self.logger.info("--- Starting Nether-bridge On-Demand Proxy ---")
+        
+        try:
+            metrics_port = 8000
+            start_http_server(metrics_port)
+            self.logger.info("Prometheus metrics server started.", extra={"port": metrics_port})
+        except Exception as e:
+            self.logger.error("Could not start Prometheus metrics server.", extra={"error": str(e)})
 
         app_metadata = os.environ.get('APP_IMAGE_METADATA')
         if app_metadata:
@@ -592,14 +627,12 @@ def load_application_config() -> tuple[ProxySettings, list[ServerConfig]]:
 
 # --- Main Execution ---
 if __name__ == "__main__":
-    from pythonjsonlogger import jsonlogger
     logger = logging.getLogger()
     LOG_LEVEL_EARLY = os.environ.get('LOG_LEVEL', 'INFO').upper()
     logger.setLevel(LOG_LEVEL_EARLY)
     logHandler = logging.StreamHandler()
     formatter = jsonlogger.JsonFormatter('%(asctime)s %(name)s %(levelname)s %(message)s')
     logHandler.setFormatter(formatter)
-    # Remove existing handlers to avoid duplicate logs
     if logger.hasHandlers():
         logger.handlers.clear()
     logger.addHandler(logHandler)

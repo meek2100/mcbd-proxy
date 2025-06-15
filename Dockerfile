@@ -25,6 +25,7 @@ RUN mkdir -p /app/data/nether-bridge
 EXPOSE 19132/udp
 EXPOSE 25565/udp
 EXPOSE 25565/tcp
+EXPOSE 8000/tcp
 
 # Define entrypoint script to run your main Python application
 ENTRYPOINT ["python", "nether_bridge.py"]
