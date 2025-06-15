@@ -1,20 +1,18 @@
 import socket
 import time
 import sys
-import struct
-import docker
 
 # --- Configuration ---
-# IMPORTANT: This must be the IP address of the machine running Docker (your Debian VM)
+# IMPORTANT: This must be the IP address of the machine running Docker
 TARGET_HOST = "127.0.0.1"
 # Ports should match what is defined in your docker-compose.yml and servers.json
 BEDROCK_PROXY_PORT = 19132
-JAVA_PROXY_PORT = 25565  # Using the standard port as per servers.json
+JAVA_PROXY_PORT = 25565
+
 
 # --- Packet Definitions ---
 
 # A standard Minecraft Bedrock Edition Unconnected Ping packet
-# This is a simple packet that should elicit a response from a running server.
 BEDROCK_UNCONNECTED_PING = (
     b"\x01"  # Packet ID (Unconnected Ping)
     + b"\x00\x00\x00\x00\x00\x00\x00\x00"  # Nonce (can be anything)
@@ -44,13 +42,11 @@ def get_java_handshake_and_status_request_packets(host, port):
     # Handshake Packet
     server_address_bytes = host.encode("utf-8")
     handshake_payload = (
-        encode_varint(
-            754
-        )  # Protocol Version (e.g., 754 for 1.16.5, can be anything for status)
+        encode_varint(754)
         + encode_varint(len(server_address_bytes))
         + server_address_bytes
         + port.to_bytes(2, byteorder="big")
-        + encode_varint(1)  # Next State: 1 for Status
+        + encode_varint(1)
     )
     handshake_packet = (
         encode_varint(len(handshake_payload) + 1) + b"\x00" + handshake_payload
@@ -74,13 +70,12 @@ def test_bedrock_server():
     """Sends a UDP packet to trigger the Bedrock server and listens for a response."""
     print(f"--- Testing Bedrock (UDP) -> {TARGET_HOST}:{BEDROCK_PROXY_PORT} ---")
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.settimeout(5)  # 5 second timeout to wait for a reply
+    sock.settimeout(5)
     try:
         print("Sending Unconnected Ping packet to proxy...")
         sock.sendto(BEDROCK_UNCONNECTED_PING, (TARGET_HOST, BEDROCK_PROXY_PORT))
         print("Packet sent. Waiting for response...")
 
-        # After the server starts, it should respond to our ping.
         data, addr = sock.recvfrom(4096)
         print(f"SUCCESS: Received {len(data)} bytes back from {addr}.")
         if b"MCPE" in data:
@@ -92,7 +87,8 @@ def test_bedrock_server():
 
     except socket.timeout:
         print(
-            "FAIL: Did not receive a response within 5 seconds. The server may not have started or the proxy failed."
+            "FAIL: Did not receive a response within 5 seconds. "
+            "The server may not have started or the proxy failed."
         )
     except Exception as e:
         print(f"An error occurred: {e}")
@@ -105,9 +101,9 @@ def test_java_server():
     """Sends TCP packets to trigger the Java server and listens for a response."""
     print(f"--- Testing Java (TCP) -> {TARGET_HOST}:{JAVA_PROXY_PORT} ---")
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(10)  # 10 second timeout
+    sock.settimeout(10)
     try:
-        print(f"Attempting to connect to proxy...")
+        print("Attempting to connect to proxy...")
         sock.connect((TARGET_HOST, JAVA_PROXY_PORT))
         print("Connection successful. Sending handshake and status request packets...")
 
@@ -130,11 +126,13 @@ def test_java_server():
 
     except ConnectionRefusedError:
         print(
-            f"FAIL: Connection refused. The proxy is not listening on {TARGET_HOST}:{JAVA_PROXY_PORT}."
+            f"FAIL: Connection refused. The proxy is not listening on "
+            f"{TARGET_HOST}:{JAVA_PROXY_PORT}."
         )
     except socket.timeout:
         print(
-            f"FAIL: Connection timed out. The server may not have started or the proxy failed."
+            "FAIL: Connection timed out. The server may not have started or the "
+            "proxy failed."
         )
     except Exception as e:
         print(f"An error occurred: {e}")

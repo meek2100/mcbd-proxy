@@ -2,7 +2,7 @@ import pytest
 import time
 import socket
 import docker
-import os  # Import os to read environment variables
+import os
 from mcstatus import BedrockServer, JavaServer
 
 # Constants for test server addresses and ports
@@ -10,13 +10,17 @@ BEDROCK_PROXY_PORT = 19132
 JAVA_PROXY_PORT = 25565
 
 
-# Helper function reverted to use VM_HOST_IP or 127.0.0.1
 def get_proxy_host():
+    """Helper function to get the target host for tests."""
+    # In a CI environment, 'GITHUB_ACTIONS' is true, so we use the service name.
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        return "nether-bridge"
+    # Otherwise, use the VM_HOST_IP from local_env.py or default to localhost.
     return os.environ.get("VM_HOST_IP", "127.0.0.1")
 
 
-# Helper function to check container status via Docker API
 def get_container_status(docker_client_fixture, container_name):
+    """Helper function to check container status via Docker API."""
     try:
         container = docker_client_fixture.containers.get(container_name)
         return container.status
@@ -26,13 +30,14 @@ def get_container_status(docker_client_fixture, container_name):
         pytest.fail(f"Failed to get status for container {container_name}: {e}")
 
 
-# Helper function to wait for a specific container status
 def wait_for_container_status(
     docker_client_fixture, container_name, target_statuses, timeout=240, interval=5
 ):
+    """Helper function to wait for a specific container status."""
     start_time = time.time()
     print(
-        f"Waiting for container '{container_name}' to reach status in {target_statuses} (max {timeout}s)..."
+        f"Waiting for container '{container_name}' to reach status in {target_statuses} "
+        f"(max {timeout}s)..."
     )
     while time.time() - start_time < timeout:
         current_status = get_container_status(docker_client_fixture, container_name)
@@ -43,14 +48,16 @@ def wait_for_container_status(
             )
             return True
         time.sleep(interval)
+    current_status = get_container_status(docker_client_fixture, container_name)
     print(
-        f"Timeout waiting for container '{container_name}' to reach status in {target_statuses}. Current: {current_status}"
+        f"Timeout waiting for container '{container_name}' to reach status in "
+        f"{target_statuses}. Current: {current_status}"
     )
     return False
 
 
-# Helper function to wait for a server to be query-ready via mcstatus
 def wait_for_mc_server_ready(server_config, timeout=60, interval=1):
+    """Helper function to wait for a server to be query-ready via mcstatus."""
     host, port = server_config["host"], server_config["port"]
     server_type = server_config["type"]
     start_time = time.time()
@@ -68,18 +75,20 @@ def wait_for_mc_server_ready(server_config, timeout=60, interval=1):
 
             if status:
                 print(
-                    f"[{server_type}@{host}:{port}] Server responded! Latency: {status.latency:.2f}ms. Online players: {status.players.online}"
+                    f"[{server_type}@{host}:{port}] Server responded! "
+                    f"Latency: {status.latency:.2f}ms. "
+                    f"Online players: {status.players.online}"
                 )
                 return True
-        except Exception as e:
+        except Exception:
             pass
         time.sleep(interval)
     print(f"[{server_type}@{host}:{port}] Timeout waiting for server to be ready.")
     return False
 
 
-# Helper to encode VarInt for Java protocol
 def encode_varint(value):
+    """Helper to encode VarInt for Java protocol."""
     buf = b""
     while True:
         byte = value & 0x7F
@@ -92,8 +101,8 @@ def encode_varint(value):
     return buf
 
 
-# Java handshake + status request packets
 def get_java_handshake_and_status_request_packets(host, port):
+    """Constructs the two packets needed to request a status from a Java server."""
     server_address_bytes = host.encode("utf-8")
     handshake_payload = (
         encode_varint(754)
@@ -106,21 +115,19 @@ def get_java_handshake_and_status_request_packets(host, port):
         encode_varint(len(handshake_payload) + 1) + b"\x00" + handshake_payload
     )
 
-    status_request_packet_payload = b""
+    status_request_payload = b""
     status_request_packet = (
-        encode_varint(len(status_request_packet_payload) + 1)
+        encode_varint(len(status_request_payload) + 1)
         + b"\x00"
-        + status_request_packet_payload
+        + status_request_payload
     )
 
     return handshake_packet, status_request_packet
 
 
-# --- Helper Function ---
 def wait_for_proxy_to_be_ready(docker_client_fixture, timeout=60):
     """
     Waits for the nether-bridge proxy to be fully initialized by watching its logs.
-    This version is robust and checks the full log history first.
     """
     print("\nWaiting for nether-bridge proxy to be ready...")
     proxy_container = docker_client_fixture.containers.get("nether-bridge")
@@ -173,7 +180,8 @@ def test_bedrock_server_starts_on_connection(
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         print(
-            f"Simulating connection to nether-bridge on port {bedrock_proxy_port} on host {proxy_host}..."
+            f"Simulating connection to nether-bridge on port {bedrock_proxy_port} "
+            f"on host {proxy_host}..."
         )
         unconnected_ping_packet = (
             b"\x01"
@@ -229,14 +237,16 @@ def test_java_server_starts_on_connection(
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         print(
-            f"Simulating connection to nether-bridge on port {java_proxy_port} on host {proxy_host}..."
+            f"Simulating connection to nether-bridge on port {java_proxy_port} "
+            f"on host {proxy_host}..."
         )
         client_socket.connect((proxy_host, java_proxy_port))
         print(f"Successfully connected to {proxy_host}:{java_proxy_port}.")
 
-        handshake_packet, status_request_packet = (
-            get_java_handshake_and_status_request_packets(proxy_host, java_proxy_port)
-        )
+        (
+            handshake_packet,
+            status_request_packet,
+        ) = get_java_handshake_and_status_request_packets(proxy_host, java_proxy_port)
         client_socket.sendall(handshake_packet)
         client_socket.sendall(status_request_packet)
         print("Java handshake and status request packets sent.")
@@ -255,6 +265,7 @@ def test_java_server_starts_on_connection(
             timeout=120,
             interval=2,
         ), "Java server did not become query-ready through proxy."
+
     finally:
         client_socket.close()
 
@@ -303,7 +314,8 @@ def test_server_shuts_down_on_idle(
 
     wait_duration = idle_timeout + (2 * check_interval) + 5
     print(
-        f"Server is running. Waiting {wait_duration}s for it to be shut down due to inactivity..."
+        f"Server is running. Waiting {wait_duration}s for it to be shut down due to "
+        "inactivity..."
     )
 
     assert wait_for_container_status(

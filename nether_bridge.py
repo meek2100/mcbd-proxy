@@ -11,9 +11,9 @@ import signal
 from collections import defaultdict
 from mcstatus import BedrockServer, JavaServer
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pythonjsonlogger import jsonlogger
-from prometheus_client import start_http_server, Counter, Gauge, Histogram
+from prometheus_client import start_http_server, Gauge, Histogram
 
 # --- Constants ---
 HEARTBEAT_FILE = Path("/tmp/proxy_heartbeat")
@@ -26,9 +26,9 @@ DEFAULT_SETTINGS = {
     "initial_boot_ready_max_wait_time_seconds": 180,
     "server_startup_delay_seconds": 5,
     "initial_server_query_delay_seconds": 10,
-    "log_level": "INFO",  # Default log level
-    "healthcheck_stale_threshold_seconds": 60,  # Added to settings
-    "proxy_heartbeat_interval_seconds": 15,  # Added to settings
+    "log_level": "INFO",
+    "healthcheck_stale_threshold_seconds": 60,
+    "proxy_heartbeat_interval_seconds": 15,
 }
 
 # --- Prometheus Metrics Definitions ---
@@ -75,40 +75,24 @@ class ProxySettings:
 
 class NetherBridgeProxy:
     """
-    Nether-bridge: On-Demand Minecraft Server Proxy
-
-    An intelligent UDP proxy for Minecraft servers running in Docker. This class
-    dynamically starts and stops Dockerized Minecraft servers (both Bedrock and
-    Java editions) based on player activity to conserve system resources. It
-    supports multiple servers, flexible configuration, and robust health checks.
+    Nether-bridge: On-Demand Minecraft Server Proxy.
     """
 
     def __init__(self, settings: ProxySettings, servers_list: list[ServerConfig]):
         self.logger = logging.getLogger(__name__)
         self.settings = settings
         self.servers_list = servers_list
-        # Create a lookup dictionary from the final list of servers for quick access by listen_port
         self.servers_config_map = {s.listen_port: s for s in self.servers_list}
-
         self.docker_client = None
-        # Initialize server states: container_name -> {"running": bool, "last_activity": float}
         self.server_states = {
             s.container_name: {"running": False, "last_activity": 0.0}
             for s in self.servers_list
         }
-
-        # New structure for active sessions:
-        # Map socket objects to their role and session key for quick lookup
-        # socket -> (session_key, 'client_socket' or 'server_socket')
         self.socket_to_session_map = {}
-        # Map session_key (client_addr, listen_port, protocol) to session_info:
-        # session_info: {"target_container": str, "client_socket": socket, "server_socket": socket, "last_packet_time": float, "listen_port": int, "protocol": str}
         self.active_sessions = {}
-
-        self.packet_buffers = defaultdict(list)  # session_key -> [packets]
-
-        self.listen_sockets = {}  # listen_port -> socket (TCP or UDP listener)
-        self.inputs = []  # List of sockets to monitor with select.select
+        self.packet_buffers = defaultdict(list)
+        self.listen_sockets = {}
+        self.inputs = []
         self.last_heartbeat_time = time.time()
         self._shutdown_requested = False
 
@@ -116,11 +100,12 @@ class NetherBridgeProxy:
         """Connects to the Docker daemon via the mounted socket."""
         try:
             self.docker_client = docker.from_env()
-            self.docker_client.ping()  # Test connection
+            self.docker_client.ping()
             self.logger.info("Successfully connected to the Docker daemon.")
         except Exception as e:
             self.logger.critical(
-                f"FATAL: Could not connect to Docker daemon. Is /var/run/docker.sock mounted? Error: {e}"
+                "FATAL: Could not connect to Docker daemon. "
+                f"Is /var/run/docker.sock mounted? Error: {e}"
             )
             sys.exit(1)
 
@@ -131,18 +116,18 @@ class NetherBridgeProxy:
             return container.status == "running"
         except docker.errors.NotFound:
             self.logger.debug(
-                f"Container not found.", extra={"container_name": container_name}
+                "Container not found.", extra={"container_name": container_name}
             )
             return False
         except docker.errors.APIError as e:
             self.logger.error(
-                f"API error checking container.",
+                "API error checking container.",
                 extra={"container_name": container_name, "error": str(e)},
             )
             return False
         except Exception as e:
             self.logger.error(
-                f"Unexpected error checking container.",
+                "Unexpected error checking container.",
                 extra={"container_name": container_name, "error": str(e)},
             )
             return False
@@ -155,12 +140,12 @@ class NetherBridgeProxy:
     ) -> bool:
         """Polls a Minecraft server using mcstatus until it responds or a timeout is reached."""
         container_name = server_config.container_name
-        target_ip = container_name  # Docker DNS resolves container name to IP
+        target_ip = container_name
         target_port = server_config.internal_port
         server_type = server_config.server_type
 
         self.logger.info(
-            f"Waiting for server to respond to query",
+            "Waiting for server to respond to query",
             extra={
                 "container_name": container_name,
                 "target": f"{target_ip}:{target_port}",
@@ -185,7 +170,7 @@ class NetherBridgeProxy:
 
                 if status:
                     self.logger.info(
-                        f"Server responded to query. Ready!",
+                        "Server responded to query. Ready!",
                         extra={
                             "container_name": container_name,
                             "latency_ms": status.latency,
@@ -194,13 +179,14 @@ class NetherBridgeProxy:
                     return True
             except Exception as e:
                 self.logger.debug(
-                    f"Query failed, retrying...",
+                    "Query failed, retrying...",
                     extra={"container_name": container_name, "error": str(e)},
                 )
             time.sleep(query_timeout_seconds)
 
         self.logger.error(
-            f"Timeout: Server did not respond after {max_wait_time_seconds} seconds. Proceeding anyway.",
+            f"Timeout: Server did not respond after {max_wait_time_seconds} seconds. "
+            "Proceeding anyway.",
             extra={"container_name": container_name},
         )
         return False
@@ -341,7 +327,7 @@ class NetherBridgeProxy:
             container_name = srv_conf.container_name
             if self._is_container_running(container_name):
                 self.logger.warning(
-                    "Found running at proxy startup. Waiting for it to be query-ready before issuing a safe stop.",
+                    "Found running at proxy startup. Issuing a safe stop.",
                     extra={"container_name": container_name},
                 )
                 time.sleep(self.settings.initial_server_query_delay_seconds)
@@ -465,10 +451,10 @@ class NetherBridgeProxy:
                         HEARTBEAT_FILE.write_text(str(int(current_time)))
                         self.last_heartbeat_time = current_time
                         self.logger.debug("Proxy heartbeat updated.")
-                    except Exception as e:
+                    except Exception:
                         self.logger.warning(
-                            f"Could not update heartbeat file.",
-                            extra={"path": str(HEARTBEAT_FILE), "error": str(e)},
+                            "Could not update heartbeat file.",
+                            extra={"path": str(HEARTBEAT_FILE)},
                         )
 
                 for sock in readable:
@@ -542,7 +528,6 @@ class NetherBridgeProxy:
                         server_config = self.servers_config_map[server_port]
                         container_name = server_config.container_name
 
-                        # If the server is not running, start it. This is the trigger.
                         if not self._is_container_running(container_name):
                             self.logger.info(
                                 "First packet received for stopped server. Starting...",
@@ -551,13 +536,8 @@ class NetherBridgeProxy:
                                     "client_addr": client_addr,
                                 },
                             )
-                            # The start function now blocks until the server is ready
                             self._start_minecraft_server(container_name)
 
-                        # At this point, the server is guaranteed to be running.
-                        # We now establish a session if it doesn't exist and forward the packet.
-
-                        # CORRECTED: Use the full client_addr tuple for the session key
                         session_key = (client_addr, server_port, "udp")
                         if session_key not in self.active_sessions:
                             self.logger.info(
@@ -589,7 +569,6 @@ class NetherBridgeProxy:
                             )
                             ACTIVE_SESSIONS.labels(server_name=server_config.name).inc()
 
-                        # Forward the current packet using the session's socket
                         session_info = self.active_sessions[session_key]
                         session_info["last_packet_time"] = time.time()
                         self.server_states[container_name][
@@ -609,7 +588,7 @@ class NetherBridgeProxy:
                                 },
                             )
 
-                        continue  # End of UDP handling
+                        continue
 
                     session_info_tuple = self.socket_to_session_map.get(sock)
                     if not session_info_tuple:
@@ -647,7 +626,7 @@ class NetherBridgeProxy:
                             data = sock.recv(4096)
                             if not data:
                                 raise ConnectionResetError("Connection closed by peer")
-                        else:  # UDP
+                        else:
                             data, _ = sock.recvfrom(4096)
 
                         session_info["last_packet_time"] = time.time()
@@ -667,12 +646,11 @@ class NetherBridgeProxy:
 
                         elif socket_role == "server_socket":
                             destination_socket = session_info["client_socket"]
-                            # CORRECTED: The destination address is the full client tuple, which is the first element of the session key.
                             destination_address = session_key[0]
 
                         if protocol == "tcp":
                             destination_socket.sendall(data)
-                        else:  # UDP
+                        else:
                             destination_socket.sendto(data, destination_address)
 
                     except (ConnectionResetError, socket.error, OSError) as e:
@@ -797,28 +775,22 @@ class NetherBridgeProxy:
         self._run_proxy_loop()
 
 
-# --- Health Check and Config Loading ---
-
-
 def perform_health_check():
     """Performs a self-sufficient two-stage health check."""
-    logger = logging.getLogger(__name__)  # Health check should also log.
+    logger = logging.getLogger(__name__)
     try:
         settings, servers_list = load_application_config()
         if not servers_list:
             logger.error("Health Check FAIL: No server configuration found.")
             sys.exit(1)
         logger.debug("Health Check Stage 1 (Configuration) OK.")
-    except Exception as e:
-        logger.error(f"Health Check FAIL: Error loading configuration: {e}")
+    except Exception:
+        logger.error("Health Check FAIL: Error loading configuration.")
         sys.exit(1)
 
-    HEALTHCHECK_STALE_THRESHOLD_SECONDS_DEFAULT = 60
     proxy_settings_for_healthcheck, _ = load_application_config()
     healthcheck_threshold = (
         proxy_settings_for_healthcheck.healthcheck_stale_threshold_seconds
-        if proxy_settings_for_healthcheck
-        else HEALTHCHECK_STALE_THRESHOLD_SECONDS_DEFAULT
     )
 
     if not HEARTBEAT_FILE.is_file():
@@ -832,10 +804,8 @@ def perform_health_check():
         else:
             logger.error(f"Health Check FAIL: Heartbeat is stale ({age} seconds old).")
             sys.exit(1)
-    except Exception as e:
-        logger.error(
-            f"Health Check FAIL: Could not read or parse heartbeat file. Error: {e}"
-        )
+    except Exception:
+        logger.error("Health Check FAIL: Could not read or parse heartbeat file.")
         sys.exit(1)
 
 

@@ -1,7 +1,6 @@
 import sys
 import pytest
 import os
-import json
 import time
 from unittest.mock import MagicMock, patch
 import docker
@@ -9,12 +8,10 @@ import docker
 # Adjusting sys.path to allow importing nether_bridge.py from the parent directory
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from nether_bridge import (
+from nether_bridge import (  # noqa: E402
     NetherBridgeProxy,
     ProxySettings,
     ServerConfig,
-    load_application_config,
-    HEARTBEAT_FILE,
 )
 
 # --- Fixtures for common test setup ---
@@ -95,7 +92,7 @@ def test_proxy_initialization(
     assert nether_bridge_instance.servers_list == mock_servers_config
     assert len(nether_bridge_instance.servers_config_map) == len(mock_servers_config)
     assert "test-mc-bedrock" in nether_bridge_instance.server_states
-    assert nether_bridge_instance.server_states["test-mc-bedrock"]["running"] == False
+    assert nether_bridge_instance.server_states["test-mc-bedrock"]["running"] is False
 
 
 # Test cases for _is_container_running
@@ -142,7 +139,6 @@ def test_start_minecraft_server_success(
     mock_container.start.assert_called_once()
     mock_wait_ready.assert_called_once()
     assert nether_bridge_instance.server_states[container_name]["running"] is True
-    # The last_activity is now set in the main proxy loop, not in the start function, so we no longer assert it here.
 
 
 @patch(
