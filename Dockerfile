@@ -1,34 +1,37 @@
-# Use an official Python runtime as a parent image
-FROM python:3.10-slim-buster
-
-# Set working directory in the container
+# --- Stage 1: Base ---
+# This stage installs only the production dependencies.
+FROM python:3.10-slim-buster as base
 WORKDIR /app
-
-# Arguments for build metadata (populated by GitHub Actions)
-ARG BUILD_DATE
-ARG APP_VERSION
-ARG VCS_REF
-
-# Install any needed packages specified in requirements.txt
 COPY requirements.txt .
+RUN python -m pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the application code into the container
+# --- Stage 2: Testing ---
+# This stage builds on 'base' and adds the development dependencies for testing.
+FROM base as testing
+WORKDIR /app
+COPY tests/requirements-dev.txt .
+# The -r requirements.txt line in the dev file ensures all deps are aligned.
+RUN pip install --no-cache-dir -r requirements-dev.txt
+
+# --- Stage 3: Final Production Image ---
+# This is the minimal final image. It copies only from the 'base' stage.
+FROM python:3.10-slim-buster
+WORKDIR /app
+
+# Copy only the production packages from the 'base' stage.
+COPY --from=base /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+
+# Copy the application code and default configs.
 COPY nether_bridge.py .
 COPY settings.json .
 COPY servers.json .
 
-# Create data directory for volumes if they are used
-RUN mkdir -p /app/data/nether-bridge
-
-# Expose the default Bedrock/Java ports
+# Expose all necessary ports for the proxy and metrics.
 EXPOSE 19132/udp
 EXPOSE 25565/udp
 EXPOSE 25565/tcp
 EXPOSE 8000/tcp
 
-# Define entrypoint script to run your main Python application
+# Define the command to run the application.
 ENTRYPOINT ["python", "nether_bridge.py"]
-
-# Default command for the container
-CMD []

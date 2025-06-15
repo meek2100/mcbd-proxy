@@ -47,18 +47,20 @@ services:
       - mc-java-data:/data
     environment:
       - EULA=TRUE
-  
+
+  # This service now specifically builds the 'testing' stage
   tester:
     build:
       context: ../
       dockerfile: Dockerfile
+      # This line tells Docker to build the 'testing' stage from the Dockerfile
+      target: testing
     networks:
       - mc-network
     volumes:
       - ../:/app
       - /var/run/docker.sock:/var/run/docker.sock
-    # This line overrides the Dockerfile's ENTRYPOINT, allowing the `run`
-    # command in the CI script to become the container's main process.
+    # This overrides the Dockerfile's ENTRYPOINT so we can run pytest
     entrypoint: ""
     depends_on:
       nether-bridge:
