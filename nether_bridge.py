@@ -362,42 +362,44 @@ class NetherBridgeProxy:
                         server_port = sock.getsockname()[1]
                         server_config = self.servers_config_map[server_port]
                         container_name = server_config.container_name
+
+                        # If the server is not running, start it. This is the trigger.
+                        if not self._is_container_running(container_name):
+                            self.logger.info("First packet received for stopped server. Starting...", extra={"container_name": container_name, "client_addr": client_addr})
+                            # The start function now blocks until the server is ready
+                            self._start_minecraft_server(container_name)
+
+                        # --- Simplified Forwarding Logic ---
+                        # At this point, the server is guaranteed to be running.
+                        # We now establish a session if it doesn't exist and forward the packet.
                         
                         session_key = (client_addr[0], server_port, 'udp')
-
                         if session_key not in self.active_sessions:
-                            self.logger.info( "Establishing new UDP session", extra={ "client_addr": client_addr, "server_name": server_config.name, "container_name": container_name } )
+                            self.logger.info("Establishing new UDP session for running server.", extra={"client_addr": client_addr, "server_name": server_config.name})
                             
                             server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                             server_sock.setblocking(False)
                             self.inputs.append(server_sock)
 
-                            session_info = { "client_socket": sock, "server_socket": server_sock, "target_container": container_name, "last_packet_time": time.time(), "listen_port": server_port, "protocol": 'udp' }
+                            session_info = {
+                                "client_socket": sock, "server_socket": server_sock, "target_container": container_name,
+                                "last_packet_time": time.time(), "listen_port": server_port, "protocol": 'udp'
+                            }
                             self.active_sessions[session_key] = session_info
                             self.socket_to_session_map[server_sock] = (session_key, 'server_socket')
                             ACTIVE_SESSIONS.labels(server_name=server_config.name).inc()
 
-                            if not self._is_container_running(container_name):
-                                self.logger.info("First UDP packet from new session. Starting server...", extra={"client_addr": client_addr, "container_name": container_name})
-                                self.packet_buffers[session_key].append(data)
-                                self._start_minecraft_server(container_name)
-                                self.logger.info("Server is ready. Forwarding buffered packets.", extra={"client_addr": client_addr, "container_name": container_name})
-                                for packet in self.packet_buffers.pop(session_key, []):
-                                    try:
-                                        server_sock.sendto(packet, (container_name, server_config.internal_port))
-                                    except Exception as e:
-                                        self.logger.warning("Error forwarding buffered UDP packet to backend.", extra={"container_name": container_name, "error": str(e)})
-                                continue
-
+                        # Forward the current packet using the session's socket
                         session_info = self.active_sessions[session_key]
                         session_info["last_packet_time"] = time.time()
                         self.server_states[container_name]["last_activity"] = time.time()
-
+                        
                         try:
                             session_info["server_socket"].sendto(data, (container_name, server_config.internal_port))
                         except Exception as e:
                             self.logger.warning("Error forwarding UDP packet to backend.", extra={"container_name": container_name, "error": str(e)})
-                        continue
+
+                        continue # End of UDP handling
 
                     session_info_tuple = self.socket_to_session_map.get(sock)
                     if not session_info_tuple:
