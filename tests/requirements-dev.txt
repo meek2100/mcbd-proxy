@@ -1,5 +1,8 @@
 # requirements-dev.txt
 # Testing, Linting, and Formatting Tools
+
+-r ../requirements.txt
+
 pytest
 pytest-mock
 pytest-cov
