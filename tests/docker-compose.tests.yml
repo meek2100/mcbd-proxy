@@ -83,9 +83,10 @@ services:
       dockerfile: Dockerfile
     networks:
       - mc-network
-    # Mount the project code so the tests can be found and run
+    # Mount the project code and the Docker socket
     volumes:
       - ../:/app
+      - /var/run/docker.sock:/var/run/docker.sock # <-- ADD THIS LINE
     # Depend on the main proxy service to ensure correct startup order
     depends_on:
       - nether-bridge
