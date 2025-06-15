@@ -30,7 +30,7 @@ Thumbs.db # Windows
 desktop.ini # Windows
 
 # Environment variables file (if you create one for local env)
-.env
+# .env
 
 # Local test environment overrides
 tests/local_env.py
