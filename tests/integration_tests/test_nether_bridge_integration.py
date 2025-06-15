@@ -12,7 +12,11 @@ JAVA_PROXY_PORT = 25565
 
 # Helper function to get the VM_HOST_IP from environment, defaulting to 127.0.0.1
 def get_proxy_host():
-    return os.environ.get('VM_HOST_IP', '127.0.0.1') #
+    # In a CI environment, 'GITHUB_ACTIONS' is always true.
+    # We can use the Docker service name 'nether-bridge' which resolves to the container's IP.
+    if os.environ.get('GITHUB_ACTIONS') == 'true':
+        return 'nether-bridge'
+    return os.environ.get('VM_HOST_IP', '127.0.0.1')
 
 # Helper function to check container status via Docker API
 def get_container_status(docker_client_fixture, container_name):
