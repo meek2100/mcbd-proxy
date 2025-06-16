@@ -16,9 +16,23 @@ JAVA_PROXY_PORT = 25565
 
 def get_proxy_host():
     """
-    Helper function to get the target host. Since tests now always run inside
-    a container, this can be simplified to always use the service name.
+    Helper function to get the target host for integration tests.
+    In CI/CD, the actual IP of the 'nether-bridge' container is passed
+    as an environment variable to the 'tester' container.
+    Locally with remote Docker, local_env.py sets VM_HOST_IP.
+    Otherwise, default to 'nether-bridge' for Docker Compose internal DNS.
     """
+    # Prefer explicit IP for CI/remote tests
+    if "PROXY_IP" in os.environ:
+        return os.environ["PROXY_IP"]
+    # For local testing with conftest.py's subprocess calls, DOCKER_HOST might be set,
+    # or the service name works within the compose network.
+    # The conftest.py already sets VM_HOST_IP into os.environ if local_env.py is used.
+    if "VM_HOST_IP" in os.environ:
+        return os.environ["VM_HOST_IP"]
+
+    # Fallback to service name if no explicit IP is provided.
+    # This assumes direct Docker Compose networking works for the test client.
     return "nether-bridge"
 
 
