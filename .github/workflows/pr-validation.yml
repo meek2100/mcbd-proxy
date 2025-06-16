@@ -58,10 +58,7 @@ jobs:
         run: |
           PROXY_IP=$(docker inspect nether-bridge | jq -r '.[0].NetworkSettings.Networks | .[] | .IPAddress')
           echo "Found nether-bridge IP: ${PROXY_IP}"
-
-          docker compose -f tests/docker-compose.tests.yml exec -T tester \
-            env PROXY_IP=${PROXY_IP} \
-            python -m pytest --cov=nether_bridge --cov-report term-missing --compose-file /app/tests/docker-compose.tests.yml
+          docker compose -f tests/docker-compose.tests.yml exec -T tester env PROXY_IP=${PROXY_IP} python -m pytest --cov=nether_bridge --cov-report term-missing --compose-file /app/tests/docker-compose.tests.yml
           
       - name: Tear down test environment
         if: always()
