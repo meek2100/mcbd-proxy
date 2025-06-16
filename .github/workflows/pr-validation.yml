@@ -30,7 +30,8 @@ jobs:
       - name: Start Test Environment
         run: |
           # Use docker-compose.tests.yml for all test services
-          docker compose -f tests/docker-compose.tests.yml up --build -d --remove-orphans
+          # --build --no-cache will force a rebuild of all images, including tester.
+          docker compose -f tests/docker-compose.tests.yml up --build --no-cache -d --remove-orphans
 
       - name: Dump Nether-Bridge Logs on Setup Failure (Optional Debugging)
         if: ${{ failure() }}
