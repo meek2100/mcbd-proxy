@@ -6,7 +6,8 @@ import os
 import sys
 from mcstatus import BedrockServer, JavaServer
 
-# Adjusting sys.path to allow importing nether_bridge.py from the parent directory
+# Add these lines to the top of the file
+# This tells Python to add the parent directory (/app) to its path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Constants for test server addresses and ports
