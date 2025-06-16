@@ -23,16 +23,12 @@ jobs:
 
       - name: Run all tests
         run: |
-          # Step 1: Get the name of the docker-compose network.
-          # We inspect the container and get the key of the first network it's attached to.
-          NETWORK_NAME=$(docker inspect nether-bridge --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}')
-          
-          # Step 2: Use the network name to get the IP address for that network.
-          # This is more robust and avoids template parsing errors with special characters.
-          PROXY_IP=$(docker inspect -f "{{.NetworkSettings.Networks.${NETWORK_NAME}.IPAddress}}" nether-bridge)
-          echo "Found nether-bridge IP on network '${NETWORK_NAME}': ${PROXY_IP}"
+          # Use jq to parse the JSON output from docker inspect. This is a robust method.
+          # It gets the first IP address from the list of networks the container is on.
+          PROXY_IP=$(docker inspect nether-bridge | jq -r '.[0].NetworkSettings.Networks | .[] | .IPAddress')
+          echo "Found nether-bridge IP: ${PROXY_IP}"
 
-          # Step 3: Run pytest inside the tester container, passing the IP as an environment variable.
+          # Run pytest inside the tester container, passing the exact IP as an environment variable.
           docker compose -f tests/docker-compose.tests.yml run -e VM_HOST_IP=$PROXY_IP --rm tester pytest --cov=nether_bridge --cov-report term-missing tests/
       
       - name: Tear down test environment
