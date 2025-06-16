@@ -6,8 +6,7 @@ import os
 import sys
 from mcstatus import BedrockServer, JavaServer
 
-# Add these lines to the top of the file
-# This tells Python to add the parent directory (/app) to its path
+# Add this to the top of the file to ensure imports work inside the container
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Constants for test server addresses and ports
@@ -16,15 +15,11 @@ JAVA_PROXY_PORT = 25565
 
 
 def get_proxy_host():
-    """Helper function to get the target host for tests."""
-    # In a CI environment, 'GITHUB_ACTIONS' is true. We must use the Docker
-    # service name, which resolves to the container's IP inside the network.
-    if os.environ.get("GITHUB_ACTIONS") == "true":
-        return "nether-bridge"
-
-    # For local testing (e.g., against a VM or Docker Desktop)
-    # it will use the IP from local_env.py or default to localhost.
-    return os.environ.get("VM_HOST_IP", "127.0.0.1")
+    """
+    Helper function to get the target host. Since tests now always run inside
+    a container, this can be simplified to always use the service name.
+    """
+    return "nether-bridge"
 
 
 def get_container_status(docker_client_fixture, container_name):
