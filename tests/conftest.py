@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import sys
 import re
-import shutil
+import shutil  # Import for robust directory cleanup
 
 # Try to load local environment specific IP and DOCKER_HOST for testing
 _local_vm_host_ip = None
@@ -68,8 +68,8 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
     compose_file_to_use_abs = original_compose_file_path_abs
 
     # Declare variables for cleanup at the top of the fixture scope
-    temp_compose_file_dir = None
-    temp_compose_file_path_abs = None
+    temp_compose_file_dir = None  # For the directory created for the temp compose file
+    temp_compose_file_path_abs = None  # For the temp compose file itself
 
     env_vars = os.environ.copy()
     if _local_docker_host_from_file:
@@ -149,7 +149,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
         print(f"Warning during aggressive pre-cleanup: {e}")
 
     try:
-        # --- Dynamic modification of docker-compose.tests.yml for remote build contexts and volumes ---
+        # --- Dynamic modification of docker-compose.tests.yml for remote-specific adjustments ---
         if _local_docker_host_from_file:  # Only if a remote Docker host is specified
             print(
                 "Detected remote Docker host. Temporarily modifying docker-compose.tests.yml for remote build contexts and volumes."
@@ -163,15 +163,14 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             # 1. Change build contexts to absolute path for ALL services with a build context
             # This ensures the build context is the actual project root on the host.
             # Docker CLI on Windows should then correctly map this absolute path to the remote daemon.
+            # IMPORTANT: Re-escaped path for regex matching literal backslashes if present, then replaced.
             modified_context_path_in_compose = str(pytestconfig.rootdir).replace(
                 "\\", "/"
-            )  # Convert to forward slashes for YAML/Docker
+            )  # Convert to forward slashes
             modified_content = re.sub(
                 r"(\s*build:\s*\n\s*context:)\s*\S+",  # match 'context:' followed by any non-whitespace path
                 r"\1 "
-                + re.escape(
-                    modified_context_path_in_compose
-                ),  # replace with absolute path
+                + modified_context_path_in_compose,  # replace with absolute path (NO re.escape() here)
                 modified_content,
                 flags=re.MULTILINE,
             )
@@ -215,8 +214,8 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             compose_file_to_use_abs = temp_compose_file_path_abs
 
         print("Checking if test images need to be built...")
-        # Use the absolute path to the compose file, but run from the project root
-        # so that Docker can correctly find and tar up the build contexts.
+        # For build command, use the original (or temp if remote) compose file.
+        # The key is to run it from pytestconfig.rootdir, and `context: ../` will resolve correctly.
         build_command = [
             "docker",
             "compose",
@@ -245,8 +244,9 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
                 and "dockerfile" in build_result.stderr.lower()
             ):
                 print(
-                    "Hint: Check if the Dockerfile exists at the specified absolute context path "
-                    f"({modified_context_path_in_compose}) on the system where Docker compose is run."
+                    "Hint: Dockerfile not found in the build context. "
+                    "Ensure 'Dockerfile' is in your project root and 'context: ../' "
+                    "in docker-compose.tests.yml correctly points to it."
                 )
             raise subprocess.CalledProcessError(
                 build_result.returncode,
@@ -299,8 +299,13 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
         print("Nether-bridge and Tester containers started.")
 
         print("Waiting for nether-bridge container to become healthy...")
-        # Use a fresh docker client for health checks to ensure it reflects current env_vars
-        client = docker.from_env(environment=env_vars)
+        # Create a new docker client for health checks, explicitly using the determined DOCKER_HOST
+        # and passing env_vars to ensure it picks up the correct remote connection.
+        client_env = env_vars.copy()
+        # If DOCKER_HOST is set in env_vars, docker.from_env() should pick it up.
+        # If not, it defaults. This is more robust than passing base_url directly every time,
+        # and lets from_env handle contexts/certs etc.
+        client = docker.from_env(environment=client_env)
         try:
             container = client.containers.get("nether-bridge")
             timeout = 120
@@ -506,12 +511,14 @@ def docker_client_fixture():
     client = None
     try:
         if _local_docker_host_from_file:
+            # Explicitly create DockerClient using the base_url from local_env.py
             client = docker.DockerClient(base_url=_local_docker_host_from_file)
             print(
                 "\nAttempting to connect Docker client to remote: "
                 f"{_local_docker_host_from_file}"
             )
         else:
+            # For local Docker Desktop or CI, use from_env() which usually works fine
             client = docker.from_env()
             print(
                 "\nAttempting to connect Docker client using default (local or CI) "
