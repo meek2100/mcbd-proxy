@@ -65,7 +65,6 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
         pytestconfig.rootdir
     ) / pytestconfig.getoption("--compose-file")
 
-    # This will be the path to the compose file to use in subprocess calls.
     compose_file_to_use_abs = original_compose_file_path_abs
 
     # Declare variables for cleanup at the top of the fixture scope
@@ -121,7 +120,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             "nether-bridge",
             "mc-bedrock",
             "mc-java",
-            "tests-tester-1",
+            "nether-bridge-tester",  # Updated name
         ]
         for name in hardcoded_names_to_remove:
             list_cmd_hardcoded = ["docker", "ps", "-aq", "--filter", f"name={name}"]
@@ -300,6 +299,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
         print("Nether-bridge and Tester containers started.")
 
         print("Waiting for nether-bridge container to become healthy...")
+        # Use a fresh docker client for health checks to ensure it reflects current env_vars
         client = docker.from_env(environment=env_vars)
         try:
             container = client.containers.get("nether-bridge")
