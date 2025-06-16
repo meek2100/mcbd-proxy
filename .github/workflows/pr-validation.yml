@@ -19,15 +19,23 @@ jobs:
 
       - name: Start Test Environment
         run: |
-          # Build all images (including 'tester') and start the proxy.
+          # Build all images and start the proxy.
           docker compose -f tests/docker-compose.tests.yml up --build -d --remove-orphans nether-bridge
 
       - name: Run all tests
         run: |
-          # Execute pytest inside the 'tester' container, which is on the same network
-          docker compose -f tests/docker-compose.tests.yml run --rm tester pytest --cov=nether_bridge --cov-report term-missing tests/
+          # Dynamically get the IP address of the running nether-bridge container.
+          # We find the network the compose project created and get the IP on that network.
+          NETWORK_NAME=$(docker inspect nether-bridge --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}')
+          PROXY_IP=$(docker inspect -f "{{.NetworkSettings.Networks.${NETWORK_NAME}.IPAddress}}" nether-bridge)
+          echo "Found nether-bridge IP on network '${NETWORK_NAME}': ${PROXY_IP}"
+
+          # Run pytest inside the tester container, passing the exact IP as an environment variable.
+          # The get_proxy_host() function in the test will now use this IP.
+          docker compose -f tests/docker-compose.tests.yml run -e VM_HOST_IP=$PROXY_IP --rm tester pytest --cov=nether_bridge --cov-report term-missing tests/
       
       - name: Tear down test environment
+        # This step runs even if tests fail, ensuring a clean exit.
         if: always()
         run: |
           echo "Tearing down Docker Compose environment..."

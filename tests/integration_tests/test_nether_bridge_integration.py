@@ -17,7 +17,7 @@ def get_proxy_host():
     if os.environ.get("GITHUB_ACTIONS") == "true":
         return "nether-bridge"
 
-    # For local testing (e.g., against a VM or Docker Desktop on Windows/Mac)
+    # For local testing (e.g., against a VM or Docker Desktop)
     # it will use the IP from local_env.py or default to localhost.
     return os.environ.get("VM_HOST_IP", "127.0.0.1")
 
