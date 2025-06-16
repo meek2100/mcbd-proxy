@@ -80,15 +80,15 @@ services:
     build:
       context: ../
       dockerfile: Dockerfile
-      # This tells Docker to build the 'testing' stage from the Dockerfile
       target: testing
     networks:
       - mc-network
     volumes:
-      - ../:/app # This mounts the entire project root
+      - ../:/app # Make sure this is correctly set to mount the project root
       - /var/run/docker.sock:/var/run/docker.sock
-    # This overrides the Dockerfile's ENTRYPOINT so we can run pytest
-    entrypoint: ""
+    entrypoint: "" # Keep this, as you're explicitly exec'ing commands
+    # Add this line to keep the container running
+    command: /bin/bash -c "while true; do sleep 1; done"
     depends_on:
       nether-bridge:
         condition: service_healthy
