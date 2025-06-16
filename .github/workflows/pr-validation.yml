@@ -23,8 +23,12 @@ jobs:
 
       - name: Run all tests
         run: |
-          # Use jq to parse the JSON output from docker inspect. This is the most robust method.
-          # It gets the first IP address from the list of networks the container is on.
+          # The service depends_on 'service_healthy' condition is met, but we add a
+          # small extra delay to ensure Docker's internal DNS has fully propagated.
+          echo "Waiting for Docker network to stabilize..."
+          sleep 10
+
+          # Use jq to parse the JSON output from docker inspect.
           PROXY_IP=$(docker inspect nether-bridge | jq -r '.[0].NetworkSettings.Networks | .[] | .IPAddress')
           echo "Found nether-bridge IP: ${PROXY_IP}"
 
