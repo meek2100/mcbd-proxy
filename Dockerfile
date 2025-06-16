@@ -1,6 +1,6 @@
 # --- Stage 1: Base ---
 # This stage installs only the production dependencies.
-FROM python:3.10-slim-buster as base
+FROM python:3.10-slim-buster AS base
 WORKDIR /app
 COPY requirements.txt .
 RUN python -m pip install --upgrade pip
@@ -8,13 +8,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # --- Stage 2: Testing ---
 # This stage builds on 'base' and adds all code and dev dependencies.
-FROM base as testing
+FROM base AS testing
 WORKDIR /app
-# Copy all necessary source and test files into the image
-COPY nether_bridge.py .
-COPY pytest.ini .
-COPY tests/ ./tests/
-# Install the development dependencies
+
+# Copy the entire project context into the testing stage.
+# This ensures nether_bridge.py, pytest.ini, and the tests/ dir are available.
+COPY . .
+
+# Install the development dependencies from the requirements file.
 # Install Docker CLI tools required by conftest.py
 RUN apt-get update && apt-get install -y curl gnupg
 RUN install -m 0755 -d /etc/apt/keyrings
