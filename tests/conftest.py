@@ -9,7 +9,7 @@ import sys
 
 # Try to load local environment specific IP and DOCKER_HOST for testing
 _local_vm_host_ip = None
-_local_docker_host_from_file = None  # Renamed to avoid confusion with os.environ.get
+_local_docker_host_from_file = None
 
 try:
     current_tests_dir = str(Path(__file__).parent)
@@ -19,22 +19,18 @@ try:
     from local_env import VM_HOST_IP as LOCAL_VM_HOST_IP
 
     _local_vm_host_ip = LOCAL_VM_HOST_IP
-    os.environ["VM_HOST_IP"] = LOCAL_VM_HOST_IP  # Set for test_integration.py to use
+    os.environ["VM_HOST_IP"] = LOCAL_VM_HOST_IP
     print(f"Using local VM_HOST_IP from local_env.py: {LOCAL_VM_HOST_IP}")
 
     from local_env import DOCKER_HOST as LOCAL_DOCKER_HOST_VALUE
 
-    _local_docker_host_from_file = (
-        LOCAL_DOCKER_HOST_VALUE  # Store for explicit use in fixture
-    )
-    os.environ["DOCKER_HOST"] = (
-        LOCAL_DOCKER_HOST_VALUE  # Also set in os.environ for subprocess
-    )
+    _local_docker_host_from_file = LOCAL_DOCKER_HOST_VALUE
+    os.environ["DOCKER_HOST"] = LOCAL_DOCKER_HOST_VALUE
     print(f"Using local DOCKER_HOST from local_env.py: {LOCAL_DOCKER_HOST_VALUE}")
 
 except ImportError:
     print(
-        "local_env.py not found in tests/. Relying on environment or default 127.0.0.1 for CI/CD."
+        "local_env.py not found in tests/. Relying on environment or default 127.0.0.1 for local/CI."
     )
 finally:
     if "current_tests_dir" in locals() and current_tests_dir in sys.path:
@@ -58,7 +54,7 @@ def docker_compose_project_name():
 
 
 @pytest.fixture(scope="session")
-def docker_compose_up(docker_compose_project_name, pytestconfig):
+def docker_compose_up(docker_compose_project_name, pytestconfig, request):
     """
     Starts Docker Compose services before tests and tears them down afterwards.
     This fixture relies on the 'docker compose' CLI directly.
@@ -90,7 +86,6 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
     # Aggressive Pre-cleanup for ANY previous test containers
     print("Performing aggressive pre-cleanup of any stale test containers...")
     try:
-        # Remove any containers from previous test runs based on the project name prefix
         list_cmd_prefix = ["docker", "ps", "-aq", "--filter", "name=netherbridge_test_"]
         result_prefix = subprocess.run(
             list_cmd_prefix,
@@ -113,7 +108,6 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
                 env=env_vars,
             )
 
-        # Also specifically remove containers by their hardcoded names
         hardcoded_names_to_remove = [
             "nether-bridge",
             "mc-bedrock",
@@ -147,9 +141,6 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
         print(f"Warning during aggressive pre-cleanup: {e}")
 
     try:
-        # Build necessary images explicitly if needed (for local runs)
-        # In CI, pr-validation.yml handles initial builds.
-        # This check prevents redundant builds if images are already up-to-date.
         print("Checking if test images need to be built...")
         build_command = [
             "docker",
@@ -159,12 +150,9 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
             "-f",
             compose_file_path,
             "build",
-            # We don't use --no-cache here as that's for CI explicit step.
-            # 'build' itself intelligently uses cache.
             "nether-bridge",
             "tester",
         ]
-        # Run build command with check=False to allow checking for existing images.
         build_result = subprocess.run(
             build_command,
             capture_output=True,
@@ -187,7 +175,6 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
             )
         print("Nether-bridge and Tester images built successfully (or up-to-date).")
 
-        # 1. Create all services, but do not start them.
         create_command = [
             "docker",
             "compose",
@@ -207,8 +194,6 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
         )
         print("All test containers created successfully.")
 
-        # 2. Start only the nether-bridge and tester services.
-        # Minecraft servers will be started on-demand by the proxy.
         start_command = [
             "docker",
             "compose",
@@ -218,7 +203,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
             compose_file_path,
             "start",
             "nether-bridge",
-            "tester",  # Ensure tester is started to keep it alive for exec commands
+            "tester",
         ]
         print(f"Running command: {' '.join(start_command)}")
         subprocess.run(
@@ -230,7 +215,6 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
         )
         print("Nether-bridge and Tester containers started.")
 
-        # 3. Manually wait for the nether-bridge container to become healthy.
         print("Waiting for nether-bridge container to become healthy...")
         client = docker.from_env(environment=env_vars)
         try:
@@ -259,9 +243,9 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
             client.close()
 
     except subprocess.CalledProcessError as e:
-        print(f"Error starting Docker Compose services: {e.stderr}")
+        print(f"Error during Docker Compose setup: {e.stderr}")
         print(
-            f"\n--- Logs for project '{docker_compose_project_name}' (if available) ---"
+            f"\n--- Logs for project '{docker_compose_project_name}' (during setup failure) ---"
         )
         try:
             logs_cmd = [
@@ -286,8 +270,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
         except Exception as log_e:
             print(f"Could not retrieve logs: {log_e}")
         print(
-            "\nAttempting forceful teardown after setup failure for "
-            f"'{docker_compose_project_name}'..."
+            f"\nAttempting forceful teardown after setup failure for '{docker_compose_project_name}'..."
         )
         try:
             subprocess.run(
@@ -314,8 +297,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
     except Exception as e:
         print(f"An unexpected error occurred during Docker Compose setup: {e}")
         print(
-            "\nAttempting forceful teardown after unexpected setup error for "
-            f"'{docker_compose_project_name}'..."
+            f"\nAttempting forceful teardown after unexpected setup error for '{docker_compose_project_name}'..."
         )
         try:
             subprocess.run(
@@ -340,7 +322,37 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
             print(f"Error during forceful teardown: {teardown_e}")
         raise
 
+    # Yield control to the tests
     yield
+
+    # Teardown: Capture logs on test failure
+    if request.session.testsfailed > 0:  # Check if any test in the session failed
+        print(
+            f"\n--- DUMPING ALL CONTAINER LOGS DUE TO TEST FAILURE in project '{docker_compose_project_name}' ---"
+        )
+        try:
+            logs_cmd = [
+                "docker",
+                "compose",
+                "-p",
+                docker_compose_project_name,
+                "-f",
+                compose_file_path,
+                "logs",  # Get logs from all services
+            ]
+            logs = subprocess.run(
+                logs_cmd,
+                capture_output=True,
+                encoding="utf-8",
+                check=False,
+                env=env_vars,
+            )
+            print(logs.stdout)
+            if logs.stderr:
+                print(f"Stderr logs: {logs.stderr}")
+        except Exception as log_e:
+            print(f"Could not retrieve logs during test teardown: {log_e}")
+        print("--- END LOG DUMP ---")
 
     print(
         f"\nTests finished. Tearing down Docker Compose project "
