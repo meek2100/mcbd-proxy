@@ -72,7 +72,9 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
         "--compose-file"
     )  # Default relative path
 
-    temp_file_for_cleanup = None  # To track the temp file path for cleanup
+    # Declare temp_dir_for_compose at the top level of the fixture
+    temp_dir_for_compose = None
+    temp_file_for_cleanup = None
 
     env_vars = os.environ.copy()
     if _local_docker_host_from_file:
@@ -400,7 +402,9 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
         raise
 
     # Yield control to the tests
-    yield
+    yield (
+        request.param if hasattr(request, "param") else None
+    )  # Yielding here for tests that might use it
 
     # Teardown: Capture logs on test failure
     if request.session.testsfailed > 0:

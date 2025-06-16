@@ -35,3 +35,6 @@ desktop.ini # Windows
 # Local test environment overrides
 tests/local_env.py
 
+# Temporary Docker Compose files
+docker-compose.tests.temp_*.yml
+
