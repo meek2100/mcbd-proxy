@@ -4,7 +4,6 @@ import socket
 import docker
 import os
 import sys
-from mcstatus import BedrockServer, JavaServer
 
 # Add this to the top of the file to ensure imports work inside the container
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -20,20 +19,16 @@ def get_proxy_host():
     In CI/CD, the actual IP of the 'nether-bridge' container is passed
     as an environment variable to the 'tester' container.
     Locally with remote Docker, local_env.py sets VM_HOST_IP.
-    Otherwise, default to 'nether-bridge' for Docker Compose internal DNS.
+    Otherwise, default to '127.0.0.1' for local Docker Desktop.
     """
     # Prefer explicit IP for CI/remote tests
     if "PROXY_IP" in os.environ:
         return os.environ["PROXY_IP"]
-    # For local testing with conftest.py's subprocess calls, DOCKER_HOST might be set,
-    # or the service name works within the compose network.
-    # The conftest.py already sets VM_HOST_IP into os.environ if local_env.py is used.
     if "VM_HOST_IP" in os.environ:
         return os.environ["VM_HOST_IP"]
 
-    # Fallback to service name if no explicit IP is provided.
-    # This assumes direct Docker Compose networking works for the test client.
-    return "nether-bridge"
+    # For local Docker Desktop, the proxy is typically exposed on localhost.
+    return "127.0.0.1"
 
 
 def get_container_status(docker_client_fixture, container_name):

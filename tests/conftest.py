@@ -63,7 +63,9 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
     Starts Docker Compose services before tests and tears them down afterwards.
     This fixture relies on the 'docker compose' CLI directly.
     """
-    compose_file_path = str(pytestconfig.rootdir / "tests" / "docker-compose.tests.yml")
+    compose_file_path = str(
+        pytestconfig.rootdir / pytestconfig.getoption("--compose-file")
+    )
 
     env_vars = os.environ.copy()
     if _local_docker_host_from_file:
@@ -91,7 +93,11 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
         # Remove any containers from previous test runs based on the project name prefix
         list_cmd_prefix = ["docker", "ps", "-aq", "--filter", "name=netherbridge_test_"]
         result_prefix = subprocess.run(
-            list_cmd_prefix, capture_output=True, text=True, check=False, env=env_vars
+            list_cmd_prefix,
+            capture_output=True,
+            encoding="utf-8",
+            check=False,
+            env=env_vars,
         )
         prefix_ids = result_prefix.stdout.strip().splitlines()
         if prefix_ids:
@@ -103,18 +109,23 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
                 ["docker", "rm", "-f"] + prefix_ids,
                 check=False,
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
                 env=env_vars,
             )
 
         # Also specifically remove containers by their hardcoded names
-        hardcoded_names_to_remove = ["nether-bridge", "mc-bedrock", "mc-java"]
+        hardcoded_names_to_remove = [
+            "nether-bridge",
+            "mc-bedrock",
+            "mc-java",
+            "tests-tester-1",
+        ]
         for name in hardcoded_names_to_remove:
             list_cmd_hardcoded = ["docker", "ps", "-aq", "--filter", f"name={name}"]
             result_hardcoded = subprocess.run(
                 list_cmd_hardcoded,
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
                 check=False,
                 env=env_vars,
             )
@@ -128,7 +139,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
                     ["docker", "rm", "-f"] + hardcoded_ids,
                     check=False,
                     capture_output=True,
-                    text=True,
+                    encoding="utf-8",
                     env=env_vars,
                 )
 
@@ -136,7 +147,10 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
         print(f"Warning during aggressive pre-cleanup: {e}")
 
     try:
-        # Build the nether-bridge image first
+        # Build necessary images explicitly if needed (for local runs)
+        # In CI, pr-validation.yml handles initial builds.
+        # This check prevents redundant builds if images are already up-to-date.
+        print("Checking if test images need to be built...")
         build_command = [
             "docker",
             "compose",
@@ -145,13 +159,33 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
             "-f",
             compose_file_path,
             "build",
+            # We don't use --no-cache here as that's for CI explicit step.
+            # 'build' itself intelligently uses cache.
             "nether-bridge",
+            "tester",
         ]
-        print(f"Running command: {' '.join(build_command)}")
-        subprocess.run(
-            build_command, check=True, capture_output=True, text=True, env=env_vars
+        # Run build command with check=False to allow checking for existing images.
+        build_result = subprocess.run(
+            build_command,
+            capture_output=True,
+            encoding="utf-8",
+            check=False,
+            env=env_vars,
         )
-        print("Nether-bridge image built successfully for testing.")
+        if build_result.returncode != 0:
+            print(f"Error during image build:\n{build_result.stderr}")
+            if (
+                "no such file or directory" in build_result.stderr.lower()
+                and "dockerfile" in build_result.stderr.lower()
+            ):
+                print("Hint: Check Dockerfile context in docker-compose.tests.yml")
+            raise subprocess.CalledProcessError(
+                build_result.returncode,
+                build_result.args,
+                output=build_result.stdout,
+                stderr=build_result.stderr,
+            )
+        print("Nether-bridge and Tester images built successfully (or up-to-date).")
 
         # 1. Create all services, but do not start them.
         create_command = [
@@ -165,11 +199,16 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
         ]
         print(f"Running command: {' '.join(create_command)}")
         subprocess.run(
-            create_command, check=True, capture_output=True, text=True, env=env_vars
+            create_command,
+            check=True,
+            capture_output=True,
+            encoding="utf-8",
+            env=env_vars,
         )
         print("All test containers created successfully.")
 
-        # 2. Start only the nether-bridge service.
+        # 2. Start only the nether-bridge and tester services.
+        # Minecraft servers will be started on-demand by the proxy.
         start_command = [
             "docker",
             "compose",
@@ -179,12 +218,17 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
             compose_file_path,
             "start",
             "nether-bridge",
+            "tester",  # Ensure tester is started to keep it alive for exec commands
         ]
         print(f"Running command: {' '.join(start_command)}")
         subprocess.run(
-            start_command, check=True, capture_output=True, text=True, env=env_vars
+            start_command,
+            check=True,
+            capture_output=True,
+            encoding="utf-8",
+            env=env_vars,
         )
-        print("Nether-bridge container started.")
+        print("Nether-bridge and Tester containers started.")
 
         # 3. Manually wait for the nether-bridge container to become healthy.
         print("Waiting for nether-bridge container to become healthy...")
@@ -230,7 +274,11 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
                 "logs",
             ]
             logs = subprocess.run(
-                logs_cmd, capture_output=True, text=True, check=False, env=env_vars
+                logs_cmd,
+                capture_output=True,
+                encoding="utf-8",
+                check=False,
+                env=env_vars,
             )
             print(logs.stdout)
             if logs.stderr:
@@ -256,7 +304,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
                 ],
                 check=False,
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
                 env=env_vars,
             )
             print("Forceful teardown initiated.")
@@ -284,7 +332,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
                 ],
                 check=False,
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
                 env=env_vars,
             )
             print("Forceful teardown initiated.")
@@ -313,7 +361,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig):
             ],
             check=True,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
             env=env_vars,
         )
         print(
