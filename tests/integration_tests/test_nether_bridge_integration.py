@@ -4,6 +4,7 @@ import socket
 import docker
 import os
 import sys
+from mcstatus import BedrockServer, JavaServer
 
 # Add this to the top of the file to ensure imports work inside the container
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
