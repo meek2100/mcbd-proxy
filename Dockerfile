@@ -10,10 +10,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # This stage builds on 'base' and adds all code and dev dependencies.
 FROM base as testing
 WORKDIR /app
-# Copy the entire project context into the testing stage.
-# This includes nether_bridge.py, tests/, requirements files, etc.
-COPY . .
-# Install the development dependencies.
+# Copy all necessary source and test files into the image
+COPY nether_bridge.py .
+COPY pytest.ini .
+COPY tests/ ./tests/
+# Install the development dependencies
 # Install Docker CLI tools required by conftest.py
 RUN apt-get update && apt-get install -y curl gnupg
 RUN install -m 0755 -d /etc/apt/keyrings
@@ -27,23 +28,15 @@ RUN apt-get update && apt-get install -y docker-ce-cli docker-compose-plugin
 RUN pip install --no-cache-dir -r tests/requirements-dev.txt
 
 # --- Stage 3: Final Production Image ---
-# This is the minimal final image. It only copies from the 'base' stage.
 FROM python:3.10-slim-buster
 WORKDIR /app
-
-# Copy only the production packages from the 'base' stage.
 COPY --from=base /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
-
-# Copy only the necessary application code and default configs.
 COPY nether_bridge.py .
 COPY settings.json .
 COPY servers.json .
 
-# Expose all necessary ports for the proxy and metrics.
 EXPOSE 19132/udp
 EXPOSE 25565/udp
 EXPOSE 25565/tcp
 EXPOSE 8000/tcp
-
-# Define the command to run the application.
 ENTRYPOINT ["python", "nether_bridge.py"]
