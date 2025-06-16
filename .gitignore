@@ -36,5 +36,5 @@ desktop.ini # Windows
 tests/local_env.py
 
 # Temporary Docker Compose files
-docker-compose.tests.temp_*.yml
+docker-compose.tests.temp*.yml
 
