@@ -19,8 +19,8 @@ jobs:
 
       - name: Start Test Environment
         run: |
-          # Use --project-directory . to ensure the context is the repository root
-          docker compose --project-directory . -f tests/docker-compose.tests.yml up --build -d --remove-orphans nether-bridge
+          # Use the new compose file located at the project root.
+          docker compose -f docker-compose.ci.yml up --build -d --remove-orphans nether-bridge
 
       - name: Show Directory Structure Inside Tester Container
         run: |
@@ -34,12 +34,11 @@ jobs:
           PROXY_IP=$(docker inspect nether-bridge | jq -r '.[0].NetworkSettings.Networks | .[] | .IPAddress')
           echo "Found nether-bridge IP: ${PROXY_IP}"
 
-          # Use --project-directory . and run pytest as a module.
-          docker compose --project-directory . -f tests/docker-compose.tests.yml run -e VM_HOST_IP=$PROXY_IP --rm tester python -m pytest --cov=nether_bridge --cov-report term-missing
+          # Use the new compose file and run pytest.
+          docker compose -f docker-compose.ci.yml run -e VM_HOST_IP=$PROXY_IP --rm tester python -m pytest --cov=nether_bridge --cov-report term-missing
       
       - name: Tear down test environment
         if: always()
         run: |
           echo "Tearing down Docker Compose environment..."
-          # Use --project-directory . for the final cleanup.
-          docker compose --project-directory . -f tests/docker-compose.tests.yml down -v --remove-orphans
+          docker compose -f docker-compose.ci.yml down -v --remove-orphans

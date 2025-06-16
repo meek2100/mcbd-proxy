@@ -1,0 +1,62 @@
+# docker-compose.ci.yml
+# This file is for running tests in a CI/CD environment.
+services:
+  nether-bridge:
+    image: nether-bridge-test:local
+    container_name: nether-bridge
+    build:
+      # The context is now '.', referring to the project root.
+      context: .
+      dockerfile: Dockerfile
+    restart: "no"
+    networks:
+      - mc-network
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - LOG_LEVEL=DEBUG
+      - NB_IDLE_TIMEOUT=30
+      - NB_PLAYER_CHECK_INTERVAL=5
+    healthcheck:
+      test: ["CMD", "python", "nether_bridge.py", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  mc-bedrock:
+    image: itzg/minecraft-bedrock-server:latest
+    restart: "no"
+    container_name: mc-bedrock
+    networks:
+      - mc-network
+    environment:
+      - EULA=TRUE
+
+  mc-java:
+    image: itzg/minecraft-server:latest
+    restart: "no"
+    container_name: mc-java
+    networks:
+      - mc-network
+    environment:
+      - EULA=TRUE
+  
+  tester:
+    build:
+      # The context is now '.', and it targets the 'testing' stage.
+      context: .
+      dockerfile: Dockerfile
+      target: testing
+    networks:
+      - mc-network
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: ""
+    depends_on:
+      nether-bridge:
+        condition: service_healthy
+
+networks:
+  mc-network:
+    driver: bridge
