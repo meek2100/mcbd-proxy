@@ -17,31 +17,22 @@ jobs:
         with:
           python-version: '3.10'
 
-      # Install Docker Compose V2 as it's not always pre-installed
-      # The GitHub Actions runner already has Docker installed.
-      - name: Install Docker Compose V2
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y docker-compose-plugin
+      # Remove the explicit apt-get install for docker-compose-plugin
+      # It might already be available or handled by docker/setup-buildx-action or similar.
 
       - name: Set COMPOSE_PROJECT_PATH for CI environment
-        # This tells docker compose where the project root is, important for build contexts
-        # and consistent behavior when docker-compose.tests.yml is in a subdirectory.
         run: echo "COMPOSE_PROJECT_PATH=$(pwd)" >> $GITHUB_ENV
 
+      # Add this step explicitly, as it's typically used for Docker builds and ensures Docker context is set up.
+      - name: Set up Docker Buildx (may ensure docker compose is available)
+        uses: docker/setup-buildx-action@v3
+
       - name: Start Test Environment
-        # Use docker-compose.tests.yml for all test services
-        # --build will ensure images are built if not cached
-        # -d for detached mode
-        # --remove-orphans to clean up services not defined in the compose file
-        # This will build `nether-bridge-test:local` and `tester` images
-        # and bring up the nether-bridge service.
         run: |
+          # Use docker-compose.tests.yml for all test services
           docker compose -f tests/docker-compose.tests.yml up --build -d --remove-orphans
 
       - name: Dump Nether-Bridge Logs on Setup Failure (Optional Debugging)
-        # This step is mainly for debugging if the 'up' command itself fails.
-        # It's less critical if the failure happens later during pytest execution.
         if: ${{ failure() }}
         run: |
           echo "--- Nether-Bridge Container Logs (on initial 'up' failure) ---"
@@ -53,24 +44,14 @@ jobs:
           echo "--------------------------------------------"
 
       - name: Show Directory Structure Inside Tester Container
-        # The tester service will already be started by the previous 'up' command
-        # Now we just run the ls command in it.
         run: |
           echo "Listing files and directory structure inside the 'tester' container at /app..."
           docker compose -f tests/docker-compose.tests.yml exec -T tester ls -lR /app
 
       - name: Run all tests
-        # The pytest command should be run from the project root.
-        # The tester service is already running, so we exec into it.
-        # Ensure the pytest command includes the --compose-file option as needed by conftest.py
         run: |
-          # The IP is likely still the same internal Docker IP, but fetch it reliably.
           PROXY_IP=$(docker inspect nether-bridge | jq -r '.[0].NetworkSettings.Networks | .[] | .IPAddress')
           echo "Found nether-bridge IP: ${PROXY_IP}"
-
-          # Pass the project path and the compose file path to the tester container
-          # The -T flag prevents pseudo-TTY allocation, good for non-interactive commands in CI.
-          # The tester service's entrypoint is overridden to allow running arbitrary commands.
           docker compose -f tests/docker-compose.tests.yml exec -T tester \
             python -m pytest --cov=nether_bridge --cov-report term-missing --compose-file /app/tests/docker-compose.tests.yml
           
