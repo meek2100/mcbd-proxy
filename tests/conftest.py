@@ -6,8 +6,8 @@ import time
 import os
 from pathlib import Path
 import sys
-import re  # Import the regular expression module
-import shutil  # Import for temporary file cleanup
+import re
+import shutil
 
 # Try to load local environment specific IP and DOCKER_HOST for testing
 _local_vm_host_ip = None
@@ -64,8 +64,23 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
     original_compose_file_path = str(
         pytestconfig.rootdir / pytestconfig.getoption("--compose-file")
     )
-    modified_compose_file_path = original_compose_file_path  # Default to original
-    temp_dir_to_cleanup = None  # To track if we created a temp dir
+
+    # Define the directory from which docker-compose commands will be executed.
+    # For local Docker Desktop, this is usually project root.
+    # For remote, this MUST be the directory that the remote Docker daemon
+    # can access as the build context. We'll set this to pytestconfig.rootdir,
+    # which is the local project root.
+    # Docker Desktop (Windows) needs to transparently handle mapping C:\ paths to
+    # Linux paths for its internal WSL2 daemon, but for raw remote Linux daemon,
+    # it won't. This is the core challenge.
+
+    # We will modify the compose file *itself* to use a '.' context,
+    # and then ensure we run 'docker compose build' from the actual rootdir.
+
+    compose_file_to_use = (
+        original_compose_file_path  # This will be the path to temp file if modified
+    )
+    temp_dir_to_cleanup = None
 
     env_vars = os.environ.copy()
     if _local_docker_host_from_file:
@@ -87,7 +102,8 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
         f"{original_compose_file_path}..."
     )
 
-    # Aggressive Pre-cleanup for ANY previous test containers
+    # Aggressive Pre-cleanup (unchanged)
+    # ... (omitted for brevity, assume it's copied from previous version) ...
     print("Performing aggressive pre-cleanup of any stale test containers...")
     try:
         list_cmd_prefix = ["docker", "ps", "-aq", "--filter", "name=netherbridge_test_"]
@@ -145,67 +161,57 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
         print(f"Warning during aggressive pre-cleanup: {e}")
 
     try:
-        # --- Dynamic modification of docker-compose.tests.yml for remote volumes ---
-        if _local_docker_host_from_file:  # Only if a remote Docker host is specified
+        # --- Dynamic modification of docker-compose.tests.yml for remote volumes and build contexts ---
+        temp_compose_file_path = None
+        if _local_docker_host_from_file:  # If a remote Docker host is specified
             print(
-                "Detected remote Docker host. Temporarily modifying docker-compose.tests.yml to remove host bind mount for 'tester' service."
+                "Detected remote Docker host. Temporarily modifying docker-compose.tests.yml for remote build contexts and volumes."
             )
             original_content = Path(original_compose_file_path).read_text(
                 encoding="utf-8"
             )
 
-            # Regex to find the 'tester' service's 'volumes' block and comment out the first item
-            # This assumes the 'volumes:' line is followed by items starting with '- '
-            # and that the relative path mount is the first or only item under volumes.
-            # This is a bit fragile if YAML structure changes significantly.
+            modified_content = original_content
 
-            # Pattern to match 'tester' service, then anything until 'volumes:', then the problematic volume line.
-            # Using re.DOTALL to allow '.' to match newlines for multi-line sections.
-            volume_pattern = (
-                r"(\s*tester:\s*\n(?:.*\n)*?\s*volumes:\s*\n)(\s*-\s*\.\./:/app\s*)"
+            # 1. Change build contexts to '.' instead of '.. /'
+            # This is crucial because 'docker compose build' will be run from the rootdir.
+            modified_content = re.sub(
+                r"(\s*build:\s*\n\s*context:)\s*\.\./",
+                r"\1 ./",  # Change '../' to '.'
+                modified_content,
             )
+
+            # 2. Comment out the host bind mount for 'tester' service
+            # This avoids sending a Windows path to the Linux daemon for volumes.
+            volume_pattern = (
+                r"(\s*tester:\s*\n(?:.*\n)*?\s*volumes:\s*\n)(\s*-\s*\.?\./:/app\s*)"
+            )
+            # Use \.? to match either './' or '../' (optional dot then slash)
             modified_content = re.sub(
                 volume_pattern,
                 r"\1#\2 # Commented out for remote Docker testing to avoid invalid Windows path spec",
-                original_content,
+                modified_content,
                 flags=re.DOTALL,
             )
 
-            # Fallback for if it was '.:/app' (less likely with tests/docker-compose.tests.yml)
-            if (
-                original_content == modified_content
-            ):  # Only try this if first regex didn't match
-                volume_pattern = (
-                    r"(\s*tester:\s*\n(?:.*\n)*?\s*volumes:\s*\n)(\s*-\s*\.:/app\s*)"
-                )
-                modified_content = re.sub(
-                    volume_pattern,
-                    r"\1#\2 # Commented out for remote Docker testing to avoid invalid Windows path spec",
-                    original_content,
-                    flags=re.DOTALL,
-                )
-
-            if original_content == modified_content:
+            if original_content == modified_content:  # If volume pattern not found
                 print(
-                    "Warning: No matching bind mount volume entry found for 'tester' in docker-compose.tests.yml. Ensure 'tester' service has '- ../:/app' or '- .:/app' volume entry."
+                    "Warning: No matching bind mount volume entry found for 'tester' to comment out. Ensure 'tester' service has '- ../:/app' or '- .:/app' volume entry."
                 )
 
-            # Create a temporary directory and file
-            temp_dir = (
+            # Write to a temporary file
+            temp_dir_for_compose = (
                 Path(os.getenv("TEMP") or "/tmp")
-                / f"netherbridge_pytest_temp_{int(time.time())}"
+                / f"netherbridge_pytest_temp_compose_{int(time.time())}"
             )
-            temp_dir.mkdir(parents=True, exist_ok=True)
-            modified_compose_file_path = str(
-                temp_dir / Path(original_compose_file_path).name
+            temp_dir_for_compose.mkdir(parents=True, exist_ok=True)
+            temp_compose_file_path = str(
+                temp_dir_for_compose / Path(original_compose_file_path).name
             )
-            Path(modified_compose_file_path).write_text(
-                modified_content, encoding="utf-8"
-            )
-            print(f"Using temporary docker-compose file: {modified_compose_file_path}")
-            temp_dir_to_cleanup = temp_dir  # Mark for cleanup
-
-        # --- End of dynamic modification ---
+            Path(temp_compose_file_path).write_text(modified_content, encoding="utf-8")
+            print(f"Using temporary docker-compose file: {temp_compose_file_path}")
+            compose_file_to_use = temp_compose_file_path
+            temp_dir_to_cleanup = temp_dir_for_compose  # Mark temp dir for cleanup
 
         print("Checking if test images need to be built...")
         build_command = [
@@ -214,13 +220,30 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             "-p",
             docker_compose_project_name,
             "-f",
-            modified_compose_file_path,  # Use the potentially modified file
+            compose_file_to_use,  # Use the potentially modified file
             "build",
             "nether-bridge",
             "tester",
         ]
+
+        # When running 'docker compose build' with a specific compose file,
+        # it expects the build context (source files) to be relative to the
+        # *directory where the compose file is*.
+        # So, if we generate a temp file in /tmp, and use context: . in it,
+        # Docker Compose would look in /tmp for Dockerfile and source, which is wrong.
+        # This is the tricky bit.
+
+        # The correct way to run `docker compose build` when the Dockerfile
+        # and source are NOT in the same directory as the compose file:
+        # cd to the project root, then pass -f path/to/compose.yml and context .
+
+        # We need to change the CWD for the subprocess call here.
+        # Set the current working directory for the subprocess command to `pytestconfig.rootdir`
+
+        print(f"Running build command from CWD: {pytestconfig.rootdir}")
         build_result = subprocess.run(
             build_command,
+            cwd=pytestconfig.rootdir,  # IMPORTANT: Set CWD for build context resolution
             capture_output=True,
             encoding="utf-8",
             check=False,
@@ -232,7 +255,9 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
                 "no such file or directory" in build_result.stderr.lower()
                 and "dockerfile" in build_result.stderr.lower()
             ):
-                print("Hint: Check Dockerfile context in docker-compose.tests.yml")
+                print(
+                    "Hint: Check Dockerfile context in docker-compose.tests.yml AND the CWD for 'build' command."
+                )
             raise subprocess.CalledProcessError(
                 build_result.returncode,
                 build_result.args,
@@ -247,12 +272,13 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             "-p",
             docker_compose_project_name,
             "-f",
-            modified_compose_file_path,  # Use the potentially modified file
+            compose_file_to_use,  # Use the potentially modified file
             "create",
         ]
         print(f"Running command: {' '.join(create_command)}")
         subprocess.run(
             create_command,
+            cwd=pytestconfig.rootdir,  # Also set CWD for create
             check=True,
             capture_output=True,
             encoding="utf-8",
@@ -266,7 +292,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             "-p",
             docker_compose_project_name,
             "-f",
-            modified_compose_file_path,  # Use the potentially modified file
+            compose_file_to_use,  # Use the potentially modified file
             "start",
             "nether-bridge",
             "tester",
@@ -274,6 +300,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
         print(f"Running command: {' '.join(start_command)}")
         subprocess.run(
             start_command,
+            cwd=pytestconfig.rootdir,  # Also set CWD for start
             check=True,
             capture_output=True,
             encoding="utf-8",
@@ -320,7 +347,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
                 "-p",
                 docker_compose_project_name,
                 "-f",
-                modified_compose_file_path,  # Use the potentially modified file
+                compose_file_to_use,  # Use the potentially modified file
                 "logs",
             ]
             logs = subprocess.run(
@@ -329,6 +356,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
                 encoding="utf-8",
                 check=False,
                 env=env_vars,
+                cwd=pytestconfig.rootdir,  # CWD for logs command
             )
             print(logs.stdout)
             if logs.stderr:
@@ -346,7 +374,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
                     "-p",
                     docker_compose_project_name,
                     "-f",
-                    modified_compose_file_path,  # Use the potentially modified file
+                    compose_file_to_use,  # Use the potentially modified file
                     "down",
                     "--volumes",
                     "--remove-orphans",
@@ -355,6 +383,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
                 capture_output=True,
                 encoding="utf-8",
                 env=env_vars,
+                cwd=pytestconfig.rootdir,  # CWD for teardown
             )
             print("Forceful teardown initiated.")
         except Exception as teardown_e:
@@ -373,7 +402,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
                     "-p",
                     docker_compose_project_name,
                     "-f",
-                    modified_compose_file_path,  # Use the potentially modified file
+                    compose_file_to_use,  # Use the potentially modified file
                     "down",
                     "--volumes",
                     "--remove-orphans",
@@ -382,6 +411,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
                 capture_output=True,
                 encoding="utf-8",
                 env=env_vars,
+                cwd=pytestconfig.rootdir,  # CWD for teardown
             )
             print("Forceful teardown initiated.")
         except Exception as teardown_e:
@@ -403,7 +433,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
                 "-p",
                 docker_compose_project_name,
                 "-f",
-                modified_compose_file_path,  # Use the potentially modified file
+                compose_file_to_use,  # Use the potentially modified file
                 "logs",
             ]
             logs = subprocess.run(
@@ -412,6 +442,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
                 encoding="utf-8",
                 check=False,
                 env=env_vars,
+                cwd=pytestconfig.rootdir,  # CWD for logs
             )
             print(logs.stdout)
             if logs.stderr:
@@ -432,7 +463,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
                 "-p",
                 docker_compose_project_name,
                 "-f",
-                modified_compose_file_path,  # Use the potentially modified file
+                compose_file_to_use,  # Use the potentially modified file
                 "down",
                 "--volumes",
                 "--remove-orphans",
@@ -441,6 +472,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             capture_output=True,
             encoding="utf-8",
             env=env_vars,
+            cwd=pytestconfig.rootdir,  # CWD for teardown
         )
         print(
             f"Docker Compose project '{docker_compose_project_name}' "
