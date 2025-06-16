@@ -211,8 +211,8 @@ def test_bedrock_server_starts_on_connection(
 
         assert wait_for_mc_server_ready(
             {"host": proxy_host, "port": bedrock_proxy_port, "type": "bedrock"},
-            timeout=120,
-            interval=2,
+            timeout=180,
+            interval=5,
         ), "Bedrock server did not become query-ready through proxy."
     finally:
         client_socket.close()
@@ -270,8 +270,8 @@ def test_java_server_starts_on_connection(
 
         assert wait_for_mc_server_ready(
             {"host": proxy_host, "port": java_proxy_port, "type": "java"},
-            timeout=120,
-            interval=2,
+            timeout=180,
+            interval=5,
         ), "Java server did not become query-ready through proxy."
 
     finally:

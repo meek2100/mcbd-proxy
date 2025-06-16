@@ -33,7 +33,7 @@ jobs:
           echo "Found nether-bridge IP: ${PROXY_IP}"
 
           # Run pytest inside the tester container, passing the exact IP as an environment variable.
-          docker compose -f tests/docker-compose.tests.yml run -e VM_HOST_IP=$PROXY_IP --rm tester pytest --cov=nether_bridge --cov-report term-missing
+          docker compose -f tests/docker-compose.tests.yml run -e VM_HOST_IP=$PROXY_IP --rm tester python -m pytest --cov=nether_bridge --cov-report term-missing
       
       - name: Tear down test environment
         if: always()
