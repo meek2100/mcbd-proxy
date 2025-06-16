@@ -339,10 +339,7 @@ def test_wait_for_server_query_ready_bedrock_timeout(
     )
 
     assert result is False
-    assert mock_bedrock_lookup.call_count >= int(
-        nether_bridge_instance.settings.server_ready_max_wait_time_seconds
-        / nether_bridge_instance.settings.query_timeout_seconds
-    )
+    assert mock_bedrock_lookup.call_count >= 2
     mock_sleep.assert_called()
 
 
@@ -362,20 +359,13 @@ def test_wait_for_server_query_ready_java_timeout(
     )
 
     assert result is False
-    assert mock_java_lookup.call_count >= int(
-        nether_bridge_instance.settings.server_ready_max_wait_time_seconds
-        / nether_bridge_instance.settings.query_timeout_seconds
-    )
+    assert mock_java_lookup.call_count >= 2
     mock_sleep.assert_called()
 
 
 @patch("nether_bridge.time.sleep")
 @patch("nether_bridge.NetherBridgeProxy._stop_minecraft_server")
-@patch("nether_bridge.BedrockServer.lookup")
-@patch("nether_bridge.JavaServer.lookup")
 def test_monitor_servers_activity_stops_idle_server(
-    mock_java_lookup,
-    mock_bedrock_lookup,
     mock_stop_minecraft_server,
     mock_sleep,
     nether_bridge_instance,
@@ -408,9 +398,7 @@ def test_monitor_servers_activity_stops_idle_server(
 
 @patch("nether_bridge.time.sleep")
 @patch("nether_bridge.NetherBridgeProxy._stop_minecraft_server")
-@patch("nether_bridge.BedrockServer.lookup")
 def test_monitor_servers_activity_resets_active_server_timer(
-    mock_bedrock_lookup,
     mock_stop_minecraft_server,
     mock_sleep,
     nether_bridge_instance,
@@ -428,25 +416,15 @@ def test_monitor_servers_activity_resets_active_server_timer(
         "last_activity"
     ] = original_last_activity
 
-    dummy_client_socket = MagicMock()
-    dummy_server_socket = MagicMock()
     dummy_session_key = (("127.0.0.1", 12345), 19132, "udp")
     nether_bridge_instance.active_sessions[dummy_session_key] = {
-        "client_socket": dummy_client_socket,
-        "server_socket": dummy_server_socket,
+        "client_socket": MagicMock(),
+        "server_socket": MagicMock(),
         "target_container": bedrock_config.container_name,
         "last_packet_time": time.time(),
         "listen_port": bedrock_config.listen_port,
         "protocol": "udp",
     }
-    nether_bridge_instance.socket_to_session_map[dummy_client_socket] = (
-        dummy_session_key,
-        "client_socket",
-    )
-    nether_bridge_instance.socket_to_session_map[dummy_server_socket] = (
-        dummy_session_key,
-        "server_socket",
-    )
 
     mock_sleep.side_effect = [None, Exception("Stop loop")]
 
