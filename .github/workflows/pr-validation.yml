@@ -56,13 +56,11 @@ jobs:
 
       - name: Run all tests
         run: |
-          # The PROXY_IP is the IP of the nether-bridge service within the Docker network
           PROXY_IP=$(docker inspect nether-bridge | jq -r '.[0].NetworkSettings.Networks | .[] | .IPAddress')
           echo "Found nether-bridge IP: ${PROXY_IP}"
 
-          # Pass PROXY_IP as an environment variable to the tester container
           docker compose -f tests/docker-compose.tests.yml exec -T tester \
-            env PROXY_IP=${PROXY_IP} \ 
+            env PROXY_IP=${PROXY_IP} \
             python -m pytest --cov=nether_bridge --cov-report term-missing --compose-file /app/tests/docker-compose.tests.yml
           
       - name: Tear down test environment
