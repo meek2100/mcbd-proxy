@@ -74,13 +74,13 @@ services:
       - JVM_ARGS=-Xmx512M -Xms512M
       - IDLE_TIMEOUT=-1
       - ONLINE_MODE=FALSE
-
+  
   # This service will run pytest from inside the Docker network
   tester:
     build:
       context: ../
       dockerfile: Dockerfile
-      # Explicitly build the 'testing' stage from the Dockerfile
+      # This tells Docker to build the 'testing' stage from the Dockerfile
       target: testing
     networks:
       - mc-network

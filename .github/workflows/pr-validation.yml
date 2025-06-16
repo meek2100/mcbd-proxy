@@ -19,11 +19,12 @@ jobs:
 
       - name: Start Test Environment
         run: |
+          # Build all images (including 'tester') and start the proxy.
           docker compose -f tests/docker-compose.tests.yml up --build -d --remove-orphans nether-bridge
 
       - name: Run all tests
         run: |
-          # This command now works because the `tester` service has its entrypoint overridden.
+          # Execute pytest inside the 'tester' container, which is on the same network
           docker compose -f tests/docker-compose.tests.yml run --rm tester pytest --cov=nether_bridge --cov-report term-missing tests/
       
       - name: Tear down test environment
