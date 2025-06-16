@@ -13,7 +13,7 @@ WORKDIR /app
 
 # Copy the entire project context into the testing stage.
 # This ensures nether_bridge.py, pytest.ini, and the tests/ dir are available.
-COPY . .
+COPY ../ .
 
 # Install the development dependencies from the requirements file.
 RUN pip install --no-cache-dir -r tests/requirements-dev.txt
