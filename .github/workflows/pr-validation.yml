@@ -26,7 +26,7 @@ jobs:
         run: |
           echo "Listing files and directory structure inside the 'tester' container at /app..."
           # Also use --project-directory here for consistency
-          docker compose --project-directory . -f tests/docker-compose.tests.yml run --rm tester ls -lR /app
+          docker compose -f docker-compose.ci.yml up run --rm tester ls -lR /app
 
       - name: Run all tests
         run: |

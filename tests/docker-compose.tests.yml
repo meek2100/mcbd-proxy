@@ -102,4 +102,3 @@ networks:
 volumes:
   mc-bedrock-data:
   mc-java-data:
-  
