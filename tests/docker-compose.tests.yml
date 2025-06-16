@@ -85,9 +85,7 @@ services:
     networks:
       - mc-network
     volumes:
-      # Use the variable from the .env file instead of a relative path
-      - ${COMPOSE_PROJECT_PATH}:/app
-      # Mount the Docker socket so tests can interact with the daemon
+      - ../:/app # This mounts the entire project root
       - /var/run/docker.sock:/var/run/docker.sock
     # This overrides the Dockerfile's ENTRYPOINT so we can run pytest
     entrypoint: ""
