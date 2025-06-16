@@ -25,6 +25,7 @@ RUN apt-get update && apt-get install -y docker-ce-cli docker-compose-plugin
 # Explicitly copy all source and test files into the image
 COPY nether_bridge.py .
 COPY pytest.ini .
+COPY requirements.txt .
 COPY tests/ ./tests/
 
 # Install the development dependencies
@@ -40,8 +41,6 @@ COPY --from=base /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.
 
 # Copy only the necessary application code and default configs.
 COPY nether_bridge.py .
-COPY settings.json .
-COPY servers.json .
 
 # Expose all necessary ports for the proxy and metrics.
 EXPOSE 19132/udp
