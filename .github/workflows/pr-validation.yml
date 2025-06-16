@@ -21,18 +21,16 @@ jobs:
         run: |
           docker compose -f tests/docker-compose.tests.yml up --build -d --remove-orphans nether-bridge
 
+      # NEW DEBUGGING STEP
+      - name: Show Directory Structure Inside Tester Container
+        run: |
+          echo "Listing files and directory structure inside the 'tester' container at /app..."
+          docker compose -f tests/docker-compose.tests.yml run --rm tester ls -lR /app
+
       - name: Run all tests
         run: |
-          # The service depends_on 'service_healthy' condition is met, but we add a
-          # small extra delay to ensure Docker's internal DNS has fully propagated.
-          echo "Waiting for Docker network to stabilize..."
-          sleep 10
-
-          # Use jq to parse the JSON output from docker inspect.
           PROXY_IP=$(docker inspect nether-bridge | jq -r '.[0].NetworkSettings.Networks | .[] | .IPAddress')
           echo "Found nether-bridge IP: ${PROXY_IP}"
-
-          # Run pytest inside the tester container, passing the exact IP as an environment variable.
           docker compose -f tests/docker-compose.tests.yml run -e VM_HOST_IP=$PROXY_IP --rm tester python -m pytest --cov=nether_bridge --cov-report term-missing
       
       - name: Tear down test environment
