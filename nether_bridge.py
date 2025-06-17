@@ -90,11 +90,11 @@ class NetherBridgeProxy:
         }
         self.socket_to_session_map = {}
         self.active_sessions = {}
-        self.packet_buffers = defaultdict(list)
         self.listen_sockets = {}
         self.inputs = []
         self.last_heartbeat_time = time.time()
         self._shutdown_requested = False
+        self._reload_requested = False
 
     def _connect_to_docker(self):
         """Connects to the Docker daemon via the mounted socket."""
@@ -346,17 +346,18 @@ class NetherBridgeProxy:
     def _monitor_servers_activity(self):
         """Periodically checks running servers for player count and stops them if idle."""
         while not self._shutdown_requested:
+            # Use the setting from the current self.settings object
             time.sleep(self.settings.player_check_interval_seconds)
             if self._shutdown_requested:
                 break
 
             current_time = time.time()
+            idle_timeout = self.settings.idle_timeout_seconds
 
             idle_sessions_to_remove = [
                 key
                 for key, info in self.active_sessions.items()
-                if current_time - info["last_packet_time"]
-                > self.settings.idle_timeout_seconds
+                if current_time - info["last_packet_time"] > idle_timeout
             ]
             for session_key in idle_sessions_to_remove:
                 session_info = self.active_sessions.pop(session_key, None)
@@ -394,15 +395,12 @@ class NetherBridgeProxy:
                 )
 
                 if not has_active_sessions:
-                    if (
-                        current_time - state.get("last_activity", 0)
-                        > self.settings.idle_timeout_seconds
-                    ):
+                    if current_time - state.get("last_activity", 0) > idle_timeout:
                         self.logger.info(
                             "Server idle with 0 sessions. Initiating shutdown.",
                             extra={
                                 "container_name": container_name,
-                                "idle_threshold_seconds": self.settings.idle_timeout_seconds,
+                                "idle_threshold_seconds": idle_timeout,
                             },
                         )
                         self._stop_minecraft_server(container_name)
@@ -434,11 +432,77 @@ class NetherBridgeProxy:
             except socket.error:
                 pass
 
+    def _reload_configuration(self):
+        """
+        Reloads proxy settings and server definitions from source,
+        then adds/removes listening sockets as needed.
+        """
+        self.logger.warning("SIGHUP received. Reloading configuration...")
+
+        try:
+            new_settings, new_servers = load_application_config()
+            self.logger.setLevel(
+                getattr(logging, new_settings.log_level.upper(), logging.INFO)
+            )
+            self.settings = new_settings
+            self.logger.info(
+                "Proxy settings have been reloaded.",
+                extra={"new_log_level": self.settings.log_level},
+            )
+        except Exception as e:
+            self.logger.error(
+                f"Failed to reload settings, aborting reload: {e}", exc_info=True
+            )
+            self._reload_requested = False
+            return
+
+        old_ports = set(self.servers_config_map.keys())
+        new_servers_map = {s.listen_port: s for s in new_servers}
+        new_ports = set(new_servers_map.keys())
+
+        # Remove listeners for servers that are no longer in the config
+        for port in old_ports - new_ports:
+            server_name = self.servers_config_map.get(
+                port, ServerConfig("Unknown", "", port, "", port)
+            ).name
+            self.logger.info(
+                f"Removing listener for old server '{server_name}' on port {port}."
+            )
+            sock = self.listen_sockets.pop(port, None)
+            if sock:
+                if sock in self.inputs:
+                    self.inputs.remove(sock)
+                sock.close()
+            self.servers_config_map.pop(port, None)
+
+        # Add listeners for new servers
+        for port in new_ports - old_ports:
+            srv_cfg = new_servers_map[port]
+            self.logger.info(
+                f"Adding new listener for server '{srv_cfg.name}' on port {port}."
+            )
+            self._create_listening_socket(srv_cfg)
+            if srv_cfg.container_name not in self.server_states:
+                self.server_states[srv_cfg.container_name] = {
+                    "running": False,
+                    "last_activity": 0.0,
+                }
+
+        # Update server configurations and the main list
+        self.servers_config_map = new_servers_map
+        self.servers_list = new_servers
+
+        self.logger.info("Configuration reload complete.")
+        self._reload_requested = False
+
     def _run_proxy_loop(self):
         """The main packet forwarding loop of the proxy."""
         self.logger.info("Starting main proxy packet forwarding loop.")
 
         while not self._shutdown_requested:
+            if self._reload_requested:
+                self._reload_configuration()
+
             try:
                 readable, _, _ = select.select(self.inputs, [], [], 1.0)
             except select.error as e:
@@ -647,11 +711,11 @@ class NetherBridgeProxy:
                         destination_socket.sendto(data, destination_address)
 
                 except (ConnectionResetError, socket.error, OSError) as e:
-                    # This block handles expected disconnections
                     if "session_key" not in locals():
-                        session_key = self.socket_to_session_map.get(
-                            sock, (None, None)
-                        )[0]
+                        session_key_tuple = self.socket_to_session_map.get(sock)
+                        session_key = (
+                            session_key_tuple[0] if session_key_tuple else None
+                        )
 
                     self.logger.warning(
                         "Session disconnected. Cleaning up.",
@@ -665,15 +729,15 @@ class NetherBridgeProxy:
                         if server_config:
                             ACTIVE_SESSIONS.labels(server_name=server_config.name).dec()
 
-                        client_sock = session_info.get("client_socket")
-                        server_sock = session_info.get("server_socket")
-
                         self._close_session_sockets(session_info)
-                        self.socket_to_session_map.pop(client_sock, None)
-                        self.socket_to_session_map.pop(server_sock, None)
+                        self.socket_to_session_map.pop(
+                            session_info.get("client_socket"), None
+                        )
+                        self.socket_to_session_map.pop(
+                            session_info.get("server_socket"), None
+                        )
 
                 except Exception as e:
-                    # This block handles any other unexpected error for a single socket
                     self.logger.error(
                         f"Unhandled exception for socket {sock.fileno()}. Closing socket.",
                         exc_info=True,
@@ -689,6 +753,41 @@ class NetherBridgeProxy:
         self.logger.info("Shutdown requested. Closing all listening sockets.")
         for sock in self.listen_sockets.values():
             sock.close()
+
+    def _create_listening_socket(self, srv_cfg: ServerConfig):
+        """Creates and binds a single listening socket based on server config."""
+        listen_port = srv_cfg.listen_port
+        sock_type = (
+            socket.SOCK_DGRAM
+            if srv_cfg.server_type == "bedrock"
+            else socket.SOCK_STREAM
+        )
+        protocol_str = "UDP" if sock_type == socket.SOCK_DGRAM else "TCP"
+
+        sock = socket.socket(socket.AF_INET, sock_type)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+        try:
+            sock.bind(("0.0.0.0", listen_port))
+            if sock_type == socket.SOCK_STREAM:
+                sock.listen(5)
+            sock.setblocking(False)
+            self.listen_sockets[listen_port] = sock
+            self.inputs.append(sock)
+            self.logger.info(
+                f"Proxy listening for '{srv_cfg.name}'",
+                extra={
+                    "listen_port": listen_port,
+                    "protocol": protocol_str,
+                    "container_name": srv_cfg.container_name,
+                },
+            )
+        except OSError as e:
+            self.logger.critical(
+                f"FATAL: Could not bind to port {listen_port}.", extra={"error": str(e)}
+            )
+            if not getattr(self, "_reload_requested", False):
+                sys.exit(1)
 
     def run(self):
         """Starts the Nether-bridge proxy application."""
@@ -731,45 +830,8 @@ class NetherBridgeProxy:
         self._connect_to_docker()
         self._ensure_all_servers_stopped_on_startup()
 
-        for listen_port, srv_cfg in self.servers_config_map.items():
-            sock_type = (
-                socket.SOCK_DGRAM
-                if srv_cfg.server_type == "bedrock"
-                else socket.SOCK_STREAM
-            )
-            protocol_str = "UDP" if srv_cfg.server_type == "bedrock" else "TCP"
-
-            sock = socket.socket(socket.AF_INET, sock_type)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
-            try:
-                sock.bind(("0.0.0.0", listen_port))
-                if sock_type == socket.SOCK_STREAM:
-                    sock.listen(5)
-                sock.setblocking(False)
-                self.listen_sockets[listen_port] = sock
-                self.inputs.append(sock)
-                self.logger.info(
-                    f"Proxy listening for '{srv_cfg.name}'",
-                    extra={
-                        "listen_port": listen_port,
-                        "protocol": protocol_str,
-                        "container_name": srv_cfg.container_name,
-                    },
-                )
-            except OSError as e:
-                self.logger.critical(
-                    f"FATAL: Could not bind to port {listen_port}.",
-                    extra={"error": e.strerror, "errno": e.errno},
-                    exc_info=True,
-                )
-                sys.exit(1)
-            except Exception as e:
-                self.logger.critical(
-                    f"FATAL: Unexpected error during socket binding for port {listen_port}.",
-                    exc_info=True,
-                )
-                sys.exit(1)
+        for srv_cfg in self.servers_list:
+            self._create_listening_socket(srv_cfg)
 
         monitor_thread = threading.Thread(
             target=self._monitor_servers_activity, daemon=True
@@ -787,8 +849,10 @@ def perform_health_check():
             logger.error("Health Check FAIL: No server configuration found.")
             sys.exit(1)
         logger.debug("Health Check Stage 1 (Configuration) OK.")
-    except Exception:
-        logger.error("Health Check FAIL: Error loading configuration.")
+    except Exception as e:
+        logger.error(
+            f"Health Check FAIL: Error loading configuration. Error: {e}", exc_info=True
+        )
         sys.exit(1)
 
     proxy_settings_for_healthcheck, _ = load_application_config()
@@ -807,40 +871,46 @@ def perform_health_check():
         else:
             logger.error(f"Health Check FAIL: Heartbeat is stale ({age} seconds old).")
             sys.exit(1)
-    except Exception:
-        logger.error("Health Check FAIL: Could not read or parse heartbeat file.")
+    except Exception as e:
+        logger.error(
+            f"Health Check FAIL: Could not read or parse heartbeat file. Error: {e}",
+            exc_info=True,
+        )
         sys.exit(1)
 
 
 def _load_settings_from_json(file_path: Path) -> dict:
+    """Loads proxy-wide settings from a JSON file."""
     logger = logging.getLogger(__name__)
+    if not file_path.is_file():
+        return {}
     try:
         with open(file_path, "r") as f:
             settings_from_file = json.load(f)
             logger.info(f"Loaded settings from {file_path}.")
             return settings_from_file
-    except FileNotFoundError:
-        return {}
     except json.JSONDecodeError as e:
         logger.error(f"Error decoding JSON from {file_path}", extra={"error": str(e)})
         return {}
 
 
 def _load_servers_from_json(file_path: Path) -> list[dict]:
+    """Loads server definitions from a JSON file."""
     logger = logging.getLogger(__name__)
+    if not file_path.is_file():
+        return []
     try:
         with open(file_path, "r") as f:
             servers_json_config = json.load(f)
             logger.info(f"Loaded server definitions from {file_path}.")
             return servers_json_config.get("servers", [])
-    except FileNotFoundError:
-        return []
     except json.JSONDecodeError as e:
         logger.error(f"Error decoding JSON from {file_path}", extra={"error": str(e)})
         return []
 
 
 def _load_servers_from_env() -> list[dict]:
+    """Loads server definitions from environment variables (NB_x_...)."""
     logger = logging.getLogger(__name__)
     env_servers, i = [], 1
     while True:
@@ -869,10 +939,13 @@ def _load_servers_from_env() -> list[dict]:
                 extra={"error": str(e)},
             )
         i += 1
+    if env_servers:
+        logger.info(f"Loaded {len(env_servers)} server(s) from environment variables.")
     return env_servers
 
 
 def load_application_config() -> tuple[ProxySettings, list[ServerConfig]]:
+    """Loads all configuration from files and environment, with env vars taking precedence."""
     logger = logging.getLogger(__name__)
     settings_from_json = _load_settings_from_json(Path("settings.json"))
     final_settings = {}
@@ -893,19 +966,17 @@ def load_application_config() -> tuple[ProxySettings, list[ServerConfig]]:
         env_val = os.environ.get(env_var_name)
         if env_val is not None:
             try:
-                final_settings[key] = (
-                    int(env_val)
-                    if isinstance(default_val, int)
-                    else (
-                        env_val.lower() == "true"
-                        if isinstance(default_val, bool)
-                        else env_val
-                    )
-                )
+                if isinstance(default_val, bool):
+                    final_settings[key] = env_val.lower() in ("true", "1", "yes")
+                elif isinstance(default_val, int):
+                    final_settings[key] = int(env_val)
+                else:
+                    final_settings[key] = env_val
             except ValueError:
                 final_settings[key] = settings_from_json.get(key, default_val)
         else:
             final_settings[key] = settings_from_json.get(key, default_val)
+
     proxy_settings = ProxySettings(**final_settings)
     servers_list_raw = _load_servers_from_env() or _load_servers_from_json(
         Path("servers.json")
@@ -941,7 +1012,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     settings, servers = load_application_config()
-    logger.setLevel(getattr(logging, settings.log_level, logging.INFO))
+    logger.setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
     logger.info(
         "Log level set to final value.", extra={"log_level": settings.log_level}
     )
@@ -952,9 +1023,15 @@ if __name__ == "__main__":
     proxy = NetherBridgeProxy(settings, servers)
 
     def signal_handler(sig, frame):
-        logger.warning("Received shutdown signal.", extra={"signal": sig})
-        proxy._shutdown_requested = True
+        if hasattr(signal, "SIGHUP") and sig == signal.SIGHUP:
+            proxy._reload_requested = True
+            logger.warning("SIGHUP signal received, flagging for reload.")
+        else:  # SIGINT, SIGTERM
+            logger.warning(f"Shutdown signal {sig} received, initiating shutdown.")
+            proxy._shutdown_requested = True
 
+    if hasattr(signal, "SIGHUP"):
+        signal.signal(signal.SIGHUP, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
