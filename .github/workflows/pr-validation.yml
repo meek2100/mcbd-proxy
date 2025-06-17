@@ -12,6 +12,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Ensure local_env.py is absent in CI
+        run: |
+          rm -f tests/local_env.py || true
+
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
