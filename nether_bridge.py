@@ -12,7 +12,7 @@ from collections import defaultdict
 from mcstatus import BedrockServer, JavaServer
 from pathlib import Path
 from dataclasses import dataclass
-from pythonjsonlogger import jsonlogger
+from pythonjsonlogger.jsonlogger import JsonFormatter
 from prometheus_client import start_http_server, Gauge, Histogram
 
 # --- Constants ---
@@ -927,9 +927,7 @@ if __name__ == "__main__":
     LOG_LEVEL_EARLY = os.environ.get("LOG_LEVEL", "INFO").upper()
     logger.setLevel(LOG_LEVEL_EARLY)
     logHandler = logging.StreamHandler()
-    formatter = jsonlogger.JsonFormatter(
-        "%(asctime)s %(name)s %(levelname)s %(message)s"
-    )
+    formatter = JsonFormatter("%(asctime)s %(name)s %(levelname)s %(message)s")
     logHandler.setFormatter(formatter)
     if logger.hasHandlers():
         logger.handlers.clear()
