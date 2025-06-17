@@ -6,8 +6,8 @@ import time
 import os
 from pathlib import Path
 import sys
-import re
-import shutil  # Import for robust directory cleanup
+import re  # Still needed for local_env.py loading if it involves regex, but not for compose modification
+import shutil  # Still needed for cleanup of temp_compose_file_dir (if it was created for something else)
 
 # Try to load local environment specific IP and DOCKER_HOST for testing
 _local_vm_host_ip = None
@@ -61,15 +61,16 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
     Starts Docker Compose services before tests and tears them down afterwards.
     This fixture relies on the 'docker compose' CLI directly.
     """
-    original_compose_file_path_abs = Path(
-        pytestconfig.rootdir
-    ) / pytestconfig.getoption("--compose-file")
+    # Always use the original compose file path directly.
+    # We are no longer dynamically modifying it for remote volumes/contexts.
+    compose_file_to_use_abs = Path(pytestconfig.rootdir) / pytestconfig.getoption(
+        "--compose-file"
+    )
 
-    compose_file_to_use_abs = original_compose_file_path_abs
-
-    # Declare variables for cleanup at the top of the fixture scope
-    temp_compose_file_dir = None  # For the directory created for the temp compose file
-    temp_compose_file_path_abs = None  # For the temp compose file itself
+    # These variables are no longer directly used for composing the file path,
+    # as we removed that dynamic modification. They will remain None.
+    temp_compose_file_dir = None
+    temp_compose_file_path_abs = None
 
     env_vars = os.environ.copy()
     if _local_docker_host_from_file:
@@ -88,7 +89,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
 
     print(
         f"\nStarting Docker Compose project '{docker_compose_project_name}' from "
-        f"{original_compose_file_path_abs}..."
+        f"{compose_file_to_use_abs}..."
     )
 
     # Aggressive Pre-cleanup (unchanged from previous version)
@@ -149,72 +150,8 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
         print(f"Warning during aggressive pre-cleanup: {e}")
 
     try:
-        # --- Dynamic modification of docker-compose.tests.yml for remote-specific adjustments ---
-        if _local_docker_host_from_file:  # Only if a remote Docker host is specified
-            print(
-                "Detected remote Docker host. Temporarily modifying docker-compose.tests.yml for remote build contexts and volumes."
-            )
-            original_content = original_compose_file_path_abs.read_text(
-                encoding="utf-8"
-            )
-
-            modified_content = original_content
-
-            # 1. Change build contexts to absolute path for ALL services with a build context
-            # This ensures the build context is the actual project root on the host.
-            # Docker CLI on Windows should then correctly map this absolute path to the remote daemon.
-            # IMPORTANT: Re-escaped path for regex matching literal backslashes if present, then replaced.
-            modified_context_path_in_compose = str(pytestconfig.rootdir).replace(
-                "\\", "/"
-            )  # Convert to forward slashes
-            modified_content = re.sub(
-                r"(\s*build:\s*\n\s*context:)\s*\S+",  # match 'context:' followed by any non-whitespace path
-                r"\1 "
-                + modified_context_path_in_compose,  # replace with absolute path (NO re.escape() here)
-                modified_content,
-                flags=re.MULTILINE,
-            )
-
-            # 2. Comment out the host bind mount for 'tester' service
-            # This avoids sending a Windows path to the Linux daemon for volumes.
-            # Tester will rely on files copied during its Dockerfile build.
-            volume_pattern = (
-                r"(\s*tester:\s*\n(?:.*\n)*?\s*volumes:\s*\n)(\s*-\s*\.?\./:/app\s*)"
-            )
-            modified_content = re.sub(
-                volume_pattern,
-                r"\1#\2 # Commented out for remote Docker testing to avoid invalid Windows path spec",
-                modified_content,
-                flags=re.DOTALL,
-            )
-
-            if (
-                original_content == modified_content
-                and "volumes:" in original_content
-                and "tester:" in original_content
-            ):
-                print(
-                    "Warning: No matching bind mount volume entry found for 'tester' to comment out. Ensure 'tester' service has '- ../:/app' or '- .:/app' volume entry."
-                )
-
-            # Write to a temporary file in a universal temp directory.
-            temp_compose_file_dir = (
-                Path(os.getenv("TEMP") or "/tmp")
-                / f"netherbridge_pytest_temp_compose_{int(time.time())}"
-            )
-            temp_compose_file_dir.mkdir(parents=True, exist_ok=True)
-            temp_compose_file_path_abs = (
-                temp_compose_file_dir / original_compose_file_path_abs.name
-            )
-            temp_compose_file_path_abs.write_text(modified_content, encoding="utf-8")
-            print(
-                f"Using dynamically generated compose file: {temp_compose_file_path_abs}"
-            )
-
-            compose_file_to_use_abs = temp_compose_file_path_abs
-
         print("Checking if test images need to be built...")
-        # For build command, use the original (or temp if remote) compose file.
+        # For build command, use the original compose file path.
         # The key is to run it from pytestconfig.rootdir, and `context: ../` will resolve correctly.
         build_command = [
             "docker",
@@ -222,7 +159,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             "-p",
             docker_compose_project_name,
             "-f",
-            str(compose_file_to_use_abs),
+            str(compose_file_to_use_abs),  # Use original compose file path
             "build",
             "nether-bridge",
             "tester",
@@ -231,7 +168,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
         print(f"Running build command from CWD: {pytestconfig.rootdir}")
         build_result = subprocess.run(
             build_command,
-            cwd=pytestconfig.rootdir,  # IMPORTANT: CWD is project root for build context
+            cwd=pytestconfig.rootdir,  # IMPORTANT: CWD is project root for Docker to find source files
             capture_output=True,
             encoding="utf-8",
             check=False,
@@ -262,7 +199,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             "-p",
             docker_compose_project_name,
             "-f",
-            str(compose_file_to_use_abs),
+            str(compose_file_to_use_abs),  # Use original compose file path
             "create",
         ]
         print(f"Running command: {' '.join(create_command)}")
@@ -282,10 +219,10 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             "-p",
             docker_compose_project_name,
             "-f",
-            str(compose_file_to_use_abs),
+            str(compose_file_to_use_abs),  # Use original compose file path
             "start",
             "nether-bridge",
-            "tester",
+            "nether-bridge-tester",  # Use explicit container name
         ]
         print(f"Running command: {' '.join(start_command)}")
         subprocess.run(
@@ -300,12 +237,8 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
 
         print("Waiting for nether-bridge container to become healthy...")
         # Create a new docker client for health checks, explicitly using the determined DOCKER_HOST
-        # and passing env_vars to ensure it picks up the correct remote connection.
-        client_env = env_vars.copy()
-        # If DOCKER_HOST is set in env_vars, docker.from_env() should pick it up.
-        # If not, it defaults. This is more robust than passing base_url directly every time,
-        # and lets from_env handle contexts/certs etc.
-        client = docker.from_env(environment=client_env)
+        # This is where the fix for the pipe connection issue goes.
+        client = docker.from_env(environment=env_vars)
         try:
             container = client.containers.get("nether-bridge")
             timeout = 120
@@ -480,6 +413,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
         print(f"An unexpected error occurred during Docker Compose teardown: {e}")
     finally:
         # Clean up the temporary file and directory if they were created
+        # temp_compose_file_path_abs and temp_compose_file_dir might be None if not remote, handle safely.
         if temp_compose_file_path_abs and temp_compose_file_path_abs.exists():
             try:
                 os.remove(

@@ -81,23 +81,17 @@ services:
       - ONLINE_MODE=FALSE # Faster startup, no Mojang auth needed for tests
   
   tester:
-    # Explicit image name for the tester
-    image: tester:local # Renamed image
-    # Explicit container name for easy identification and cleanup
-    container_name: nether-bridge-tester # Specific container name
+    image: tester:local # Explicit image name
+    container_name: nether-bridge-tester # Explicit container name
     build:
-      context: ../
+      context: ../ # This is the correct context relative to this file to find the Dockerfile
       dockerfile: Dockerfile
-      target: testing
+      target: testing # Builds the testing stage
     networks:
       - mc-network
-    volumes:
-      # This mount is handled dynamically by conftest.py for remote Docker,
-      # but it needs to exist in the compose file for local Docker Desktop.
-      # It mounts the project root to /app inside tester.
-      - ../:/app
-      # Mount the Docker socket so tests can interact with the daemon
-      - /var/run/docker.sock:/var/run/docker.sock
+    # REMOVE ALL VOLUMES FOR THE TESTER SERVICE.
+    # Its code should be copied into the image by its Dockerfile.
+    # No host bind mounts for tester.
     entrypoint: ""
     command: /bin/bash -c "while true; do sleep 1; done" # Keep container alive for exec
     depends_on:
