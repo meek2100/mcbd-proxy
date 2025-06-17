@@ -16,7 +16,7 @@ jobs:
   call-reusable-build:
     uses: ./.github/workflows/reusable-build.yml
     with:
-      image_name: ghcr.io/${{ github.repository_owner }}/nether-bridge # Final Production Name
+      image_name: ghcr.io/${{ github.repository_owner }}/mcbd-proxy # Final Production Name
       tags: |
         type=semver,pattern={{version}}
         type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
