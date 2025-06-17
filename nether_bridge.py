@@ -549,6 +549,17 @@ class NetherBridgeProxy:
                                         "server_name": server_config.name,
                                     },
                                 )
+                                try:
+                                    target_ip = socket.gethostbyname(container_name)
+                                    self.logger.info(
+                                        f"Resolved {container_name} to {target_ip} for new session."
+                                    )
+                                except socket.gaierror:
+                                    self.logger.error(
+                                        f"DNS resolution failed for container '{container_name}'. Cannot establish session."
+                                    )
+                                    continue
+
                                 server_sock = socket.socket(
                                     socket.AF_INET, socket.SOCK_DGRAM
                                 )
@@ -556,9 +567,10 @@ class NetherBridgeProxy:
                                 self.inputs.append(server_sock)
 
                                 session_info = {
-                                    "client_socket": sock,  # The listening socket
-                                    "server_socket": server_sock,  # The backend-facing socket
+                                    "client_socket": sock,
+                                    "server_socket": server_sock,
                                     "target_container": container_name,
+                                    "target_ip": target_ip,
                                     "last_packet_time": time.time(),
                                     "listen_port": server_port,
                                     "protocol": "udp",
@@ -578,15 +590,15 @@ class NetherBridgeProxy:
                                 "last_activity"
                             ] = time.time()
 
+                            target_ip = session_info["target_ip"]
                             session_info["server_socket"].sendto(
-                                data, (container_name, server_config.internal_port)
+                                data, (target_ip, server_config.internal_port)
                             )
-                        continue  # End of handling for listening sockets
+                        continue
 
                     # Logic for established connections
                     session_info_tuple = self.socket_to_session_map.get(sock)
                     if not session_info_tuple:
-                        # Stale socket from a session that was already cleaned up.
                         if sock in self.inputs:
                             self.inputs.remove(sock)
                         sock.close()
@@ -609,7 +621,7 @@ class NetherBridgeProxy:
                         data = sock.recv(4096)
                         if not data:
                             raise ConnectionResetError("Connection closed by peer")
-                    else:  # UDP
+                    else:
                         data, _ = sock.recvfrom(4096)
 
                     session_info["last_packet_time"] = time.time()
@@ -620,21 +632,27 @@ class NetherBridgeProxy:
                         ] = time.time()
                         destination_socket = session_info["server_socket"]
                         destination_address = (
-                            container_name,
+                            session_info.get("target_ip", container_name),
                             self.servers_config_map[
                                 session_info["listen_port"]
                             ].internal_port,
                         )
-                    else:  # server_socket
+                    else:
                         destination_socket = session_info["client_socket"]
                         destination_address = session_key[0]
 
                     if protocol == "tcp":
                         destination_socket.sendall(data)
-                    else:  # UDP
+                    else:
                         destination_socket.sendto(data, destination_address)
 
                 except (ConnectionResetError, socket.error, OSError) as e:
+                    # This block handles expected disconnections
+                    if "session_key" not in locals():
+                        session_key = self.socket_to_session_map.get(
+                            sock, (None, None)
+                        )[0]
+
                     self.logger.warning(
                         "Session disconnected. Cleaning up.",
                         extra={"session_key": session_key, "error": str(e)},
@@ -655,6 +673,7 @@ class NetherBridgeProxy:
                         self.socket_to_session_map.pop(server_sock, None)
 
                 except Exception as e:
+                    # This block handles any other unexpected error for a single socket
                     self.logger.error(
                         f"Unhandled exception for socket {sock.fileno()}. Closing socket.",
                         exc_info=True,
@@ -665,7 +684,6 @@ class NetherBridgeProxy:
                         sock.close()
                     except OSError:
                         pass
-                    # Attempt to remove from session map to prevent leaks
                     self.socket_to_session_map.pop(sock, None)
 
         self.logger.info("Shutdown requested. Closing all listening sockets.")
