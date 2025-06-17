@@ -140,7 +140,8 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
         print("Waiting for nether-bridge proxy to be ready...")
         client = docker.from_env(environment=env_vars)
         try:
-            container_name = f"{docker_compose_project_name}-nether-bridge-1"
+            # **FIX:** Use the static container_name from the docker-compose file
+            container_name = "nether-bridge"
             container = client.containers.get(container_name)
             timeout = 120
             start_time = time.time()
@@ -212,10 +213,30 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
 
     yield
 
-    # Standard teardown
     if request.session.testsfailed > 0:
         print(f"\n--- DUMPING LOGS DUE TO TEST FAILURE ---")
-        # Log dumping logic here...
+        try:
+            logs_cmd = [
+                "docker",
+                "compose",
+                "-p",
+                docker_compose_project_name,
+                "-f",
+                str(compose_file_to_use_abs),
+                "logs",
+                "--no-color",
+            ]
+            logs_result = subprocess.run(
+                logs_cmd,
+                capture_output=True,
+                encoding="utf-8",
+                check=False,
+                env=env_vars,
+                cwd=pytestconfig.rootdir,
+            )
+            print(f"\n{logs_result.stdout}\n{logs_result.stderr}")
+        except Exception as log_e:
+            print(f"Could not retrieve logs during test teardown: {log_e}")
 
     print(
         f"\nTests finished. Tearing down Docker Compose project '{docker_compose_project_name}'..."
