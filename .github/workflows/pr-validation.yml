@@ -26,25 +26,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # STEP 1: Build the main 'nether-bridge' image
       - name: Build 'nether-bridge' image with cache
         uses: docker/build-push-action@v5
         with:
           context: .
           tags: nether-bridge:local
-          # No target needed; builds the final stage by default
           load: true
           push: false
           cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr
           cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr,mode=max
 
-      # STEP 2: Build the 'nb-tester' image
       - name: Build 'nb-tester' image with cache
         uses: docker/build-push-action@v5
         with:
           context: .
           tags: nb-tester:local
-          # Specify the 'testing' stage for this image only
           target: testing
           load: true
           push: false
@@ -73,6 +69,17 @@ jobs:
           echo "Timeout: Nether-bridge did not become healthy after 2 minutes."
           exit 1
       
+      # --- LINT & FORMATTING CHECKS ---
+      - name: Lint with flake8
+        run: |
+          echo "Running flake8 linter..."
+          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester flake8 .
+
+      - name: Check formatting with black
+        run: |
+          echo "Checking formatting with black..."
+          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester black --check .
+
       - name: Run all tests
         run: |
           PROXY_IP=$(docker inspect nether-bridge | jq -r '.[0].NetworkSettings.Networks | .[] | .IPAddress')
