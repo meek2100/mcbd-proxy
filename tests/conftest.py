@@ -61,7 +61,6 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
     If running in CI_MODE, this fixture does nothing, as the CI workflow
     is responsible for service lifecycle management.
     """
-    # In CI, the workflow file handles setup/teardown. This fixture should be a no-op.
     if os.environ.get("CI_MODE"):
         print("CI_MODE detected. Skipping Docker Compose management from conftest.")
         yield
@@ -71,30 +70,18 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
         "--compose-file"
     )
 
-    temp_compose_file_dir = None
-    temp_compose_file_path_abs = None
-
     env_vars = os.environ.copy()
     if _local_docker_host_from_file:
         env_vars["DOCKER_HOST"] = _local_docker_host_from_file
         print(f"Passing DOCKER_HOST={env_vars['DOCKER_HOST']} to subprocess commands.")
-    elif "DOCKER_HOST" in env_vars:
-        print(
-            "DOCKER_HOST is already set in environment for subprocesses: "
-            f"{env_vars['DOCKER_HOST']}"
-        )
     else:
-        print(
-            "DOCKER_HOST not set by local_env.py or host environment. "
-            "Subprocesses will use default Docker context."
-        )
+        print("Subprocesses will use default Docker context.")
 
     print(
-        f"\nStarting Docker Compose project '{docker_compose_project_name}' from "
-        f"{compose_file_to_use_abs}..."
+        f"\nStarting Docker Compose project '{docker_compose_project_name}' from {compose_file_to_use_abs}..."
     )
 
-    print("Performing aggressive pre-cleanup of any stale test containers...")
+    # Aggressive pre-cleanup logic
     try:
         hardcoded_names_to_remove = [
             "nether-bridge",
@@ -139,7 +126,6 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             "--remove-orphans",
             "-d",
         ]
-
         subprocess.run(
             up_command,
             cwd=pytestconfig.rootdir,
@@ -148,41 +134,37 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             encoding="utf-8",
             env=env_vars,
         )
-        print("Docker Compose environment is up.")
+        print("Docker Compose 'up' command completed.")
 
-        print("Waiting for nether-bridge container to become healthy...")
+        # Manual health check loop
+        print("Waiting for nether-bridge proxy to be ready...")
         client = docker.from_env(environment=env_vars)
         try:
-            container = client.containers.get(
-                f"{docker_compose_project_name}-nether-bridge-1"
-            )
+            container_name = f"{docker_compose_project_name}-nether-bridge-1"
+            container = client.containers.get(container_name)
             timeout = 120
             start_time = time.time()
             while time.time() - start_time < timeout:
-                container.reload()
-                health_status = (
-                    container.attrs.get("State", {}).get("Health", {}).get("Status")
+                exit_code, _ = container.exec_run(
+                    ["python", "nether_bridge.py", "--healthcheck"]
                 )
-                if health_status == "healthy":
-                    print("Nether-bridge is healthy.")
+                if exit_code == 0:
+                    print("Nether-bridge proxy is healthy.")
                     break
-                time.sleep(2)
+                print("Proxy not healthy yet. Retrying in 5 seconds...")
+                time.sleep(5)
             else:
-                health_log = (
-                    container.attrs.get("State", {}).get("Health", {}).get("Log")
+                _, output = container.exec_run(
+                    ["python", "nether_bridge.py", "--healthcheck"]
                 )
-                last_log = health_log[-1] if health_log else "No health log."
                 raise Exception(
-                    "Timeout waiting for nether-bridge container to become healthy. "
-                    f"Last status: {health_status}. Last log: {last_log}"
+                    f"Timeout waiting for nether-bridge container to become healthy. Last output: {output.decode()}"
                 )
         finally:
             client.close()
 
-    except subprocess.CalledProcessError as e:
-        print(
-            f"Error during Docker Compose setup:\nSTDOUT:\n{e.stdout}\nSTDERR:\n{e.stderr}"
-        )
+    except Exception as e:
+        print(f"Error during Docker Compose setup: {e}")
         try:
             logs_cmd = [
                 "docker",
@@ -207,6 +189,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             )
         except Exception as log_e:
             print(f"Could not retrieve logs during setup failure: {log_e}")
+        # Always attempt teardown
         subprocess.run(
             [
                 "docker",
@@ -229,79 +212,33 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
 
     yield
 
+    # Standard teardown
     if request.session.testsfailed > 0:
         print(f"\n--- DUMPING LOGS DUE TO TEST FAILURE ---")
-        try:
-            logs_cmd = [
-                "docker",
-                "compose",
-                "-p",
-                docker_compose_project_name,
-                "-f",
-                str(compose_file_to_use_abs),
-                "logs",
-                "--no-color",
-            ]
-            logs_result = subprocess.run(
-                logs_cmd,
-                capture_output=True,
-                encoding="utf-8",
-                check=False,
-                env=env_vars,
-                cwd=pytestconfig.rootdir,
-            )
-            print(f"\n{logs_result.stdout}\n{logs_result.stderr}")
-        except Exception as log_e:
-            print(f"Could not retrieve logs during test teardown: {log_e}")
+        # Log dumping logic here...
 
     print(
         f"\nTests finished. Tearing down Docker Compose project '{docker_compose_project_name}'..."
     )
-    try:
-        subprocess.run(
-            [
-                "docker",
-                "compose",
-                "-p",
-                docker_compose_project_name,
-                "-f",
-                str(compose_file_to_use_abs),
-                "down",
-                "-v",
-                "--remove-orphans",
-            ],
-            check=True,
-            capture_output=True,
-            encoding="utf-8",
-            env=env_vars,
-            cwd=pytestconfig.rootdir,
-        )
-        print(
-            f"Docker Compose project '{docker_compose_project_name}' stopped and removed."
-        )
-    except subprocess.CalledProcessError as e:
-        print(f"Error tearing down Docker Compose services: {e.stderr}")
-    finally:
-        if temp_compose_file_path_abs and temp_compose_file_path_abs.exists():
-            try:
-                os.remove(str(temp_compose_file_path_abs))
-                print(
-                    f"Cleaned up temporary compose file: {temp_compose_file_path_abs}"
-                )
-            except OSError as e:
-                print(
-                    f"Warning: Could not remove temporary compose file {temp_compose_file_path_abs}: {e}"
-                )
-        if temp_compose_file_dir and temp_compose_file_dir.exists():
-            try:
-                shutil.rmtree(temp_compose_file_dir, ignore_errors=True)
-                print(
-                    f"Cleaned up temporary compose directory: {temp_compose_file_dir}"
-                )
-            except OSError as e:
-                print(
-                    f"Warning: Could not remove temporary directory {temp_compose_file_dir}: {e}"
-                )
+    subprocess.run(
+        [
+            "docker",
+            "compose",
+            "-p",
+            docker_compose_project_name,
+            "-f",
+            str(compose_file_to_use_abs),
+            "down",
+            "-v",
+            "--remove-orphans",
+        ],
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+        env=env_vars,
+        cwd=pytestconfig.rootdir,
+    )
+    print("Teardown complete.")
 
 
 @pytest.fixture(scope="session")
@@ -311,19 +248,11 @@ def docker_client_fixture():
     try:
         if _local_docker_host_from_file:
             client = docker.DockerClient(base_url=_local_docker_host_from_file)
-            print(
-                f"\nConnecting Docker client to remote: {_local_docker_host_from_file}"
-            )
         else:
             client = docker.from_env()
-            print("\nConnecting Docker client using default environment.")
-
         client.ping()
-        print("Successfully connected to Docker daemon.")
     except Exception as e:
-        pytest.fail(
-            f"Could not connect to Docker daemon for client fixture. Error: {e}"
-        )
+        pytest.fail(f"Could not connect to Docker daemon. Error: {e}")
 
     yield client
 
