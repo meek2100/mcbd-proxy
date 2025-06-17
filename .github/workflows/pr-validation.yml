@@ -4,10 +4,6 @@ on:
   pull_request:
     branches: [ main ]
 
-permissions:
-  contents: read
-  packages: write
-
 jobs:
   validate-and-test:
     runs-on: ubuntu-latest
@@ -16,42 +12,40 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Ensure local_env.py is absent in CI
+        run: |
+          rm -f tests/local_env.py || true
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Set COMPOSE_PROJECT_PATH for CI environment
+        run: echo "COMPOSE_PROJECT_PATH=$(pwd)" >> $GITHUB_ENV
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build test images with cache
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          tags: |
-            nether-bridge:local
-            nb-tester:local
-          target: testing
-          load: true
-          push: false
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr
-          cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr,mode=max
-
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Force Rebuild Test Images (no cache)
+        run: |
+          docker compose -f tests/docker-compose.tests.yml build --no-cache nether-bridge nb-tester
 
       - name: Start Test Environment
-        run: docker compose -f tests/docker-compose.tests.yml up -d --remove-orphans
+        run: |
+          docker compose -f tests/docker-compose.tests.yml up -d --remove-orphans
         id: start-env
-      
+
+      - name: Show Directory Structure Inside Tester Container
+        run: |
+          echo "Listing files and directory structure inside the 'nb-tester' container at /app..."
+          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester ls -lR /app
+
       - name: Run all tests
         run: |
-          # Reverted to the more robust, generic jq query
           PROXY_IP=$(docker inspect nether-bridge | jq -r '.[0].NetworkSettings.Networks | .[] | .IPAddress')
           echo "Found nether-bridge IP: ${PROXY_IP}"
-          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester env CI_MODE=true PROXY_IP=${PROXY_IP} python -m pytest --cov=nether_bridge --cov-report term-missing
+          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester env CI_MODE=true PROXY_IP=${PROXY_IP} python -m pytest --cov=nether_bridge --cov-report term-missing --compose-file /app/tests/docker-compose.tests.yml
         id: run-tests
 
       - name: Dump All Container Logs on Failure
