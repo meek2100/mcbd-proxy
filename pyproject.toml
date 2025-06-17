@@ -1,0 +1,30 @@
+# Configuration file for Python development tools.
+
+[tool.black]
+# Set the maximum line length to the PEP 8 standard.
+line-length = 79
+
+# Exclude common directories from formatting.
+exclude = '''
+/(
+    \.git
+  | \.venv
+  | \.pytest_cache
+  | build
+  | dist
+)/
+'''
+
+[tool.flake8]
+# Set the max line length to match black's configuration.
+max-line-length = 79
+# Ignore specific flake8 errors that conflict with black's automatic formatting.
+extend-ignore = "E203, W503"
+# Exclude the same common directories.
+exclude = [
+    ".git",
+    ".venv",
+    ".pytest_cache",
+    "build",
+    "dist",
+]
