@@ -12,7 +12,7 @@ from collections import defaultdict
 from mcstatus import BedrockServer, JavaServer
 from pathlib import Path
 from dataclasses import dataclass
-from pythonjsonlogger.jsonlogger import JsonFormatter
+from pythonjsonlogger.json import JsonFormatter
 from prometheus_client import start_http_server, Gauge, Histogram
 
 # --- Constants ---
