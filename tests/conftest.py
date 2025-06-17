@@ -96,31 +96,18 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
 
     print("Performing aggressive pre-cleanup of any stale test containers...")
     try:
-        # Combined list of names to check for and remove
         hardcoded_names_to_remove = [
             "nether-bridge",
             "mc-bedrock",
             "mc-java",
             "nb-tester",
         ]
-
-        # Find all containers matching the hardcoded names or the unique test prefix
-        list_cmd = [
-            "docker",
-            "ps",
-            "-aq",
-            "--filter",
-            "name=netherbridge_test_",
-        ]
+        list_cmd = ["docker", "ps", "-aq", "--filter", "name=netherbridge_test_"]
         for name in hardcoded_names_to_remove:
             list_cmd.extend(["--filter", f"name={name}"])
 
         result = subprocess.run(
-            list_cmd,
-            capture_output=True,
-            encoding="utf-8",
-            check=False,
-            env=env_vars,
+            list_cmd, capture_output=True, encoding="utf-8", check=False, env=env_vars
         )
         stale_ids = result.stdout.strip().splitlines()
         if stale_ids:
@@ -138,29 +125,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
         print(f"Warning during aggressive pre-cleanup: {e}")
 
     try:
-        print("Building test images...")
-        build_command = [
-            "docker",
-            "compose",
-            "-p",
-            docker_compose_project_name,
-            "-f",
-            str(compose_file_to_use_abs),
-            "build",
-            "nether-bridge",
-            "nb-tester",
-        ]
-        build_result = subprocess.run(
-            build_command,
-            cwd=pytestconfig.rootdir,
-            capture_output=True,
-            encoding="utf-8",
-            check=True,
-            env=env_vars,
-        )
-        print("Images built successfully.")
-
-        print("Starting all test containers...")
+        print("Bringing up test environment with build step...")
         up_command = [
             "docker",
             "compose",
@@ -169,10 +134,12 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             "-f",
             str(compose_file_to_use_abs),
             "up",
-            "--create-deps",
+            "--build",
+            "--force-recreate",
             "--remove-orphans",
             "-d",
         ]
+
         subprocess.run(
             up_command,
             cwd=pytestconfig.rootdir,
@@ -181,13 +148,41 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             encoding="utf-8",
             env=env_vars,
         )
-        print("All test containers started.")
+        print("Docker Compose environment is up.")
+
+        print("Waiting for nether-bridge container to become healthy...")
+        client = docker.from_env(environment=env_vars)
+        try:
+            container = client.containers.get(
+                f"{docker_compose_project_name}-nether-bridge-1"
+            )
+            timeout = 120
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                container.reload()
+                health_status = (
+                    container.attrs.get("State", {}).get("Health", {}).get("Status")
+                )
+                if health_status == "healthy":
+                    print("Nether-bridge is healthy.")
+                    break
+                time.sleep(2)
+            else:
+                health_log = (
+                    container.attrs.get("State", {}).get("Health", {}).get("Log")
+                )
+                last_log = health_log[-1] if health_log else "No health log."
+                raise Exception(
+                    "Timeout waiting for nether-bridge container to become healthy. "
+                    f"Last status: {health_status}. Last log: {last_log}"
+                )
+        finally:
+            client.close()
 
     except subprocess.CalledProcessError as e:
         print(
             f"Error during Docker Compose setup:\nSTDOUT:\n{e.stdout}\nSTDERR:\n{e.stderr}"
         )
-        # Attempt to capture logs and teardown even if setup fails
         try:
             logs_cmd = [
                 "docker",
@@ -212,7 +207,6 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             )
         except Exception as log_e:
             print(f"Could not retrieve logs during setup failure: {log_e}")
-        # Always attempt teardown
         subprocess.run(
             [
                 "docker",
@@ -235,13 +229,9 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
 
     yield
 
-    # Teardown
-    print(
-        f"\nTests finished. Tearing down Docker Compose project '{docker_compose_project_name}'..."
-    )
-    try:
-        if request.session.testsfailed > 0:
-            print(f"--- DUMPING LOGS DUE TO TEST FAILURE ---")
+    if request.session.testsfailed > 0:
+        print(f"\n--- DUMPING LOGS DUE TO TEST FAILURE ---")
+        try:
             logs_cmd = [
                 "docker",
                 "compose",
@@ -261,7 +251,13 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
                 cwd=pytestconfig.rootdir,
             )
             print(f"\n{logs_result.stdout}\n{logs_result.stderr}")
+        except Exception as log_e:
+            print(f"Could not retrieve logs during test teardown: {log_e}")
 
+    print(
+        f"\nTests finished. Tearing down Docker Compose project '{docker_compose_project_name}'..."
+    )
+    try:
         subprocess.run(
             [
                 "docker",
@@ -285,6 +281,27 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
         )
     except subprocess.CalledProcessError as e:
         print(f"Error tearing down Docker Compose services: {e.stderr}")
+    finally:
+        if temp_compose_file_path_abs and temp_compose_file_path_abs.exists():
+            try:
+                os.remove(str(temp_compose_file_path_abs))
+                print(
+                    f"Cleaned up temporary compose file: {temp_compose_file_path_abs}"
+                )
+            except OSError as e:
+                print(
+                    f"Warning: Could not remove temporary compose file {temp_compose_file_path_abs}: {e}"
+                )
+        if temp_compose_file_dir and temp_compose_file_dir.exists():
+            try:
+                shutil.rmtree(temp_compose_file_dir, ignore_errors=True)
+                print(
+                    f"Cleaned up temporary compose directory: {temp_compose_file_dir}"
+                )
+            except OSError as e:
+                print(
+                    f"Warning: Could not remove temporary directory {temp_compose_file_dir}: {e}"
+                )
 
 
 @pytest.fixture(scope="session")
