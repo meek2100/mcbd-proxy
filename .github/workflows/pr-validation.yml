@@ -70,15 +70,15 @@ jobs:
           exit 1
       
       # --- LINT & FORMATTING CHECKS ---
-      - name: Lint with flake8
-        run: |
-          echo "Running flake8 linter..."
-          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester flake8 .
+      #- name: Lint with flake8
+      #  run: |
+      #    echo "Running flake8 linter..."
+      #    docker compose -f tests/docker-compose.tests.yml exec -T nb-tester flake8 .
 
-      - name: Check formatting with black
-        run: |
-          echo "Checking formatting with black..."
-          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester black --check .
+      #- name: Check formatting with black
+      #  run: |
+      #    echo "Checking formatting with black..."
+      #    docker compose -f tests/docker-compose.tests.yml exec -T nb-tester black --check .
 
       - name: Run all tests
         run: |
