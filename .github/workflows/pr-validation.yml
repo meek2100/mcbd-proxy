@@ -4,7 +4,6 @@ on:
   pull_request:
     branches: [ main ]
 
-# Add permissions to allow writing the cache to the GitHub Packages registry
 permissions:
   contents: read
   packages: write
@@ -27,21 +26,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # This new step replaces 'docker compose build'
-      - name: Build test images with cache
+      # STEP 1: Build the main 'nether-bridge' image
+      - name: Build 'nether-bridge' image with cache
         uses: docker/build-push-action@v5
         with:
           context: .
-          # The tags must match what's in docker-compose.tests.yml
-          tags: |
-            nether-bridge:local
-            nb-tester:local
-          # The 'testing' stage is the target for the nb-tester image
-          target: testing
-          # Load the images into the local Docker daemon instead of pushing to a real repo
+          tags: nether-bridge:local
+          # No target needed; builds the final stage by default
           load: true
           push: false
-          # Configure caching to use the GitHub Container Registry
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr,mode=max
+
+      # STEP 2: Build the 'nb-tester' image
+      - name: Build 'nb-tester' image with cache
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          tags: nb-tester:local
+          # Specify the 'testing' stage for this image only
+          target: testing
+          load: true
+          push: false
           cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr
           cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr,mode=max
 
