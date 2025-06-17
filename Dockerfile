@@ -11,16 +11,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 FROM base AS testing
 WORKDIR /app
 
-# Install system dependencies needed for conftest.py to run docker commands
-RUN apt-get update && apt-get install -y curl gnupg
-RUN install -m 0755 -d /etc/apt/keyrings
-RUN curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
-RUN chmod a+r /etc/apt/keyrings/docker.asc
-RUN echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian \
-  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
-  tee /etc/apt/sources.list.d/docker.list > /dev/null
-RUN apt-get update && apt-get install -y docker-ce-cli docker-compose-plugin
+# The Docker CLI is NOT needed, as tests use the docker-py library
+# via the mounted docker socket. The RUN commands for apt-get have been removed.
 
 # Explicitly copy all source and test files into the image
 COPY nether_bridge.py .

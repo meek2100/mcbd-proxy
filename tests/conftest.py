@@ -61,7 +61,6 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
     If running in CI_MODE, this fixture does nothing, as the CI workflow
     is responsible for service lifecycle management.
     """
-    # In CI, the workflow file handles setup/teardown. This fixture should be a no-op.
     if os.environ.get("CI_MODE"):
         print("CI_MODE detected. Skipping Docker Compose management from conftest.")
         yield
@@ -71,56 +70,31 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
         "--compose-file"
     )
 
-    temp_compose_file_dir = None
-    temp_compose_file_path_abs = None
-
     env_vars = os.environ.copy()
     if _local_docker_host_from_file:
         env_vars["DOCKER_HOST"] = _local_docker_host_from_file
         print(f"Passing DOCKER_HOST={env_vars['DOCKER_HOST']} to subprocess commands.")
-    elif "DOCKER_HOST" in env_vars:
-        print(
-            "DOCKER_HOST is already set in environment for subprocesses: "
-            f"{env_vars['DOCKER_HOST']}"
-        )
     else:
-        print(
-            "DOCKER_HOST not set by local_env.py or host environment. "
-            "Subprocesses will use default Docker context."
-        )
+        print("Subprocesses will use default Docker context.")
 
     print(
-        f"\nStarting Docker Compose project '{docker_compose_project_name}' from "
-        f"{compose_file_to_use_abs}..."
+        f"\nStarting Docker Compose project '{docker_compose_project_name}' from {compose_file_to_use_abs}..."
     )
 
-    print("Performing aggressive pre-cleanup of any stale test containers...")
+    # Aggressive pre-cleanup logic
     try:
-        # Combined list of names to check for and remove
         hardcoded_names_to_remove = [
             "nether-bridge",
             "mc-bedrock",
             "mc-java",
             "nb-tester",
         ]
-
-        # Find all containers matching the hardcoded names or the unique test prefix
-        list_cmd = [
-            "docker",
-            "ps",
-            "-aq",
-            "--filter",
-            "name=netherbridge_test_",
-        ]
+        list_cmd = ["docker", "ps", "-aq", "--filter", "name=netherbridge_test_"]
         for name in hardcoded_names_to_remove:
             list_cmd.extend(["--filter", f"name={name}"])
 
         result = subprocess.run(
-            list_cmd,
-            capture_output=True,
-            encoding="utf-8",
-            check=False,
-            env=env_vars,
+            list_cmd, capture_output=True, encoding="utf-8", check=False, env=env_vars
         )
         stale_ids = result.stdout.strip().splitlines()
         if stale_ids:
@@ -138,29 +112,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
         print(f"Warning during aggressive pre-cleanup: {e}")
 
     try:
-        print("Building test images...")
-        build_command = [
-            "docker",
-            "compose",
-            "-p",
-            docker_compose_project_name,
-            "-f",
-            str(compose_file_to_use_abs),
-            "build",
-            "nether-bridge",
-            "nb-tester",
-        ]
-        build_result = subprocess.run(
-            build_command,
-            cwd=pytestconfig.rootdir,
-            capture_output=True,
-            encoding="utf-8",
-            check=True,
-            env=env_vars,
-        )
-        print("Images built successfully.")
-
-        print("Starting all test containers...")
+        print("Bringing up test environment with build step...")
         up_command = [
             "docker",
             "compose",
@@ -169,7 +121,8 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             "-f",
             str(compose_file_to_use_abs),
             "up",
-            "--create-deps",
+            "--build",
+            "--force-recreate",
             "--remove-orphans",
             "-d",
         ]
@@ -181,13 +134,38 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             encoding="utf-8",
             env=env_vars,
         )
-        print("All test containers started.")
+        print("Docker Compose 'up' command completed.")
 
-    except subprocess.CalledProcessError as e:
-        print(
-            f"Error during Docker Compose setup:\nSTDOUT:\n{e.stdout}\nSTDERR:\n{e.stderr}"
-        )
-        # Attempt to capture logs and teardown even if setup fails
+        # Manual health check loop
+        print("Waiting for nether-bridge proxy to be ready...")
+        client = docker.from_env(environment=env_vars)
+        try:
+            # **FIX:** Use the static container_name from the docker-compose file
+            container_name = "nether-bridge"
+            container = client.containers.get(container_name)
+            timeout = 120
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                exit_code, _ = container.exec_run(
+                    ["python", "nether_bridge.py", "--healthcheck"]
+                )
+                if exit_code == 0:
+                    print("Nether-bridge proxy is healthy.")
+                    break
+                print("Proxy not healthy yet. Retrying in 5 seconds...")
+                time.sleep(5)
+            else:
+                _, output = container.exec_run(
+                    ["python", "nether_bridge.py", "--healthcheck"]
+                )
+                raise Exception(
+                    f"Timeout waiting for nether-bridge container to become healthy. Last output: {output.decode()}"
+                )
+        finally:
+            client.close()
+
+    except Exception as e:
+        print(f"Error during Docker Compose setup: {e}")
         try:
             logs_cmd = [
                 "docker",
@@ -235,13 +213,9 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
 
     yield
 
-    # Teardown
-    print(
-        f"\nTests finished. Tearing down Docker Compose project '{docker_compose_project_name}'..."
-    )
-    try:
-        if request.session.testsfailed > 0:
-            print(f"--- DUMPING LOGS DUE TO TEST FAILURE ---")
+    if request.session.testsfailed > 0:
+        print(f"\n--- DUMPING LOGS DUE TO TEST FAILURE ---")
+        try:
             logs_cmd = [
                 "docker",
                 "compose",
@@ -261,30 +235,31 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
                 cwd=pytestconfig.rootdir,
             )
             print(f"\n{logs_result.stdout}\n{logs_result.stderr}")
+        except Exception as log_e:
+            print(f"Could not retrieve logs during test teardown: {log_e}")
 
-        subprocess.run(
-            [
-                "docker",
-                "compose",
-                "-p",
-                docker_compose_project_name,
-                "-f",
-                str(compose_file_to_use_abs),
-                "down",
-                "-v",
-                "--remove-orphans",
-            ],
-            check=True,
-            capture_output=True,
-            encoding="utf-8",
-            env=env_vars,
-            cwd=pytestconfig.rootdir,
-        )
-        print(
-            f"Docker Compose project '{docker_compose_project_name}' stopped and removed."
-        )
-    except subprocess.CalledProcessError as e:
-        print(f"Error tearing down Docker Compose services: {e.stderr}")
+    print(
+        f"\nTests finished. Tearing down Docker Compose project '{docker_compose_project_name}'..."
+    )
+    subprocess.run(
+        [
+            "docker",
+            "compose",
+            "-p",
+            docker_compose_project_name,
+            "-f",
+            str(compose_file_to_use_abs),
+            "down",
+            "-v",
+            "--remove-orphans",
+        ],
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+        env=env_vars,
+        cwd=pytestconfig.rootdir,
+    )
+    print("Teardown complete.")
 
 
 @pytest.fixture(scope="session")
@@ -294,19 +269,11 @@ def docker_client_fixture():
     try:
         if _local_docker_host_from_file:
             client = docker.DockerClient(base_url=_local_docker_host_from_file)
-            print(
-                f"\nConnecting Docker client to remote: {_local_docker_host_from_file}"
-            )
         else:
             client = docker.from_env()
-            print("\nConnecting Docker client using default environment.")
-
         client.ping()
-        print("Successfully connected to Docker daemon.")
     except Exception as e:
-        pytest.fail(
-            f"Could not connect to Docker daemon for client fixture. Error: {e}"
-        )
+        pytest.fail(f"Could not connect to Docker daemon. Error: {e}")
 
     yield client
 
