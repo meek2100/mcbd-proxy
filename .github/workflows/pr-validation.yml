@@ -22,24 +22,19 @@ jobs:
           python-version: '3.10'
 
       - name: Set COMPOSE_PROJECT_PATH for CI environment
-        # This tells docker compose where the project root is, important for build contexts
-        # and consistent behavior when docker-compose.tests.yml is in a subdirectory.
         run: echo "COMPOSE_PROJECT_PATH=$(pwd)" >> $GITHUB_ENV
 
-      - name: Set up Docker Buildx (may ensure docker compose is available)
+      - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Force Rebuild Test Images (no cache)
-        # Explicitly build the nether-bridge and nb-tester images without cache.
-        # This forces them to pick up any code changes.
         run: |
           docker compose -f tests/docker-compose.tests.yml build --no-cache nether-bridge nb-tester
 
       - name: Start Test Environment
-        # Now, bring up all services. They will use the freshly built images.
         run: |
           docker compose -f tests/docker-compose.tests.yml up -d --remove-orphans
-        id: start-env # Add an ID to reference this step later
+        id: start-env
 
       - name: Show Directory Structure Inside Tester Container
         run: |
@@ -50,31 +45,20 @@ jobs:
         run: |
           PROXY_IP=$(docker inspect nether-bridge | jq -r '.[0].NetworkSettings.Networks | .[] | .IPAddress')
           echo "Found nether-bridge IP: ${PROXY_IP}"
-          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester env PROXY_IP=${PROXY_IP} python -m pytest --cov=nether_bridge --cov-report term-missing --compose-file /app/tests/docker-compose.tests.yml
-        id: run-tests # Add an ID to reference this step
+          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester env CI_MODE=true PROXY_IP=${PROXY_IP} python -m pytest --cov=nether_bridge --cov-report term-missing --compose-file /app/tests/docker-compose.tests.yml
+        id: run-tests
 
       - name: Dump All Container Logs on Failure
-        # This step will run ALWAYS, and dump logs if the 'start-env' or 'run-tests' steps failed.
-        # It's crucial to put this *before* the teardown.
-        if: ${{ failure() || steps['start-env'].outcome == 'failure' || steps['run-tests'].outcome == 'failure' }}
+        if: ${{ failure() }}
         run: |
           echo "--- DUMPING ALL CONTAINER LOGS DUE TO FAILURE ---"
-          echo "--- nether-bridge logs ---"
-          docker logs nether-bridge || true # `|| true` prevents this step from failing if container already removed/non-existent
-          echo "--- mc-bedrock logs ---"
-          docker logs mc-bedrock || true
-          echo "--- mc-java logs ---"
-          docker logs mc-java || true
-          echo "--- nb-tester logs ---"
-          docker logs nb-tester || true
-          echo "--- Docker Compose PS (all containers) ---"
           docker compose -f tests/docker-compose.tests.yml ps -a
           echo "--- Docker Compose logs (all services) ---"
-          docker compose -f tests/docker-compose.tests.yml logs
+          docker compose -f tests/docker-compose.tests.yml logs --no-color
           echo "--- END LOG DUMP ---"
 
       - name: Tear down test environment
-        if: always() # Ensure teardown always runs, even if previous steps failed
+        if: always()
         run: |
           echo "Tearing down Docker Compose environment..."
           docker compose -f tests/docker-compose.tests.yml down -v --remove-orphans
