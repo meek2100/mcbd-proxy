@@ -1,5 +1,6 @@
 # tests/docker-compose.tests.yml
 services:
+  # The on-demand Minecraft proxy service
   nether-bridge:
     image: nether-bridge:local
     container_name: nether-bridge
@@ -36,13 +37,7 @@ services:
       - NB_2_LISTEN_PORT=25565
       - NB_2_CONTAINER_NAME=mc-java
       - NB_2_INTERNAL_PORT=25565
-    # Add the healthcheck back so the CI workflow can monitor it.
-    healthcheck:
-      test: ["CMD", "python", "nether_bridge.py", "--healthcheck"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
+    # This ensures the Minecraft containers are started before the proxy.
     depends_on:
       - mc-bedrock
       - mc-java
