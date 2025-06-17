@@ -30,10 +30,10 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Force Rebuild Test Images (no cache)
-        # Explicitly build the nether-bridge and tester images without cache.
+        # Explicitly build the nether-bridge and nb-tester images without cache.
         # This forces them to pick up any code changes.
         run: |
-          docker compose -f tests/docker-compose.tests.yml build --no-cache nether-bridge tester
+          docker compose -f tests/docker-compose.tests.yml build --no-cache nether-bridge nb-tester
 
       - name: Start Test Environment
         # Now, bring up all services. They will use the freshly built images.
@@ -43,14 +43,14 @@ jobs:
 
       - name: Show Directory Structure Inside Tester Container
         run: |
-          echo "Listing files and directory structure inside the 'tester' container at /app..."
-          docker compose -f tests/docker-compose.tests.yml exec -T tester ls -lR /app
+          echo "Listing files and directory structure inside the 'nb-tester' container at /app..."
+          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester ls -lR /app
 
       - name: Run all tests
         run: |
           PROXY_IP=$(docker inspect nether-bridge | jq -r '.[0].NetworkSettings.Networks | .[] | .IPAddress')
           echo "Found nether-bridge IP: ${PROXY_IP}"
-          docker compose -f tests/docker-compose.tests.yml exec -T tester env PROXY_IP=${PROXY_IP} python -m pytest --cov=nether_bridge --cov-report term-missing --compose-file /app/tests/docker-compose.tests.yml
+          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester env PROXY_IP=${PROXY_IP} python -m pytest --cov=nether_bridge --cov-report term-missing --compose-file /app/tests/docker-compose.tests.yml
         id: run-tests # Add an ID to reference this step
 
       - name: Dump All Container Logs on Failure
@@ -65,8 +65,8 @@ jobs:
           docker logs mc-bedrock || true
           echo "--- mc-java logs ---"
           docker logs mc-java || true
-          echo "--- tester logs ---"
-          docker logs tests-tester-1 || true
+          echo "--- nb-tester logs ---"
+          docker logs nb-tester || true
           echo "--- Docker Compose PS (all containers) ---"
           docker compose -f tests/docker-compose.tests.yml ps -a
           echo "--- Docker Compose logs (all services) ---"
