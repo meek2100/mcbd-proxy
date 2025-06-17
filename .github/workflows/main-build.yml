@@ -1,3 +1,4 @@
+# .github/workflows/main-build.yml
 name: Build and Push Release Image
 
 on:
@@ -5,68 +6,16 @@ on:
     branches:
       - main
     tags:
-      - 'v*.*.*' # Also trigger on version tags like v1.0.0
+      - 'v*.*.*'
   workflow_dispatch:
 
 jobs:
-  build-and-push:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      # Add this permission if you plan to create GitHub Releases automatically
-      # releases: write
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/mcbd-proxy # Updated image name
-          tags: |
-            type=semver,pattern={{version}} # For v1.0.0, v1.0.1 etc.
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }} # 'latest' only on main branch pushes
-          labels: |
-            org.opencontainers.image.source=${{ github.event.repository.html_url }}
-            org.opencontainers.image.created=${{ steps.meta.outputs.created }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ steps.meta.outputs.version }} # Use the extracted version
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push Docker image
-        id: build-and-push
-        uses: docker/build-push-action@v5
-        with:
-          context: ./
-          file: ./Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            BUILD_DATE=${{ steps.meta.outputs.created }}
-            APP_VERSION=${{ steps.meta.outputs.version }} # Use the extracted version
-            VCS_REF=${{ github.sha }}
-
-      # Optional: Create a GitHub Release automatically when a new tag is pushed
-      # - name: Create GitHub Release
-      #   if: startsWith(github.ref, 'refs/tags/v')
-      #   uses: softprops/action-gh-release@v1
-      #   with:
-      #     tag_name: ${{ github.ref_name }}
-      #     name: Release ${{ github.ref_name }}
-      #     body: |
-      #       See changes in: ${{ github.event.compare }}
-      #     draft: false
-      #     prerelease: false
+  call-reusable-build:
+    uses: ./.github/workflows/reusable-build.yml
+    with:
+      image_name: ghcr.io/${{ github.repository_owner }}/nether-bridge # Final Production Name
+      tags: |
+        type=semver,pattern={{version}}
+        type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+      app_version: ${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
+    secrets: inherit
