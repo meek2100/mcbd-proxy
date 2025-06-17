@@ -1,5 +1,5 @@
-# Main application dependencies
--r ../requirements.txt
+# Main application dependencies, referenced by absolute path inside the container
+-r /app/requirements.txt
 
 # Testing, Linting, and Formatting Tools
 pytest

@@ -1,8 +1,8 @@
 # tests/docker-compose.tests.yml
-# This file is configured for self-contained integration testing.
 services:
+  # The on-demand Minecraft proxy service
   nether-bridge:
-    image: nether-bridge-test:local
+    image: nether-bridge:local
     container_name: nether-bridge
     build:
       context: ../
@@ -51,7 +51,6 @@ services:
     networks:
       - mc-network
     volumes:
-      # Use a named volume instead of a bind mount
       - mc-bedrock-data:/data
     environment:
       - EULA=TRUE
@@ -66,7 +65,6 @@ services:
     networks:
       - mc-network
     volumes:
-      # Use a named volume instead of a bind mount
       - mc-java-data:/data
     environment:
       - EULA=TRUE
@@ -76,12 +74,29 @@ services:
       - JVM_ARGS=-Xmx512M -Xms512M
       - IDLE_TIMEOUT=-1
       - ONLINE_MODE=FALSE
+  
+  nb-tester:
+    image: nb-tester:local
+    container_name: nb-tester
+    build:
+      context: ../
+      dockerfile: Dockerfile
+      target: testing
+    networks:
+      - mc-network
+    volumes:
+      # ADD THIS LINE: Give the tester container access to the Docker socket
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: ""
+    command: /bin/bash -c "while true; do sleep 1; done"
+    depends_on:
+      nether-bridge:
+        condition: service_healthy
 
 networks:
   mc-network:
     driver: bridge
 
-# Define the named volumes at the top level
 volumes:
   mc-bedrock-data:
   mc-java-data:
