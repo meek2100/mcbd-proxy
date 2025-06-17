@@ -45,21 +45,6 @@ jobs:
       - name: Start Test Environment
         run: docker compose -f tests/docker-compose.tests.yml up -d --remove-orphans
         id: start-env
-
-      - name: Wait for Nether-bridge to be healthy
-        run: |
-          echo "Waiting for nether-bridge container to be healthy..."
-          for i in {1..24}; do
-            status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' nether-bridge)
-            if [ "$status" == "healthy" ]; then
-              echo "Nether-bridge is healthy!"
-              exit 0
-            fi
-            echo "Current status: $status. Waiting 5s..."
-            sleep 5
-          done
-          echo "Timeout: Nether-bridge did not become healthy after 2 minutes."
-          exit 1
       
       - name: Run all tests
         run: |
