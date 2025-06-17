@@ -162,7 +162,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             str(compose_file_to_use_abs),  # Use original compose file path
             "build",
             "nether-bridge",
-            "tester",
+            "nb-tester",
         ]
 
         print(f"Running build command from CWD: {pytestconfig.rootdir}")
@@ -191,7 +191,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
                 output=build_result.stdout,
                 stderr=build_result.stderr,
             )
-        print("Nether-bridge and Tester images built successfully (or up-to-date).")
+        print("Nether-bridge and nb-tester images built successfully (or up-to-date).")
 
         create_command = [
             "docker",
@@ -219,10 +219,10 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             "-p",
             docker_compose_project_name,
             "-f",
-            str(compose_file_to_use_abs),  # Use original compose file path
+            str(compose_file_to_use_abs),
             "start",
             "nether-bridge",
-            "nether-bridge-tester",  # Use explicit container name
+            "nb-tester",
         ]
         print(f"Running command: {' '.join(start_command)}")
         subprocess.run(
@@ -233,7 +233,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             encoding="utf-8",
             env=env_vars,
         )
-        print("Nether-bridge and Tester containers started.")
+        print("Nether-bridge and nb-tester containers started.")
 
         print("Waiting for nether-bridge container to become healthy...")
         # Create a new docker client for health checks, explicitly using the determined DOCKER_HOST

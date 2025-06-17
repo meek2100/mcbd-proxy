@@ -18,7 +18,7 @@ def get_proxy_host():
     """
     Helper function to get the target host for integration tests.
     In CI/CD, the actual IP of the 'nether-bridge' container is passed
-    as an environment variable to the 'tester' container.
+    as an environment variable to the 'nb-tester' container.
     Locally with remote Docker, local_env.py sets VM_HOST_IP.
     Otherwise, default to '127.0.0.1' for local Docker Desktop.
     """

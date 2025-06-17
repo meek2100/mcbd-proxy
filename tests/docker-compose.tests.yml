@@ -80,8 +80,8 @@ services:
       - IDLE_TIMEOUT=-1 # Prevent MC server itself from shutting down
       - ONLINE_MODE=FALSE # Faster startup, no Mojang auth needed for tests
   
-  tester:
-    image: tester:local # Explicit image name
+  nb-tester:
+    image: nb-tester:local # Explicit image name
     container_name: nb-tester # Explicit container name
     build:
       context: ../ # This is the correct context relative to this file to find the Dockerfile
