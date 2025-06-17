@@ -4,7 +4,6 @@ on:
   pull_request:
     branches: [ main ]
 
-# Add this permissions block to allow writing the cache to the registry
 permissions:
   contents: read
   packages: write
@@ -40,20 +39,31 @@ jobs:
           cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr
           cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr,mode=max
 
-      - name: Ensure local_env.py is absent in CI
-        run: |
-          rm -f tests/local_env.py || true
-
-      - name: Set COMPOSE_PROJECT_PATH for CI environment
-        run: echo "COMPOSE_PROJECT_PATH=$(pwd)" >> $GITHUB_ENV
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
 
       - name: Start Test Environment
-        run: |
-          docker compose -f tests/docker-compose.tests.yml up -d --remove-orphans
+        run: docker compose -f tests/docker-compose.tests.yml up -d --remove-orphans
         id: start-env
 
+      - name: Wait for Nether-bridge to be healthy
+        run: |
+          echo "Waiting for nether-bridge container to be healthy..."
+          for i in {1..24}; do
+            status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' nether-bridge)
+            if [ "$status" == "healthy" ]; then
+              echo "Nether-bridge is healthy!"
+              exit 0
+            fi
+            echo "Current status: $status. Waiting 5s..."
+            sleep 5
+          done
+          echo "Timeout: Nether-bridge did not become healthy after 2 minutes."
+          exit 1
+      
       - name: Run all tests
         run: |
+          # Reverted to the more robust, generic jq query
           PROXY_IP=$(docker inspect nether-bridge | jq -r '.[0].NetworkSettings.Networks | .[] | .IPAddress')
           echo "Found nether-bridge IP: ${PROXY_IP}"
           docker compose -f tests/docker-compose.tests.yml exec -T nb-tester env CI_MODE=true PROXY_IP=${PROXY_IP} python -m pytest --cov=nether_bridge --cov-report term-missing
