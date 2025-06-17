@@ -4,6 +4,10 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   validate-and-test:
     runs-on: ubuntu-latest
@@ -12,40 +16,75 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Ensure local_env.py is absent in CI
-        run: |
-          rm -f tests/local_env.py || true
-
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Set COMPOSE_PROJECT_PATH for CI environment
-        run: echo "COMPOSE_PROJECT_PATH=$(pwd)" >> $GITHUB_ENV
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Force Rebuild Test Images (no cache)
-        run: |
-          docker compose -f tests/docker-compose.tests.yml build --no-cache nether-bridge nb-tester
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build 'nether-bridge' image with cache
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          tags: nether-bridge:local
+          load: true
+          push: false
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr,mode=max
+
+      - name: Build 'nb-tester' image with cache
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          tags: nb-tester:local
+          target: testing
+          load: true
+          push: false
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr,mode=max
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
 
       - name: Start Test Environment
-        run: |
-          docker compose -f tests/docker-compose.tests.yml up -d --remove-orphans
+        run: docker compose -f tests/docker-compose.tests.yml up -d --remove-orphans
         id: start-env
 
-      - name: Show Directory Structure Inside Tester Container
+      - name: Wait for Nether-bridge to be healthy
         run: |
-          echo "Listing files and directory structure inside the 'nb-tester' container at /app..."
-          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester ls -lR /app
+          echo "Waiting for nether-bridge container to be healthy..."
+          for i in {1..24}; do
+            status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' nether-bridge)
+            if [ "$status" == "healthy" ]; then
+              echo "Nether-bridge is healthy!"
+              exit 0
+            fi
+            echo "Current status: $status. Waiting 5s..."
+            sleep 5
+          done
+          echo "Timeout: Nether-bridge did not become healthy after 2 minutes."
+          exit 1
+      
+      # --- LINT & FORMATTING CHECKS ---
+      #- name: Lint with flake8
+      #  run: |
+      #    echo "Running flake8 linter..."
+      #    docker compose -f tests/docker-compose.tests.yml exec -T nb-tester flake8 .
+
+      #- name: Check formatting with black
+      #  run: |
+      #    echo "Checking formatting with black..."
+      #    docker compose -f tests/docker-compose.tests.yml exec -T nb-tester black --check .
 
       - name: Run all tests
         run: |
           PROXY_IP=$(docker inspect nether-bridge | jq -r '.[0].NetworkSettings.Networks | .[] | .IPAddress')
           echo "Found nether-bridge IP: ${PROXY_IP}"
-          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester env CI_MODE=true PROXY_IP=${PROXY_IP} python -m pytest --cov=nether_bridge --cov-report term-missing --compose-file /app/tests/docker-compose.tests.yml
+          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester env CI_MODE=true PROXY_IP=${PROXY_IP} python -m pytest --cov=nether_bridge --cov-report term-missing
         id: run-tests
 
       - name: Dump All Container Logs on Failure

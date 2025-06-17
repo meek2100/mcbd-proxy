@@ -1,0 +1,9 @@
+# Reference the production requirements
+-r ../requirements.in
+
+# Add the development/testing tools
+pytest
+pytest-mock
+pytest-cov
+flake8
+black

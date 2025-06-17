@@ -33,8 +33,8 @@ COPY --from=base /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.
 
 # Copy only the necessary application code and default configs.
 COPY nether_bridge.py .
-COPY settings.json .
-COPY servers.json .
+COPY examples/settings.json .
+COPY examples/servers.json .
 
 # Expose all necessary ports for the proxy and metrics.
 EXPOSE 19132/udp

@@ -38,6 +38,15 @@ services:
       - NB_2_LISTEN_PORT=25565
       - NB_2_CONTAINER_NAME=mc-java
       - NB_2_INTERNAL_PORT=25565
+    healthcheck:
+      test: ["CMD", "python", "nether_bridge.py", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      - mc-bedrock
+      - mc-java
 
   mc-bedrock:
     image: itzg/minecraft-bedrock-server:latest
