@@ -89,9 +89,9 @@ services:
       target: testing # Builds the testing stage
     networks:
       - mc-network
-    # REMOVE ALL VOLUMES FOR THE TESTER SERVICE.
+    # REMOVE ALL VOLUMES FOR THE NB-TESTER SERVICE.
     # Its code should be copied into the image by its Dockerfile.
-    # No host bind mounts for tester.
+    # No host bind mounts for nb-tester.
     entrypoint: ""
     command: /bin/bash -c "while true; do sleep 1; done" # Keep container alive for exec
     depends_on:
