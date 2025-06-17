@@ -27,7 +27,9 @@ try:
 
     _local_docker_host_from_file = LOCAL_DOCKER_HOST_VALUE
     os.environ["DOCKER_HOST"] = LOCAL_DOCKER_HOST_VALUE
-    print(f"Using local DOCKER_HOST from local_env.py: {LOCAL_DOCKER_HOST_VALUE}")
+    print(
+        f"Using local DOCKER_HOST from local_env.py: {LOCAL_DOCKER_HOST_VALUE}"
+    )
 
 except ImportError:
     print(
@@ -63,13 +65,15 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
     """
     # In CI, the workflow file handles setup/teardown. This fixture should be a no-op.
     if os.environ.get("CI_MODE"):
-        print("CI_MODE detected. Skipping Docker Compose management from conftest.")
+        print(
+            "CI_MODE detected. Skipping Docker Compose management from conftest."
+        )
         yield
         return
 
-    compose_file_to_use_abs = Path(pytestconfig.rootdir) / pytestconfig.getoption(
-        "--compose-file"
-    )
+    compose_file_to_use_abs = Path(
+        pytestconfig.rootdir
+    ) / pytestconfig.getoption("--compose-file")
 
     temp_compose_file_dir = None
     temp_compose_file_path_abs = None
@@ -77,7 +81,9 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
     env_vars = os.environ.copy()
     if _local_docker_host_from_file:
         env_vars["DOCKER_HOST"] = _local_docker_host_from_file
-        print(f"Passing DOCKER_HOST={env_vars['DOCKER_HOST']} to subprocess commands.")
+        print(
+            f"Passing DOCKER_HOST={env_vars['DOCKER_HOST']} to subprocess commands."
+        )
     elif "DOCKER_HOST" in env_vars:
         print(
             "DOCKER_HOST is already set in environment for subprocesses: "
@@ -102,12 +108,22 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             "mc-java",
             "nb-tester",
         ]
-        list_cmd = ["docker", "ps", "-aq", "--filter", "name=netherbridge_test_"]
+        list_cmd = [
+            "docker",
+            "ps",
+            "-aq",
+            "--filter",
+            "name=netherbridge_test_",
+        ]
         for name in hardcoded_names_to_remove:
             list_cmd.extend(["--filter", f"name={name}"])
 
         result = subprocess.run(
-            list_cmd, capture_output=True, encoding="utf-8", check=False, env=env_vars
+            list_cmd,
+            capture_output=True,
+            encoding="utf-8",
+            check=False,
+            env=env_vars,
         )
         stale_ids = result.stdout.strip().splitlines()
         if stale_ids:
@@ -158,7 +174,9 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             while time.time() - start_time < timeout:
                 container.reload()
                 health_status = (
-                    container.attrs.get("State", {}).get("Health", {}).get("Status")
+                    container.attrs.get("State", {})
+                    .get("Health", {})
+                    .get("Status")
                 )
                 if health_status == "healthy":
                     print("Nether-bridge is healthy.")
@@ -166,7 +184,9 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
                 time.sleep(2)
             else:
                 health_log = (
-                    container.attrs.get("State", {}).get("Health", {}).get("Log")
+                    container.attrs.get("State", {})
+                    .get("Health", {})
+                    .get("Log")
                 )
                 last_log = health_log[-1] if health_log else "No health log."
                 raise Exception(
@@ -322,7 +342,9 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
     except subprocess.CalledProcessError as e:
         print(f"Error tearing down Docker Compose services: {e.stderr}")
     except Exception as e:
-        print(f"An unexpected error occurred during Docker Compose teardown: {e}")
+        print(
+            f"An unexpected error occurred during Docker Compose teardown: {e}"
+        )
     finally:
         if temp_compose_file_path_abs and temp_compose_file_path_abs.exists():
             try:
@@ -360,7 +382,9 @@ def docker_client_fixture():
             )
 
         client.ping()
-        print("Successfully connected to Docker daemon for Docker client fixture.")
+        print(
+            "Successfully connected to Docker daemon for Docker client fixture."
+        )
     except docker.errors.DockerException as e:
         pytest.fail(
             "Could not connect to Docker daemon for client fixture. "

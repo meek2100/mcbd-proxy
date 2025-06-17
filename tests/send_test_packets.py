@@ -68,12 +68,16 @@ def get_java_handshake_and_status_request_packets(host, port):
 
 def test_bedrock_server():
     """Sends a UDP packet to trigger the Bedrock server and listens for a response."""
-    print(f"--- Testing Bedrock (UDP) -> {TARGET_HOST}:{BEDROCK_PROXY_PORT} ---")
+    print(
+        f"--- Testing Bedrock (UDP) -> {TARGET_HOST}:{BEDROCK_PROXY_PORT} ---"
+    )
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(5)
     try:
         print("Sending Unconnected Ping packet to proxy...")
-        sock.sendto(BEDROCK_UNCONNECTED_PING, (TARGET_HOST, BEDROCK_PROXY_PORT))
+        sock.sendto(
+            BEDROCK_UNCONNECTED_PING, (TARGET_HOST, BEDROCK_PROXY_PORT)
+        )
         print("Packet sent. Waiting for response...")
 
         data, addr = sock.recvfrom(4096)
@@ -83,7 +87,9 @@ def test_bedrock_server():
                 "Response contains 'MCPE', server is likely up and responding correctly."
             )
         else:
-            print("Response received, but may not be a standard Minecraft pong packet.")
+            print(
+                "Response received, but may not be a standard Minecraft pong packet."
+            )
 
     except socket.timeout:
         print(
@@ -105,10 +111,14 @@ def test_java_server():
     try:
         print("Attempting to connect to proxy...")
         sock.connect((TARGET_HOST, JAVA_PROXY_PORT))
-        print("Connection successful. Sending handshake and status request packets...")
+        print(
+            "Connection successful. Sending handshake and status request packets..."
+        )
 
-        handshake, status_request = get_java_handshake_and_status_request_packets(
-            TARGET_HOST, JAVA_PROXY_PORT
+        handshake, status_request = (
+            get_java_handshake_and_status_request_packets(
+                TARGET_HOST, JAVA_PROXY_PORT
+            )
         )
 
         sock.sendall(handshake)
