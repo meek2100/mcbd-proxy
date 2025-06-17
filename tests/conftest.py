@@ -121,7 +121,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             "nether-bridge",
             "mc-bedrock",
             "mc-java",
-            "nether-bridge-tester",  # Updated name
+            "nb-tester",
         ]
         for name in hardcoded_names_to_remove:
             list_cmd_hardcoded = ["docker", "ps", "-aq", "--filter", f"name={name}"]

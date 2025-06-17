@@ -82,7 +82,7 @@ services:
   
   tester:
     image: tester:local # Explicit image name
-    container_name: nether-bridge-tester # Explicit container name
+    container_name: nb-tester # Explicit container name
     build:
       context: ../ # This is the correct context relative to this file to find the Dockerfile
       dockerfile: Dockerfile
