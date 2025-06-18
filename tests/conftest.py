@@ -8,37 +8,41 @@ from pathlib import Path
 import docker
 import pytest
 
-# Try to load local environment specific IP and DOCKER_HOST for testing
+# --- NEW: Profile Handling Logic ---
+# Read the test mode from an environment variable. Default to 'local'.
+TEST_MODE = os.environ.get("TEST_MODE", "local")
+print(f"Running in TEST_MODE: '{TEST_MODE}'")
+
 _local_vm_host_ip = None
 _local_docker_host_from_file = None
 
-try:
-    current_tests_dir = str(Path(__file__).parent)
-    if current_tests_dir not in sys.path:
-        sys.path.insert(0, current_tests_dir)
+# Conditionally load local_env.py only in 'remote' mode
+if TEST_MODE == "remote":
+    try:
+        # Temporarily add the tests directory to the path to find local_env
+        current_tests_dir = str(Path(__file__).parent)
+        if current_tests_dir not in sys.path:
+            sys.path.insert(0, current_tests_dir)
 
-    from local_env import VM_HOST_IP as LOCAL_VM_HOST_IP
+        from local_env import DOCKER_HOST as LOCAL_DOCKER_HOST_VALUE
+        from local_env import VM_HOST_IP as LOCAL_VM_HOST_IP
 
-    _local_vm_host_ip = LOCAL_VM_HOST_IP
-    os.environ["VM_HOST_IP"] = LOCAL_VM_HOST_IP
-    print(f"Using local VM_HOST_IP from local_env.py: {LOCAL_VM_HOST_IP}")
+        _local_vm_host_ip = LOCAL_VM_HOST_IP
+        os.environ["VM_HOST_IP"] = LOCAL_VM_HOST_IP
+        print(f"Using remote VM_HOST_IP from local_env.py: {LOCAL_VM_HOST_IP}")
 
-    from local_env import DOCKER_HOST as LOCAL_DOCKER_HOST_VALUE
+        _local_docker_host_from_file = LOCAL_DOCKER_HOST_VALUE
+        print(f"Using remote DOCKER_HOST from local_env.py: {LOCAL_DOCKER_HOST_VALUE}")
 
-    _local_docker_host_from_file = LOCAL_DOCKER_HOST_VALUE
-    os.environ["DOCKER_HOST"] = LOCAL_DOCKER_HOST_VALUE
-    print(f"Using local DOCKER_HOST from local_env.py: {LOCAL_DOCKER_HOST_VALUE}")
-
-except ImportError:
-    print(
-        (
-            "local_env.py not found in tests/. "
-            "Relying on environment or default 127.0.0.1 for local/CI."
+    except ImportError:
+        pytest.fail(
+            "TEST_MODE is 'remote' but 'tests/local_env.py' could not be found or is incomplete."
         )
-    )
-finally:
-    if "current_tests_dir" in locals() and current_tests_dir in sys.path:
-        sys.path.remove(current_tests_dir)
+    finally:
+        # Clean up the path modification
+        if "current_tests_dir" in locals() and current_tests_dir in sys.path:
+            sys.path.remove(current_tests_dir)
+# --- END: Profile Handling Logic ---
 
 
 def pytest_addoption(parser):
@@ -64,15 +68,30 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
     If running in CI_MODE, this fixture does nothing, as the CI workflow
     is responsible for service lifecycle management.
     """
-    # In CI, the workflow file handles setup/teardown. This fixture should be a no-op.
     if os.environ.get("CI_MODE"):
         print("CI_MODE detected. Skipping Docker Compose management from conftest.")
         yield
         return
 
-    compose_file_to_use_abs = Path(pytestconfig.rootdir) / pytestconfig.getoption(
+    # --- UPDATED: Dynamically select compose files based on TEST_MODE ---
+    base_compose_file = Path(pytestconfig.rootdir) / pytestconfig.getoption(
         "--compose-file"
     )
+    compose_files_to_use = [base_compose_file]
+
+    if TEST_MODE == "local":
+        local_override_file = (
+            base_compose_file.parent / "docker-compose.tests.local.yml"
+        )
+        if local_override_file.exists():
+            compose_files_to_use.append(local_override_file)
+            print(f"Applying local override: {local_override_file}")
+
+    # Create the list of file arguments for all docker-compose commands
+    compose_file_args = []
+    for f in compose_files_to_use:
+        compose_file_args.extend(["-f", str(f)])
+    # --- END: Dynamic file selection ---
 
     env_vars = os.environ.copy()
     if _local_docker_host_from_file:
@@ -89,10 +108,8 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             "Subprocesses will use default Docker context."
         )
 
-    print(
-        f"\nStarting Docker Compose project '{docker_compose_project_name}' from "
-        f"{compose_file_to_use_abs}..."
-    )
+    print(f"\nStarting Docker Compose project '{docker_compose_project_name}'...")
+    print(f"Using compose files: {[str(f) for f in compose_files_to_use]}")
 
     print("Performing aggressive pre-cleanup of any stale test containers...")
     try:
@@ -126,19 +143,11 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
 
     try:
         print("Bringing up test environment with build step...")
-        up_command = [
-            "docker",
-            "compose",
-            "-p",
-            docker_compose_project_name,
-            "-f",
-            str(compose_file_to_use_abs),
-            "up",
-            "--build",
-            "--force-recreate",
-            "--remove-orphans",
-            "-d",
-        ]
+        up_command = (
+            ["docker", "compose", "-p", docker_compose_project_name]
+            + compose_file_args
+            + ["up", "--build", "--force-recreate", "--remove-orphans", "-d"]
+        )
         subprocess.run(
             up_command,
             cwd=pytestconfig.rootdir,
@@ -179,19 +188,14 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
     except subprocess.CalledProcessError as e:
         print(f"Error during Docker Compose setup: {e.stderr}")
         print(
-            f"\n--- Logs for project '{docker_compose_project_name}'"
-            " (during setup failure) ---"
+            f"\n--- Logs for project '{docker_compose_project_name}' (during setup failure) ---"
         )
         try:
-            logs_cmd = [
-                "docker",
-                "compose",
-                "-p",
-                docker_compose_project_name,
-                "-f",
-                str(compose_file_to_use_abs),
-                "logs",
-            ]
+            logs_cmd = (
+                ["docker", "compose", "-p", docker_compose_project_name]
+                + compose_file_args
+                + ["logs"]
+            )
             logs = subprocess.run(
                 logs_cmd,
                 capture_output=True,
@@ -203,18 +207,14 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             print(f"\n{logs.stdout}\n{logs.stderr}")
         except Exception as log_e:
             print(f"Could not retrieve logs during setup failure: {log_e}")
+
+        down_cmd_on_fail = (
+            ["docker", "compose", "-p", docker_compose_project_name]
+            + compose_file_args
+            + ["down", "-v", "--remove-orphans"]
+        )
         subprocess.run(
-            [
-                "docker",
-                "compose",
-                "-p",
-                docker_compose_project_name,
-                "-f",
-                str(compose_file_to_use_abs),
-                "down",
-                "-v",
-                "--remove-orphans",
-            ],
+            down_cmd_on_fail,
             check=False,
             capture_output=True,
             encoding="utf-8",
@@ -232,22 +232,16 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
     # Teardown: Capture logs on test failure
     if request.session.testsfailed > 0:
         print(
-            f"\n--- DUMPING ALL CONTAINER LOGS DUE TO TEST FAILURE"
-            f" in project '{docker_compose_project_name}' ---"
+            f"\n--- DUMPING ALL CONTAINER LOGS DUE TO TEST FAILURE in project '{docker_compose_project_name}' ---"
         )
         try:
-            logs_cmd = [
-                "docker",
-                "compose",
-                "-p",
-                docker_compose_project_name,
-                "-f",
-                str(compose_file_to_use_abs),
-                "logs",
-                "--no-color",
-            ]
+            logs_cmd_on_fail = (
+                ["docker", "compose", "-p", docker_compose_project_name]
+                + compose_file_args
+                + ["logs", "--no-color"]
+            )
             logs_result = subprocess.run(
-                logs_cmd,
+                logs_cmd_on_fail,
                 capture_output=True,
                 encoding="utf-8",
                 check=False,
@@ -259,21 +253,15 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             print(f"Could not retrieve logs during test teardown: {log_e}")
 
     print(
-        f"\nTests finished. Tearing down Docker Compose project "
-        f"'{docker_compose_project_name}'..."
+        f"\nTests finished. Tearing down Docker Compose project '{docker_compose_project_name}'..."
+    )
+    down_cmd = (
+        ["docker", "compose", "-p", docker_compose_project_name]
+        + compose_file_args
+        + ["down", "-v", "--remove-orphans"]
     )
     subprocess.run(
-        [
-            "docker",
-            "compose",
-            "-p",
-            docker_compose_project_name,
-            "-f",
-            str(compose_file_to_use_abs),
-            "down",
-            "-v",
-            "--remove-orphans",
-        ],
+        down_cmd,
         check=False,
         capture_output=True,
         encoding="utf-8",
