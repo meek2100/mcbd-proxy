@@ -396,8 +396,7 @@ def docker_client_fixture():
         )
     except Exception as e:
         pytest.fail(
-            "An unexpected error occurred while setting up Docker client fixture: "
-            f"{e}"
+            f"An unexpected error occurred while setting up Docker client fixture: {e}"
         )
 
     yield client

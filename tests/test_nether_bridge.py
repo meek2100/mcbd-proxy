@@ -388,12 +388,12 @@ def test_monitor_servers_activity_stops_idle_server(
     bedrock_config = next(s for s in mock_servers_config if s.server_type == "bedrock")
     java_config = next(s for s in mock_servers_config if s.server_type == "java")
 
-    nether_bridge_instance.server_states[bedrock_config.container_name][
-        "running"
-    ] = True
+    nether_bridge_instance.server_states[bedrock_config.container_name]["running"] = (
+        True
+    )
     nether_bridge_instance.server_states[bedrock_config.container_name][
         "last_activity"
-    ] = (time.time() - nether_bridge_instance.settings.idle_timeout_seconds - 1)
+    ] = time.time() - nether_bridge_instance.settings.idle_timeout_seconds - 1
 
     nether_bridge_instance.server_states[java_config.container_name]["running"] = True
     nether_bridge_instance.server_states[java_config.container_name][
@@ -420,9 +420,9 @@ def test_monitor_servers_activity_resets_active_server_timer(
 ):
     bedrock_config = next(s for s in mock_servers_config if s.server_type == "bedrock")
 
-    nether_bridge_instance.server_states[bedrock_config.container_name][
-        "running"
-    ] = True
+    nether_bridge_instance.server_states[bedrock_config.container_name]["running"] = (
+        True
+    )
     original_last_activity = time.time() - (
         nether_bridge_instance.settings.idle_timeout_seconds / 2
     )
@@ -468,12 +468,12 @@ def test_monitor_servers_activity_handles_query_failure(
 ):
     bedrock_config = next(s for s in mock_servers_config if s.server_type == "bedrock")
 
-    nether_bridge_instance.server_states[bedrock_config.container_name][
-        "running"
-    ] = True
+    nether_bridge_instance.server_states[bedrock_config.container_name]["running"] = (
+        True
+    )
     nether_bridge_instance.server_states[bedrock_config.container_name][
         "last_activity"
-    ] = (time.time() - nether_bridge_instance.settings.idle_timeout_seconds - 1)
+    ] = time.time() - nether_bridge_instance.settings.idle_timeout_seconds - 1
 
     mock_sleep.side_effect = [None, Exception("Stop loop")]
 

@@ -679,9 +679,9 @@ class NetherBridgeProxy:
 
                             session_info = self.active_sessions[session_key]
                             session_info["last_packet_time"] = time.time()
-                            self.server_states[container_name][
-                                "last_activity"
-                            ] = time.time()
+                            self.server_states[container_name]["last_activity"] = (
+                                time.time()
+                            )
 
                             target_ip = session_info["target_ip"]
                             session_info["server_socket"].sendto(
@@ -720,9 +720,9 @@ class NetherBridgeProxy:
                     session_info["last_packet_time"] = time.time()
 
                     if socket_role == "client_socket":
-                        self.server_states[container_name][
-                            "last_activity"
-                        ] = time.time()
+                        self.server_states[container_name]["last_activity"] = (
+                            time.time()
+                        )
                         destination_socket = session_info["server_socket"]
                         destination_address = (
                             session_info.get("target_ip", container_name),

@@ -205,9 +205,9 @@ def test_bedrock_server_starts_on_connection(docker_compose_up, docker_client_fi
     bedrock_proxy_port = BEDROCK_PROXY_PORT
     mc_bedrock_container_name = "mc-bedrock"
 
-    assert wait_for_proxy_to_be_ready(
-        docker_client_fixture
-    ), "Proxy did not become ready."
+    assert wait_for_proxy_to_be_ready(docker_client_fixture), (
+        "Proxy did not become ready."
+    )
 
     initial_status = get_container_status(
         docker_client_fixture, mc_bedrock_container_name
@@ -270,9 +270,9 @@ def test_java_server_starts_on_connection(docker_compose_up, docker_client_fixtu
     java_proxy_port = JAVA_PROXY_PORT
     mc_java_container_name = "mc-java"
 
-    assert wait_for_proxy_to_be_ready(
-        docker_client_fixture
-    ), "Proxy did not become ready."
+    assert wait_for_proxy_to_be_ready(docker_client_fixture), (
+        "Proxy did not become ready."
+    )
 
     initial_status = get_container_status(docker_client_fixture, mc_java_container_name)
     assert initial_status in [
@@ -338,9 +338,9 @@ def test_server_shuts_down_on_idle(docker_compose_up, docker_client_fixture):
     idle_timeout = 30
     check_interval = 5
 
-    assert wait_for_proxy_to_be_ready(
-        docker_client_fixture
-    ), "Proxy did not become ready."
+    assert wait_for_proxy_to_be_ready(docker_client_fixture), (
+        "Proxy did not become ready."
+    )
 
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
