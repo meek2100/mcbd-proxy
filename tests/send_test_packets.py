@@ -1,6 +1,6 @@
 import socket
-import time
 import sys
+import time
 
 # --- Configuration ---
 # IMPORTANT: This must be the IP address of the machine running Docker
@@ -16,7 +16,8 @@ JAVA_PROXY_PORT = 25565
 BEDROCK_UNCONNECTED_PING = (
     b"\x01"  # Packet ID (Unconnected Ping)
     + b"\x00\x00\x00\x00\x00\x00\x00\x00"  # Nonce (can be anything)
-    + b"\x00\xff\xff\x00\xfe\xfe\xfe\xfe\xfd\xfd\xfd\xfd\x12\x34\x56\x78"  # RakNet Magic
+    + b"\x00\xff\xff\x00\xfe\xfe\xfe\xfe"
+    + b"\xfd\xfd\xfd\xfd\x12\x34\x56\x78"  # RakNet Magic
     + b"\x00\x00\x00\x00\x00\x00\x00\x00"  # Client GUID (can be anything)
 )
 
@@ -68,28 +69,25 @@ def get_java_handshake_and_status_request_packets(host, port):
 
 def test_bedrock_server():
     """Sends a UDP packet to trigger the Bedrock server and listens for a response."""
-    print(
-        f"--- Testing Bedrock (UDP) -> {TARGET_HOST}:{BEDROCK_PROXY_PORT} ---"
-    )
+    print(f"--- Testing Bedrock (UDP) -> {TARGET_HOST}:{BEDROCK_PROXY_PORT} ---")
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(5)
     try:
         print("Sending Unconnected Ping packet to proxy...")
-        sock.sendto(
-            BEDROCK_UNCONNECTED_PING, (TARGET_HOST, BEDROCK_PROXY_PORT)
-        )
+        sock.sendto(BEDROCK_UNCONNECTED_PING, (TARGET_HOST, BEDROCK_PROXY_PORT))
         print("Packet sent. Waiting for response...")
 
         data, addr = sock.recvfrom(4096)
         print(f"SUCCESS: Received {len(data)} bytes back from {addr}.")
         if b"MCPE" in data:
             print(
-                "Response contains 'MCPE', server is likely up and responding correctly."
+                (
+                    "Response contains 'MCPE', server is likely up and responding "
+                    "correctly."
+                )
             )
         else:
-            print(
-                "Response received, but may not be a standard Minecraft pong packet."
-            )
+            print("Response received, but may not be a standard Minecraft pong packet.")
 
     except socket.timeout:
         print(
@@ -111,14 +109,10 @@ def test_java_server():
     try:
         print("Attempting to connect to proxy...")
         sock.connect((TARGET_HOST, JAVA_PROXY_PORT))
-        print(
-            "Connection successful. Sending handshake and status request packets..."
-        )
+        print("Connection successful. Sending handshake and status request packets...")
 
-        handshake, status_request = (
-            get_java_handshake_and_status_request_packets(
-                TARGET_HOST, JAVA_PROXY_PORT
-            )
+        handshake, status_request = get_java_handshake_and_status_request_packets(
+            TARGET_HOST, JAVA_PROXY_PORT
         )
 
         sock.sendall(handshake)
@@ -131,7 +125,10 @@ def test_java_server():
             print("Response appears to be valid JSON from a Minecraft server.")
         else:
             print(
-                "Response received, but may not be a standard Minecraft status response."
+                (
+                    "Response received, but may not be a standard Minecraft "
+                    "status response."
+                )
             )
 
     except ConnectionRefusedError:
