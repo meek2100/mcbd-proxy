@@ -106,22 +106,12 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             "mc-java",
             "nb-tester",
         ]
-        list_cmd = [
-            "docker",
-            "ps",
-            "-aq",
-            "--filter",
-            "name=netherbridge_test_",
-        ]
+        list_cmd = ["docker", "ps", "-aq", "--filter", "name=netherbridge_test_"]
         for name in hardcoded_names_to_remove:
             list_cmd.extend(["--filter", f"name={name}"])
 
         result = subprocess.run(
-            list_cmd,
-            capture_output=True,
-            encoding="utf-8",
-            check=False,
-            env=env_vars,
+            list_cmd, capture_output=True, encoding="utf-8", check=False, env=env_vars
         )
         stale_ids = result.stdout.strip().splitlines()
         if stale_ids:
@@ -193,10 +183,7 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
     except subprocess.CalledProcessError as e:
         print(f"Error during Docker Compose setup: {e.stderr}")
         print(
-            (
-                f"\n--- Logs for project '{docker_compose_project_name}' "
-                "(during setup failure) ---"
-            )
+            f"\n--- Logs for project '{docker_compose_project_name}' (during setup failure) ---"
         )
         try:
             logs_cmd = [
@@ -216,111 +203,9 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
                 env=env_vars,
                 cwd=pytestconfig.rootdir,
             )
-            print(logs.stdout)
-            if logs.stderr:
-                print(f"Stderr logs: {logs.stderr}")
+            print(f"\n{logs.stdout}\n{logs.stderr}")
         except Exception as log_e:
-            print(f"Could not retrieve logs: {log_e}")
-        print(
-            (
-                f"\nAttempting forceful teardown after setup failure for "
-                f"'{docker_compose_project_name}'..."
-            )
-        )
-        try:
-            subprocess.run(
-                [
-                    "docker",
-                    "compose",
-                    "-p",
-                    docker_compose_project_name,
-                    "-f",
-                    str(compose_file_to_use_abs),
-                    "down",
-                    "--volumes",
-                    "--remove-orphans",
-                ],
-                check=False,
-                capture_output=True,
-                encoding="utf-8",
-                env=env_vars,
-                cwd=pytestconfig.rootdir,
-            )
-            print("Forceful teardown initiated.")
-        except Exception as teardown_e:
-            print(f"Error during forceful teardown: {teardown_e}")
-        raise
-    except Exception as e:
-        print(f"An unexpected error occurred during Docker Compose setup: {e}")
-        print(
-            f"\nAttempting forceful teardown after unexpected setup error for "
-            f"'{docker_compose_project_name}'..."
-        )
-        try:
-            subprocess.run(
-                [
-                    "docker",
-                    "compose",
-                    "-p",
-                    docker_compose_project_name,
-                    "-f",
-                    str(compose_file_to_use_abs),
-                    "down",
-                    "--volumes",
-                    "--remove-orphans",
-                ],
-                check=False,
-                capture_output=True,
-                encoding="utf-8",
-                env=env_vars,
-                cwd=pytestconfig.rootdir,
-            )
-            print("Forceful teardown initiated.")
-        except Exception as teardown_e:
-            print(f"Error during forceful teardown: {teardown_e}")
-        raise
-
-    # Yield control to the tests
-    yield request.param if hasattr(request, "param") else None
-
-    # Teardown: Capture logs on test failure
-    if request.session.testsfailed > 0:
-        print(
-            (
-                f"\n--- DUMPING ALL CONTAINER LOGS DUE TO TEST FAILURE in project "
-                f"'{docker_compose_project_name}' ---"
-            )
-        )
-        try:
-            logs_cmd = [
-                "docker",
-                "compose",
-                "-p",
-                docker_compose_project_name,
-                "-f",
-                str(compose_file_to_use_abs),
-                "logs",
-            ]
-            logs = subprocess.run(
-                logs_cmd,
-                capture_output=True,
-                encoding="utf-8",
-                check=False,
-                env=env_vars,
-                cwd=pytestconfig.rootdir,
-            )
-            print(logs.stdout)
-            if logs.stderr:
-                print(f"Stderr logs: {logs.stderr}")
-        except Exception as log_e:
-            print(f"Could not retrieve logs during test teardown: {log_e}")
-        print("--- END LOG DUMP ---")
-
-    print(
-        f"\nTests finished. Tearing down Docker Compose project "
-        f"'{docker_compose_project_name}'..."
-    )
-    try:
+            print(f"Could not retrieve logs during setup failure: {log_e}")
         subprocess.run(
             [
                 "docker",
@@ -330,43 +215,73 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
                 "-f",
                 str(compose_file_to_use_abs),
                 "down",
-                "--volumes",
+                "-v",
                 "--remove-orphans",
             ],
-            check=True,
+            check=False,
             capture_output=True,
             encoding="utf-8",
             env=env_vars,
             cwd=pytestconfig.rootdir,
         )
-        print(
-            f"Docker Compose project '{docker_compose_project_name}' "
-            "stopped and removed."
-        )
-    except subprocess.CalledProcessError as e:
-        print(f"Error tearing down Docker Compose services: {e.stderr}")
+        raise
     except Exception as e:
-        print(f"An unexpected error occurred during Docker Compose teardown: {e}")
-    finally:
-        if temp_compose_file_path_abs and temp_compose_file_path_abs.exists():
-            try:
-                os.remove(str(temp_compose_file_path_abs))
-            except OSError as e:
-                print(
-                    "Warning: Could not remove temporary compose file "
-                    f"{temp_compose_file_path_abs}: {e}"
-                )
+        print(f"An unexpected error occurred during Docker Compose setup: {e}")
+        raise
 
-        if temp_compose_file_dir and temp_compose_file_dir.exists():
-            try:
-                shutil.rmtree(temp_compose_file_dir, ignore_errors=True)
-            except OSError as e:
-                print(
-                    (
-                        f"Warning: Could not remove temporary directory "
-                        f"{temp_compose_file_dir}: {e}"
-                    )
-                )
+    # Yield control to the tests
+    yield
+
+    # Teardown: Capture logs on test failure
+    if request.session.testsfailed > 0:
+        print(
+            f"\n--- DUMPING ALL CONTAINER LOGS DUE TO TEST FAILURE in project '{docker_compose_project_name}' ---"
+        )
+        try:
+            logs_cmd = [
+                "docker",
+                "compose",
+                "-p",
+                docker_compose_project_name,
+                "-f",
+                str(compose_file_to_use_abs),
+                "logs",
+                "--no-color",
+            ]
+            logs_result = subprocess.run(
+                logs_cmd,
+                capture_output=True,
+                encoding="utf-8",
+                check=False,
+                env=env_vars,
+                cwd=pytestconfig.rootdir,
+            )
+            print(f"\n{logs_result.stdout}\n{logs_result.stderr}")
+        except Exception as log_e:
+            print(f"Could not retrieve logs during test teardown: {log_e}")
+
+    print(
+        f"\nTests finished. Tearing down Docker Compose project '{docker_compose_project_name}'..."
+    )
+    subprocess.run(
+        [
+            "docker",
+            "compose",
+            "-p",
+            docker_compose_project_name,
+            "-f",
+            str(compose_file_to_use_abs),
+            "down",
+            "-v",
+            "--remove-orphans",
+        ],
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+        env=env_vars,
+        cwd=pytestconfig.rootdir,
+    )
+    print("Teardown complete.")
 
 
 @pytest.fixture(scope="session")
