@@ -24,7 +24,7 @@ python-json-logger==3.3.0
     # via -r requirements.in
 requests==2.32.4
     # via docker
-urllib3==2.4.0
+urllib3==2.5.0
     # via
     #   docker
     #   requests
