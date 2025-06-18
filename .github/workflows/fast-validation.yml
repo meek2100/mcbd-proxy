@@ -1,0 +1,35 @@
+# .github/workflows/fast-validation.yml
+name: Fast Validation (Lint & Unit Tests)
+
+# This workflow runs on every push to any branch.
+on: [push]
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-unit-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip' # Cache dependencies for faster runs
+
+      - name: Install Dependencies
+        run: pip install -r tests/requirements-dev.txt
+
+      - name: Lint with ruff
+        run: ruff check .
+
+      - name: Check formatting with ruff
+        run: ruff format --check .
+
+      - name: Run Unit Tests
+        # This command specifically targets the unit tests which do not
+        # require a Docker environment, ensuring a very fast test run.
+        run: pytest tests/test_nether_bridge.py --cov=nether_bridge
