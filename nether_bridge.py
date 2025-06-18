@@ -997,8 +997,7 @@ def load_application_config() -> tuple[ProxySettings, list[ServerConfig]]:
             "player_check_interval_seconds": "NB_PLAYER_CHECK_INTERVAL",
             "query_timeout_seconds": "NB_QUERY_TIMEOUT",
             "server_ready_max_wait_time_seconds": "NB_SERVER_READY_MAX_WAIT",
-            "initial_boot_ready_max_wait_time_seconds":
-                "NB_INITIAL_BOOT_READY_MAX_WAIT",
+            "initial_boot_ready_max_wait_time_seconds": "NB_INITIAL_BOOT_READY_MAX_WAIT",  # noqa: E501
             "server_startup_delay_seconds": "NB_SERVER_STARTUP_DELAY",
             "initial_server_query_delay_seconds": "NB_INITIAL_SERVER_QUERY_DELAY",
             "log_level": "LOG_LEVEL",
