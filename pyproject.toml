@@ -30,16 +30,18 @@ Homepage = "https://github.com/meek2100/nether-bridge"
 [tool.black]
 # Set the maximum line length to the PEP 8 standard.
 line-length = 79
-# Exclude common directories from formatting.
+# A more standard regex pattern for excluding directories.
 exclude = '''
-/(
-    \.git
-  | \.venv
-  | \.pytest_cache
-  | build
-  | dist
-  | examples
-)/
+(
+  /(
+      \.git
+    | \.venv
+    | \.pytest_cache
+    | build
+    | dist
+    | examples
+  )/
+)
 '''
 
 [tool.flake8]
