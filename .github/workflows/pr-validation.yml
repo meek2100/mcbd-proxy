@@ -1,3 +1,4 @@
+# .github/workflows/pr-validation.yml
 name: Pull Request Validation
 
 on:
@@ -26,6 +27,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Get Docker GID
+        id: docker-gid
+        run: echo "DOCKER_GID=$(getent group docker | cut -d: -f3)" >> $GITHUB_ENV
+
       - name: Build 'nether-bridge' image with cache
         uses: docker/build-push-action@v5
         with:
@@ -35,6 +40,8 @@ jobs:
           push: false
           cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr
           cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr,mode=max
+          build-args: |
+            DOCKER_GID=${{ env.DOCKER_GID }}
 
       - name: Build 'nb-tester' image with cache
         uses: docker/build-push-action@v5
@@ -46,6 +53,8 @@ jobs:
           push: false
           cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr
           cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr,mode=max
+          build-args: |
+            DOCKER_GID=${{ env.DOCKER_GID }}
 
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
@@ -68,7 +77,7 @@ jobs:
           done
           echo "Timeout: Nether-bridge did not become healthy after 2 minutes."
           exit 1
-
+      
       - name: Lint with ruff
         run: |
           echo "Running ruff linter..."

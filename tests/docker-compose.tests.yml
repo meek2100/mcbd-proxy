@@ -7,7 +7,10 @@ services:
     build:
       context: ../
       dockerfile: Dockerfile
-    restart: "no" # Explicitly set to 'no' for testing lifecycle control
+      args:
+        # Passes the DOCKER_GID from the .env file into the build
+        - DOCKER_GID=${DOCKER_GID}
+    restart: "no"
     networks:
       - mc-network
     ports:
@@ -15,19 +18,18 @@ services:
       - "25565:25565/udp"
       - "25565:25565/tcp"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock # Required for Docker management
-    environment: # Specific env vars for testing (short timeouts)
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
       - LOG_LEVEL=DEBUG
       - NB_IDLE_TIMEOUT=30
       - NB_PLAYER_CHECK_INTERVAL=5
       - NB_QUERY_TIMEOUT=2
-      - NB_SERVER_READY_MAX_WAIT=120 # Still allow enough time for MC server init
+      - NB_SERVER_READY_MAX_WAIT=120
       - NB_INITIAL_BOOT_READY_MAX_WAIT=45
       - NB_SERVER_STARTUP_DELAY=2
       - NB_INITIAL_SERVER_QUERY_DELAY=2
       - NB_HEALTHCHECK_STALE_THRESHOLD=10
       - NB_HEARTBEAT_INTERVAL=5
-      # Test server definitions (explicitly via env vars for CI/testing clarity)
       - NB_1_NAME=Bedrock Survival
       - NB_1_SERVER_TYPE=bedrock
       - NB_1_LISTEN_PORT=19132
@@ -58,9 +60,9 @@ services:
       - mc-bedrock-data:/data
     environment:
       - EULA=TRUE
-      - VERSION=1.20.81.01 # Pin version for consistent tests
-      - DIRECT_DOWNLOAD_URL=https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.20.81.01.zip # Pin download URL
-      - IDLE_TIMEOUT=-1 # Prevent MC server itself from shutting down
+      - VERSION=1.20.81.01
+      - DIRECT_DOWNLOAD_URL=https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.20.81.01.zip
+      - IDLE_TIMEOUT=-1
 
   mc-java:
     image: itzg/minecraft-server:latest
@@ -72,12 +74,12 @@ services:
       - mc-java-data:/data
     environment:
       - EULA=TRUE
-      - TYPE=FABRIC # Use a specific type for consistency
-      - MINECRAFT_VERSION=1.16.5 # Pin version
-      - LEVEL_TYPE=FLAT # Faster startup for tests
-      - JVM_ARGS=-Xmx512M -Xms512M # Resource limits for tests
-      - IDLE_TIMEOUT=-1 # Prevent MC server itself from shutting down
-      - ONLINE_MODE=FALSE # Faster startup, no Mojang auth needed for tests
+      - TYPE=FABRIC
+      - MINECRAFT_VERSION=1.16.5
+      - LEVEL_TYPE=FLAT
+      - JVM_ARGS=-Xmx512M -Xms512M
+      - IDLE_TIMEOUT=-1
+      - ONLINE_MODE=FALSE
   
   nb-tester:
     image: nb-tester:local
@@ -86,6 +88,9 @@ services:
       context: ../
       dockerfile: Dockerfile
       target: testing
+      args:
+        # Passes the DOCKER_GID to this build as well
+        - DOCKER_GID=${DOCKER_GID}
     networks:
       - mc-network
     volumes:
