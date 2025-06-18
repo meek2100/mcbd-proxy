@@ -15,9 +15,14 @@ WORKDIR /app
 ARG DOCKER_GID
 
 # Create a non-root user 'appuser' and add it to a 'docker' group with the correct GID
-# This allows the user to access the mounted docker socket. Defaults to 999 if not provided.
+# This allows the user to access the mounted docker socket.
+# Defaults to 999 if not provided.
 RUN addgroup --gid ${DOCKER_GID:-999} docker && \
     adduser --system --ingroup docker --no-create-home appuser
+
+# FIX: Change ownership of the work directory itself
+# This allows the non-root user to create new files/dirs like .ruff_cache
+RUN chown appuser:docker /app
 
 # Copy source and test files with the correct ownership
 COPY --chown=appuser:docker . .
@@ -39,6 +44,10 @@ ARG DOCKER_GID
 # Create the same non-root user and group as the testing stage
 RUN addgroup --gid ${DOCKER_GID:-999} docker && \
     adduser --system --ingroup docker --no-create-home appuser
+
+# FIX: Change ownership of the work directory itself
+# This ensures the non-root user can write temporary files if needed.
+RUN chown appuser:docker /app
 
 # Copy only the production packages from the 'base' stage with correct ownership
 COPY --from=base --chown=appuser:docker /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
