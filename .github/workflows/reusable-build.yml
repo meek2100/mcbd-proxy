@@ -31,7 +31,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
+          
       - name: Get Docker GID
         id: docker-gid
         run: 'echo "DOCKER_GID=$(getent group docker | cut -d: -f3)" >> $GITHUB_ENV'
@@ -55,5 +55,3 @@ jobs:
             org.opencontainers.image.created=${{ steps.meta.outputs.created }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ inputs.app_version }}
-          build-args: |
-            DOCKER_GID=${{ env.DOCKER_GID }}
