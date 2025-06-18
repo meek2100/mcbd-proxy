@@ -1,4 +1,3 @@
-# .github/workflows/pr-validation.yml
 name: Pull Request Validation
 
 on:
@@ -40,8 +39,6 @@ jobs:
           push: false
           cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr
           cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr,mode=max
-          build-args: |
-            DOCKER_GID=${{ env.DOCKER_GID }}
 
       - name: Build 'nb-tester' image with cache
         uses: docker/build-push-action@v5
@@ -53,8 +50,6 @@ jobs:
           push: false
           cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr
           cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr,mode=max
-          build-args: |
-            DOCKER_GID=${{ env.DOCKER_GID }}
 
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
