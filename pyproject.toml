@@ -27,23 +27,6 @@ Homepage = "https://github.com/meek2100/nether-bridge"
 
 # --- Tool Configurations ---
 
-[tool.black]
-# Set the maximum line length to the PEP 8 standard.
-line-length = 88
-# A more standard regex pattern for excluding directories.
-exclude = '''
-(
-  /(
-      \.git
-    | \.venv
-    | \.pytest_cache
-    | build
-    | dist
-    | examples
-  )/
-)
-'''
-
 [tool.ruff]
 line-length = 88
 # Exclude the same common directories as Black.
