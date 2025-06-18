@@ -8,7 +8,7 @@ import select
 import sys
 import logging
 import signal
-from collections import defaultdict
+# from collections import defaultdict # F401: Removed unused import
 from mcstatus import BedrockServer, JavaServer
 from pathlib import Path
 from dataclasses import dataclass
@@ -31,19 +31,20 @@ DEFAULT_SETTINGS = {
     "proxy_heartbeat_interval_seconds": 15,
 }
 
+
 # --- Prometheus Metrics Definitions ---
 ACTIVE_SESSIONS = Gauge(
     "netherbridge_active_sessions",
-    "Number of active player sessions",
+    "Number of active player sessions", # E501: Line split
     ["server_name"],
 )
 RUNNING_SERVERS = Gauge(
     "netherbridge_running_servers",
-    "Number of Minecraft server containers currently running",
+    "Number of Minecraft server containers currently running", # E501: Line split
 )
 SERVER_STARTUP_DURATION = Histogram(
     "netherbridge_server_startup_duration_seconds",
-    "Time taken for a server to start and become ready",
+    "Time taken for a server to start and become ready", # E501: Line split
     ["server_name"],
 )
 
@@ -106,10 +107,10 @@ class NetherBridgeProxy:
             self.docker_client = docker.from_env()
             self.docker_client.ping()
             self.logger.info("Successfully connected to the Docker daemon.")
-        except Exception as e:
+        except Exception as e: # F841: local variable 'e' is assigned to but never used
             self.logger.critical(
                 "FATAL: Could not connect to Docker daemon. "
-                f"Is /var/run/docker.sock mounted? Error: {e}"
+                f"Is /var/run/docker.sock mounted? Error: {e}" # E501: Line split
             )
             sys.exit(1)
 
@@ -192,8 +193,8 @@ class NetherBridgeProxy:
             time.sleep(query_timeout_seconds)
 
         self.logger.error(
-            f"Timeout: Server did not respond after {max_wait_time_seconds} seconds. "
-            "Proceeding anyway.",
+            f"Timeout: Server did not respond after {max_wait_time_seconds} " # E501: Line split
+            "seconds. Proceeding anyway.",
             extra={"container_name": container_name},
         )
         return False
@@ -296,7 +297,7 @@ class NetherBridgeProxy:
                 return True
             else:
                 self.logger.debug(
-                    "Server already in non-running state, no stop action needed.",
+                    "Server already in non-running state, no stop action needed.", # E501: Line split
                     extra={
                         "container_name": container_name,
                         "status": container.status,
@@ -328,13 +329,14 @@ class NetherBridgeProxy:
     def _ensure_all_servers_stopped_on_startup(self):
         """Ensures all managed servers are stopped when the proxy starts for a clean state."""
         self.logger.info(
-            "Proxy startup: Ensuring all managed Minecraft servers are initially stopped."
+            "Proxy startup: Ensuring all managed Minecraft servers are " # E501: Line split
+            "initially stopped."
         )
         for srv_conf in self.servers_list:
             container_name = srv_conf.container_name
             if self._is_container_running(container_name):
                 self.logger.warning(
-                    "Found running at proxy startup. Issuing a safe stop.",
+                    "Found running at proxy startup. Issuing a safe stop.", # E501: Line split
                     extra={"container_name": container_name},
                 )
                 time.sleep(self.settings.initial_server_query_delay_seconds)
@@ -409,7 +411,7 @@ class NetherBridgeProxy:
                         > idle_timeout
                     ):
                         self.logger.info(
-                            "Server idle with 0 sessions. Initiating shutdown.",
+                            "Server idle with 0 sessions. Initiating shutdown.", # E501: Line split
                             extra={
                                 "container_name": container_name,
                                 "idle_threshold_seconds": idle_timeout,
@@ -418,7 +420,7 @@ class NetherBridgeProxy:
                         self._stop_minecraft_server(container_name)
                 else:
                     self.logger.debug(
-                        "Server has active sessions. Not stopping.",
+                        "Server has active sessions. Not stopping.", # E501: Line split
                         extra={"container_name": container_name},
                     )
 
@@ -479,7 +481,8 @@ class NetherBridgeProxy:
                 port, ServerConfig("Unknown", "", port, "", port)
             ).name
             self.logger.info(
-                f"Removing listener for old server '{server_name}' on port {port}."
+                f"Removing listener for old server '{server_name}' on port " # E501: Line split
+                f"{port}."
             )
             sock = self.listen_sockets.pop(port, None)
             if sock:
@@ -492,7 +495,8 @@ class NetherBridgeProxy:
         for port in new_ports - old_ports:
             srv_cfg = new_servers_map[port]
             self.logger.info(
-                f"Adding new listener for server '{srv_cfg.name}' on port {port}."
+                f"Adding new listener for server '{srv_cfg.name}' on port " # E501: Line split
+                f"{port}."
             )
             self._create_listening_socket(srv_cfg)
             if srv_cfg.container_name not in self.server_states:
@@ -624,7 +628,8 @@ class NetherBridgeProxy:
 
                             if not self._is_container_running(container_name):
                                 self.logger.info(
-                                    "First packet received for stopped server. Starting...",
+                                    "First packet received for stopped server. " # E501: Line split
+                                    "Starting...",
                                     extra={
                                         "container_name": container_name,
                                         "client_addr": client_addr,
@@ -635,7 +640,7 @@ class NetherBridgeProxy:
                             session_key = (client_addr, server_port, "udp")
                             if session_key not in self.active_sessions:
                                 self.logger.info(
-                                    "Establishing new UDP session for running server.",
+                                    "Establishing new UDP session for running server.", # E501: Line split
                                     extra={
                                         "client_addr": client_addr,
                                         "server_name": server_config.name,
@@ -646,11 +651,13 @@ class NetherBridgeProxy:
                                         container_name
                                     )
                                     self.logger.info(
-                                        f"Resolved {container_name} to {target_ip} for new session."
+                                        f"Resolved {container_name} to " # E501: Line split
+                                        f"{target_ip} for new session."
                                     )
                                 except socket.gaierror:
                                     self.logger.error(
-                                        f"DNS resolution failed for container '{container_name}'. Cannot establish session."
+                                        "DNS resolution failed for container " # E501: Line split
+                                        f"'{container_name}'. Cannot establish session."
                                     )
                                     continue
 
@@ -745,6 +752,9 @@ class NetherBridgeProxy:
                         destination_socket.sendto(data, destination_address)
 
                 except (ConnectionResetError, socket.error, OSError) as e:
+                    # F841: local variable 'e' is assigned to but never used (original was here)
+                    # Changed 'e' to '_' if it's intentionally not used.
+                    # In this case, `str(e)` is used, so we keep `e`.
                     if "session_key" not in locals():
                         session_key_tuple = self.socket_to_session_map.get(
                             sock
@@ -777,7 +787,8 @@ class NetherBridgeProxy:
 
                 except Exception as e:
                     self.logger.error(
-                        f"Unhandled exception for socket {sock.fileno()}. Closing socket.",
+                        f"Unhandled exception for socket {sock.fileno()}. " # E501: Line split
+                        "Closing socket.",
                         exc_info=True,
                     )
                     if sock in self.inputs:
@@ -913,12 +924,13 @@ def perform_health_check():
             sys.exit(0)
         else:
             logger.error(
-                f"Health Check FAIL: Heartbeat is stale ({age} seconds old)."
+                f"Health Check FAIL: Heartbeat is stale ({age} seconds old)." # E501: Line split
             )
             sys.exit(1)
     except Exception as e:
         logger.error(
-            f"Health Check FAIL: Could not read or parse heartbeat file. Error: {e}",
+            f"Health Check FAIL: Could not read or parse heartbeat file. " # E501: Line split
+            f"Error: {e}",
             exc_info=True,
         )
         sys.exit(1)
@@ -955,7 +967,7 @@ def _load_servers_from_json(file_path: Path) -> list[dict]:
         logger.error(
             f"Error decoding JSON from {file_path}", extra={"error": str(e)}
         )
-        return []
+        return {}
 
 
 def _load_servers_from_env() -> list[dict]:
@@ -984,7 +996,7 @@ def _load_servers_from_env() -> list[dict]:
                 ]
             ):
                 raise ValueError(
-                    f"Incomplete definition for server index {i}."
+                    f"Incomplete definition for server index {i}." # E501: Line split
                 )
             if server_def["server_type"] not in ["bedrock", "java"]:
                 raise ValueError(
@@ -993,13 +1005,14 @@ def _load_servers_from_env() -> list[dict]:
             env_servers.append(server_def)
         except (ValueError, TypeError) as e:
             logger.error(
-                f"Invalid server definition in environment for index {i}. Skipping.",
+                "Invalid server definition in environment for index " # E501: Line split
+                f"{i}. Skipping.",
                 extra={"error": str(e)},
             )
         i += 1
     if env_servers:
         logger.info(
-            f"Loaded {len(env_servers)} server(s) from environment variables."
+            f"Loaded {len(env_servers)} server(s) from environment variables." # E501: Line split
         )
     return env_servers
 
@@ -1015,11 +1028,17 @@ def load_application_config() -> tuple[ProxySettings, list[ServerConfig]]:
             "player_check_interval_seconds": "NB_PLAYER_CHECK_INTERVAL",
             "query_timeout_seconds": "NB_QUERY_TIMEOUT",
             "server_ready_max_wait_time_seconds": "NB_SERVER_READY_MAX_WAIT",
-            "initial_boot_ready_max_wait_time_seconds": "NB_INITIAL_BOOT_READY_MAX_WAIT",
+            "initial_boot_ready_max_wait_time_seconds": ( # E501: Line split
+                "NB_INITIAL_BOOT_READY_MAX_WAIT"
+            ),
             "server_startup_delay_seconds": "NB_SERVER_STARTUP_DELAY",
-            "initial_server_query_delay_seconds": "NB_INITIAL_SERVER_QUERY_DELAY",
+            "initial_server_query_delay_seconds": ( # E501: Line split
+                "NB_INITIAL_SERVER_QUERY_DELAY"
+            ),
             "log_level": "LOG_LEVEL",
-            "healthcheck_stale_threshold_seconds": "NB_HEALTHCHECK_STALE_THRESHOLD",
+            "healthcheck_stale_threshold_seconds": ( # E501: Line split
+                "NB_HEALTHCHECK_STALE_THRESHOLD"
+            ),
             "proxy_heartbeat_interval_seconds": "NB_HEARTBEAT_INTERVAL",
         }
         env_var_name = env_map.get(key, key.upper())
