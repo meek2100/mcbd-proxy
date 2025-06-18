@@ -11,49 +11,36 @@ RUN pip install --no-cache-dir -r requirements.txt
 FROM base AS testing
 WORKDIR /app
 
-# Add a build argument to accept the Docker group ID from the host
-ARG DOCKER_GID
+# The Docker CLI is NOT needed, as tests use the docker-py library
+# via the mounted docker socket. The RUN commands for apt-get have been removed.
 
-# Create a non-root user 'appuser' and add it to a 'docker' group with the correct GID
-# This allows the user to access the mounted docker socket. Defaults to 999 if not provided.
-RUN addgroup --gid ${DOCKER_GID:-999} docker && \
-    adduser --system --ingroup docker --no-create-home appuser
-
-# Copy source and test files with the correct ownership
-COPY --chown=appuser:docker . .
+# Explicitly copy all source and test files into the image
+COPY nether_bridge.py .
+COPY pytest.ini .
+COPY requirements.txt .
+COPY tests/ ./tests/
 
 # Install the development dependencies
 RUN pip install --no-cache-dir -r tests/requirements-dev.txt
 
-# Switch to the non-root user for the test environment as well
-USER appuser
-
 # --- Stage 3: Final Production Image ---
-# This is the minimal final image.
+# This is the minimal final image. It only copies from the 'base' stage.
 FROM python:3.10-slim-buster
 WORKDIR /app
 
-# Add the same build argument for the Docker GID
-ARG DOCKER_GID
+# Copy only the production packages from the 'base' stage.
+COPY --from=base /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
 
-# Create the same non-root user and group as the testing stage
-RUN addgroup --gid ${DOCKER_GID:-999} docker && \
-    adduser --system --ingroup docker --no-create-home appuser
+# Copy only the necessary application code and default configs.
+COPY nether_bridge.py .
+COPY examples/settings.json .
+COPY examples/servers.json .
 
-# Copy only the production packages from the 'base' stage with correct ownership
-COPY --from=base --chown=appuser:docker /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
-
-# Copy the application code and example configs with correct ownership
-COPY --chown=appuser:docker nether_bridge.py .
-COPY --chown=appuser:docker examples/settings.json .
-COPY --chown=appuser:docker examples/servers.json .
-
-# Switch to the non-root user for the final image
-USER appuser
-
+# Expose all necessary ports for the proxy and metrics.
 EXPOSE 19132/udp
 EXPOSE 25565/udp
 EXPOSE 25565/tcp
 EXPOSE 8000/tcp
 
+# Define the command to run the application.
 ENTRYPOINT ["python", "nether_bridge.py"]
