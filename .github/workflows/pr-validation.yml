@@ -72,12 +72,12 @@ jobs:
       - name: Lint with ruff
         run: |
           echo "Running ruff linter..."
-          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester ruff .
+          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester ruff check .
 
-      - name: Check formatting with black
+      - name: Check formatting with ruff
         run: |
-          echo "Checking formatting with black..."
-          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester black --check .
+          echo "Checking formatting with ruff..."
+          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester ruff format --check .
 
       - name: Run all tests
         run: |
