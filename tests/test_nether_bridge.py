@@ -7,7 +7,7 @@ import docker
 
 # Adjusting sys.path to allow importing nether_bridge.py from the parent directory
 sys.path.insert(
-    0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")) # E501: Line split
+    0, os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 )
 
 from nether_bridge import (  # noqa: E402

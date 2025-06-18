@@ -4,7 +4,7 @@ import sys
 
 # --- Configuration ---
 # IMPORTANT: This must be the IP address of the machine running Docker
-TARGET_HOST = "127.0.0.1" # E501: Line split (was 80, now 79)
+TARGET_HOST = "127.0.0.1"
 # Ports should match what is defined in your docker-compose.yml and servers.json
 BEDROCK_PROXY_PORT = 19132
 JAVA_PROXY_PORT = 25565
@@ -16,7 +16,7 @@ JAVA_PROXY_PORT = 25565
 BEDROCK_UNCONNECTED_PING = (
     b"\x01"  # Packet ID (Unconnected Ping)
     + b"\x00\x00\x00\x00\x00\x00\x00\x00"  # Nonce (can be anything)
-    + b"\x00\xff\xff\x00\xfe\xfe\xfe\xfe\xfd\xfd\xfd\xfd\x12\x34\x56\x78" # E501: Line split
+    + b"\x00\xff\xff\x00\xfe\xfe\xfe\xfe\xfd\xfd\xfd\xfd\x12\x34\x56\x78"  # RakNet Magic
     + b"\x00\x00\x00\x00\x00\x00\x00\x00"  # Client GUID (can be anything)
 )
 
@@ -49,15 +49,15 @@ def get_java_handshake_and_status_request_packets(host, port):
         + encode_varint(1)
     )
     handshake_packet = (
-        encode_varint(len(handshake_payload) + 1) # E501: Line split
-        + b"\x00" + handshake_payload
+        encode_varint(len(handshake_payload) + 1) + b"\x00" + handshake_payload
     )
 
     # Status Request Packet
     status_request_payload = b""
     status_request_packet = (
-        encode_varint(len(status_request_payload) + 1) # E501: Line split
-        + b"\x00" + status_request_payload
+        encode_varint(len(status_request_payload) + 1)
+        + b"\x00"
+        + status_request_payload
     )
 
     return handshake_packet, status_request_packet
@@ -69,7 +69,7 @@ def get_java_handshake_and_status_request_packets(host, port):
 def test_bedrock_server():
     """Sends a UDP packet to trigger the Bedrock server and listens for a response."""
     print(
-        f"--- Testing Bedrock (UDP) -> {TARGET_HOST}:{BEDROCK_PROXY_PORT} ---" # E501: Line split
+        f"--- Testing Bedrock (UDP) -> {TARGET_HOST}:{BEDROCK_PROXY_PORT} ---"
     )
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(5)
@@ -84,18 +84,16 @@ def test_bedrock_server():
         print(f"SUCCESS: Received {len(data)} bytes back from {addr}.")
         if b"MCPE" in data:
             print(
-                "Response contains 'MCPE', server is likely up and responding " # E501: Line split
-                "correctly."
+                "Response contains 'MCPE', server is likely up and responding correctly."
             )
         else:
             print(
-                "Response received, but may not be a standard Minecraft pong " # E501: Line split
-                "packet."
+                "Response received, but may not be a standard Minecraft pong packet."
             )
 
     except socket.timeout:
         print(
-            "FAIL: Did not receive a response within 5 seconds. " # E501: Line split
+            "FAIL: Did not receive a response within 5 seconds. "
             "The server may not have started or the proxy failed."
         )
     except Exception as e:
@@ -114,8 +112,7 @@ def test_java_server():
         print("Attempting to connect to proxy...")
         sock.connect((TARGET_HOST, JAVA_PROXY_PORT))
         print(
-            "Connection successful. Sending handshake and status request " # E501: Line split
-            "packets..."
+            "Connection successful. Sending handshake and status request packets..."
         )
 
         handshake, status_request = (
@@ -131,22 +128,21 @@ def test_java_server():
         response = sock.recv(4096)
         print(f"SUCCESS: Received {len(response)} bytes back.")
         if b'{"version"' in response:
-            print("Response appears to be valid JSON from a Minecraft server.") # E501: Line split
+            print("Response appears to be valid JSON from a Minecraft server.")
         else:
             print(
-                "Response received, but may not be a standard Minecraft status " # E501: Line split
-                "response."
+                "Response received, but may not be a standard Minecraft status response."
             )
 
     except ConnectionRefusedError:
         print(
-            f"FAIL: Connection refused. The proxy is not listening on " # E501: Line split
+            f"FAIL: Connection refused. The proxy is not listening on "
             f"{TARGET_HOST}:{JAVA_PROXY_PORT}."
         )
     except socket.timeout:
         print(
-            "FAIL: Connection timed out. The server may not have started or " # E501: Line split
-            "the proxy failed."
+            "FAIL: Connection timed out. The server may not have started or the "
+            "proxy failed."
         )
     except Exception as e:
         print(f"An error occurred: {e}")
@@ -173,6 +169,5 @@ if __name__ == "__main__":
         test_java_server()
     else:
         print(
-            f"Error: Unknown test type '{test_type}'. Use 'bedrock', 'java', " # E501: Line split
-            "or 'all'."
+            f"Error: Unknown test type '{test_type}'. Use 'bedrock', 'java', or 'all'."
         )
