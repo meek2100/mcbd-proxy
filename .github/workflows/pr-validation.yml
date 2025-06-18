@@ -69,10 +69,10 @@ jobs:
           echo "Timeout: Nether-bridge did not become healthy after 2 minutes."
           exit 1
 
-      - name: Lint with flake8
+      - name: Lint with ruff
         run: |
-          echo "Running flake8 linter..."
-          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester flake8 .
+          echo "Running ruff linter..."
+          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester ruff .
 
       - name: Check formatting with black
         run: |

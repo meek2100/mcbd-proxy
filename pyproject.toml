@@ -29,7 +29,7 @@ Homepage = "https://github.com/meek2100/nether-bridge"
 
 [tool.black]
 # Set the maximum line length to the PEP 8 standard.
-line-length = 79
+line-length = 88
 # A more standard regex pattern for excluding directories.
 exclude = '''
 (
@@ -44,12 +44,9 @@ exclude = '''
 )
 '''
 
-[tool.flake8]
-# Set the max line length to match black's configuration.
-max-line-length = 79
-# Ignore specific flake8 errors that conflict with black's automatic formatting.
-extend-ignore = "E203, W503"
-# Exclude the same common directories.
+[tool.ruff]
+line-length = 88
+# Exclude the same common directories as Black.
 exclude = [
     ".git",
     ".venv",
@@ -58,3 +55,10 @@ exclude = [
     "dist",
     "examples",
 ]
+# Enable the 'E' and 'W' series (pycodestyle) and 'F' series (pyflakes) rules by default.
+select = ["E", "W", "F", "I"] # "I" for isort-like checks
+ignore = [] # Ruff handles Black compatibility, so no need to ignore E203, W503 directly.
+
+[tool.ruff.per-file-ignores]
+# If you have specific files or patterns where you want to ignore certain rules, add them here.
+# For example: "tests/*.py" = ["S101"] # Ignore assert statements in tests.
