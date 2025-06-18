@@ -1,6 +1,5 @@
 # tests/conftest.py
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -74,9 +73,6 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
     compose_file_to_use_abs = Path(pytestconfig.rootdir) / pytestconfig.getoption(
         "--compose-file"
     )
-
-    temp_compose_file_dir = None
-    temp_compose_file_path_abs = None
 
     env_vars = os.environ.copy()
     if _local_docker_host_from_file:
@@ -183,7 +179,8 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
     except subprocess.CalledProcessError as e:
         print(f"Error during Docker Compose setup: {e.stderr}")
         print(
-            f"\n--- Logs for project '{docker_compose_project_name}' (during setup failure) ---"
+            f"\n--- Logs for project '{docker_compose_project_name}'"
+            " (during setup failure) ---"
         )
         try:
             logs_cmd = [
@@ -235,7 +232,8 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
     # Teardown: Capture logs on test failure
     if request.session.testsfailed > 0:
         print(
-            f"\n--- DUMPING ALL CONTAINER LOGS DUE TO TEST FAILURE in project '{docker_compose_project_name}' ---"
+            f"\n--- DUMPING ALL CONTAINER LOGS DUE TO TEST FAILURE"
+            f" in project '{docker_compose_project_name}' ---"
         )
         try:
             logs_cmd = [
@@ -261,7 +259,8 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             print(f"Could not retrieve logs during test teardown: {log_e}")
 
     print(
-        f"\nTests finished. Tearing down Docker Compose project '{docker_compose_project_name}'..."
+        f"\nTests finished. Tearing down Docker Compose project "
+        f"'{docker_compose_project_name}'..."
     )
     subprocess.run(
         [
