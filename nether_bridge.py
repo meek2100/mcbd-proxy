@@ -1,19 +1,19 @@
-import socket
-import time
-import docker
-import os
-import threading
 import json
-import select
-import sys
 import logging
+import os
+import select
 import signal
-from collections import defaultdict
-from mcstatus import BedrockServer, JavaServer
-from pathlib import Path
+import socket
+import sys
+import threading
+import time
 from dataclasses import dataclass
+from pathlib import Path
+
+import docker
+from mcstatus import BedrockServer, JavaServer
+from prometheus_client import Gauge, Histogram, start_http_server
 from pythonjsonlogger.json import JsonFormatter
-from prometheus_client import start_http_server, Gauge, Histogram
 
 # --- Constants ---
 HEARTBEAT_FILE = Path("/tmp/proxy_heartbeat")
@@ -33,7 +33,9 @@ DEFAULT_SETTINGS = {
 
 # --- Prometheus Metrics Definitions ---
 ACTIVE_SESSIONS = Gauge(
-    "netherbridge_active_sessions", "Number of active player sessions", ["server_name"]
+    "netherbridge_active_sessions",
+    "Number of active player sessions",
+    ["server_name"],
 )
 RUNNING_SERVERS = Gauge(
     "netherbridge_running_servers",
@@ -116,7 +118,8 @@ class NetherBridgeProxy:
             return container.status == "running"
         except docker.errors.NotFound:
             self.logger.debug(
-                "Container not found.", extra={"container_name": container_name}
+                "Container not found.",
+                extra={"container_name": container_name},
             )
             return False
         except docker.errors.APIError as e:
@@ -138,7 +141,10 @@ class NetherBridgeProxy:
         max_wait_time_seconds: int,
         query_timeout_seconds: int,
     ) -> bool:
-        """Polls a Minecraft server using mcstatus until it responds or a timeout is reached."""
+        """
+        Polls a Minecraft server using mcstatus until it responds or a timeout
+        is reached.
+        """
         container_name = server_config.container_name
         target_ip = container_name
         target_port = server_config.internal_port
@@ -159,12 +165,14 @@ class NetherBridgeProxy:
                 status = None
                 if server_type == "bedrock":
                     server = BedrockServer.lookup(
-                        f"{target_ip}:{target_port}", timeout=query_timeout_seconds
+                        f"{target_ip}:{target_port}",
+                        timeout=query_timeout_seconds,
                     )
                     status = server.status()
                 elif server_type == "java":
                     server = JavaServer.lookup(
-                        f"{target_ip}:{target_port}", timeout=query_timeout_seconds
+                        f"{target_ip}:{target_port}",
+                        timeout=query_timeout_seconds,
                     )
                     status = server.status()
 
@@ -319,9 +327,14 @@ class NetherBridgeProxy:
             return False
 
     def _ensure_all_servers_stopped_on_startup(self):
-        """Ensures all managed servers are stopped when the proxy starts for a clean state."""
+        """
+        Ensures all managed servers are stopped when the proxy starts for a clean state.
+        """
         self.logger.info(
-            "Proxy startup: Ensuring all managed Minecraft servers are initially stopped."
+            (
+                "Proxy startup: Ensuring all managed Minecraft servers are "
+                "initially stopped."
+            )
         )
         for srv_conf in self.servers_list:
             container_name = srv_conf.container_name
@@ -344,7 +357,9 @@ class NetherBridgeProxy:
                 )
 
     def _monitor_servers_activity(self):
-        """Periodically checks running servers for player count and stops them if idle."""
+        """
+        Periodically checks running servers for player count and stops them if idle.
+        """
         while not self._shutdown_requested:
             # Use the setting from the current self.settings object
             time.sleep(self.settings.player_check_interval_seconds)
@@ -411,7 +426,9 @@ class NetherBridgeProxy:
                     )
 
     def _close_session_sockets(self, session_info):
-        """Helper to safely close sockets associated with a session and remove from inputs."""
+        """
+        Helper to safely close sockets associated with a session and remove from inputs.
+        """
         client_socket = session_info.get("client_socket")
         server_socket = session_info.get("server_socket")
         protocol = session_info.get("protocol")
@@ -451,7 +468,8 @@ class NetherBridgeProxy:
             )
         except Exception as e:
             self.logger.error(
-                f"Failed to reload settings, aborting reload: {e}", exc_info=True
+                f"Failed to reload settings, aborting reload: {e}",
+                exc_info=True,
             )
             self._reload_requested = False
             return
@@ -555,7 +573,10 @@ class NetherBridgeProxy:
                             server_sock.setblocking(False)
                             try:
                                 server_sock.connect_ex(
-                                    (container_name, server_config.internal_port)
+                                    (
+                                        container_name,
+                                        server_config.internal_port,
+                                    )
                                 )
                             except socket.gaierror:
                                 self.logger.error(
@@ -596,7 +617,8 @@ class NetherBridgeProxy:
 
                             if not self._is_container_running(container_name):
                                 self.logger.info(
-                                    "First packet received for stopped server. Starting...",
+                                    "First packet received for stopped server. "
+                                    "Starting...",
                                     extra={
                                         "container_name": container_name,
                                         "client_addr": client_addr,
@@ -616,11 +638,18 @@ class NetherBridgeProxy:
                                 try:
                                     target_ip = socket.gethostbyname(container_name)
                                     self.logger.info(
-                                        f"Resolved {container_name} to {target_ip} for new session."
+                                        (
+                                            f"Resolved {container_name} to "
+                                            f"{target_ip} for new session."
+                                        )
                                     )
                                 except socket.gaierror:
                                     self.logger.error(
-                                        f"DNS resolution failed for container '{container_name}'. Cannot establish session."
+                                        (
+                                            "DNS resolution failed for container "
+                                            f"'{container_name}'. "
+                                            "Cannot establish session."
+                                        )
                                     )
                                     continue
 
@@ -650,9 +679,9 @@ class NetherBridgeProxy:
 
                             session_info = self.active_sessions[session_key]
                             session_info["last_packet_time"] = time.time()
-                            self.server_states[container_name][
-                                "last_activity"
-                            ] = time.time()
+                            self.server_states[container_name]["last_activity"] = (
+                                time.time()
+                            )
 
                             target_ip = session_info["target_ip"]
                             session_info["server_socket"].sendto(
@@ -691,9 +720,9 @@ class NetherBridgeProxy:
                     session_info["last_packet_time"] = time.time()
 
                     if socket_role == "client_socket":
-                        self.server_states[container_name][
-                            "last_activity"
-                        ] = time.time()
+                        self.server_states[container_name]["last_activity"] = (
+                            time.time()
+                        )
                         destination_socket = session_info["server_socket"]
                         destination_address = (
                             session_info.get("target_ip", container_name),
@@ -737,9 +766,12 @@ class NetherBridgeProxy:
                             session_info.get("server_socket"), None
                         )
 
-                except Exception as e:
+                except Exception:
                     self.logger.error(
-                        f"Unhandled exception for socket {sock.fileno()}. Closing socket.",
+                        (
+                            f"Unhandled exception for socket {sock.fileno()}. "
+                            "Closing socket."
+                        ),
                         exc_info=True,
                     )
                     if sock in self.inputs:
@@ -784,7 +816,8 @@ class NetherBridgeProxy:
             )
         except OSError as e:
             self.logger.critical(
-                f"FATAL: Could not bind to port {listen_port}.", extra={"error": str(e)}
+                f"FATAL: Could not bind to port {listen_port}.",
+                extra={"error": str(e)},
             )
             if not getattr(self, "_reload_requested", False):
                 sys.exit(1)
@@ -797,11 +830,13 @@ class NetherBridgeProxy:
             metrics_port = 8000
             start_http_server(metrics_port)
             self.logger.info(
-                "Prometheus metrics server started.", extra={"port": metrics_port}
+                "Prometheus metrics server started.",
+                extra={"port": metrics_port},
             )
         except Exception as e:
             self.logger.error(
-                "Could not start Prometheus metrics server.", extra={"error": str(e)}
+                "Could not start Prometheus metrics server.",
+                extra={"error": str(e)},
             )
 
         app_metadata = os.environ.get("APP_IMAGE_METADATA")
@@ -819,7 +854,8 @@ class NetherBridgeProxy:
             try:
                 HEARTBEAT_FILE.unlink()
                 self.logger.info(
-                    "Removed stale heartbeat file.", extra={"path": str(HEARTBEAT_FILE)}
+                    "Removed stale heartbeat file.",
+                    extra={"path": str(HEARTBEAT_FILE)},
                 )
             except OSError as e:
                 self.logger.warning(
@@ -851,7 +887,8 @@ def perform_health_check():
         logger.debug("Health Check Stage 1 (Configuration) OK.")
     except Exception as e:
         logger.error(
-            f"Health Check FAIL: Error loading configuration. Error: {e}", exc_info=True
+            f"Health Check FAIL: Error loading configuration. Error: {e}",
+            exc_info=True,
         )
         sys.exit(1)
 
@@ -927,7 +964,10 @@ def _load_servers_from_env() -> list[dict]:
             }
             if not all(
                 v is not None
-                for v in [server_def["container_name"], server_def["internal_port"]]
+                for v in [
+                    server_def["container_name"],
+                    server_def["internal_port"],
+                ]
             ):
                 raise ValueError(f"Incomplete definition for server index {i}.")
             if server_def["server_type"] not in ["bedrock", "java"]:
@@ -945,7 +985,9 @@ def _load_servers_from_env() -> list[dict]:
 
 
 def load_application_config() -> tuple[ProxySettings, list[ServerConfig]]:
-    """Loads all configuration from files and environment, with env vars taking precedence."""
+    """
+    Loads all configuration from files and environment, with env vars taking precedence.
+    """
     logger = logging.getLogger(__name__)
     settings_from_json = _load_settings_from_json(Path("settings.json"))
     final_settings = {}
@@ -955,7 +997,7 @@ def load_application_config() -> tuple[ProxySettings, list[ServerConfig]]:
             "player_check_interval_seconds": "NB_PLAYER_CHECK_INTERVAL",
             "query_timeout_seconds": "NB_QUERY_TIMEOUT",
             "server_ready_max_wait_time_seconds": "NB_SERVER_READY_MAX_WAIT",
-            "initial_boot_ready_max_wait_time_seconds": "NB_INITIAL_BOOT_READY_MAX_WAIT",
+            "initial_boot_ready_max_wait_time_seconds": "NB_INITIAL_BOOT_READY_MAX_WAIT",  # noqa: E501
             "server_startup_delay_seconds": "NB_SERVER_STARTUP_DELAY",
             "initial_server_query_delay_seconds": "NB_INITIAL_SERVER_QUERY_DELAY",
             "log_level": "LOG_LEVEL",
@@ -967,7 +1009,11 @@ def load_application_config() -> tuple[ProxySettings, list[ServerConfig]]:
         if env_val is not None:
             try:
                 if isinstance(default_val, bool):
-                    final_settings[key] = env_val.lower() in ("true", "1", "yes")
+                    final_settings[key] = env_val.lower() in (
+                        "true",
+                        "1",
+                        "yes",
+                    )
                 elif isinstance(default_val, int):
                     final_settings[key] = int(env_val)
                 else:
@@ -1014,7 +1060,8 @@ if __name__ == "__main__":
     settings, servers = load_application_config()
     logger.setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
     logger.info(
-        "Log level set to final value.", extra={"log_level": settings.log_level}
+        "Log level set to final value.",
+        extra={"log_level": settings.log_level},
     )
 
     if not servers:

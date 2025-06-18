@@ -68,17 +68,16 @@ jobs:
           done
           echo "Timeout: Nether-bridge did not become healthy after 2 minutes."
           exit 1
-      
-      # --- LINT & FORMATTING CHECKS ---
-      #- name: Lint with flake8
-      #  run: |
-      #    echo "Running flake8 linter..."
-      #    docker compose -f tests/docker-compose.tests.yml exec -T nb-tester flake8 .
 
-      #- name: Check formatting with black
-      #  run: |
-      #    echo "Checking formatting with black..."
-      #    docker compose -f tests/docker-compose.tests.yml exec -T nb-tester black --check .
+      - name: Lint with ruff
+        run: |
+          echo "Running ruff linter..."
+          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester ruff check .
+
+      - name: Check formatting with ruff
+        run: |
+          echo "Checking formatting with ruff..."
+          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester ruff format --check .
 
       - name: Run all tests
         run: |

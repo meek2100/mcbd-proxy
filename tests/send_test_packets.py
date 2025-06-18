@@ -1,6 +1,6 @@
 import socket
-import time
 import sys
+import time
 
 # --- Configuration ---
 # IMPORTANT: This must be the IP address of the machine running Docker
@@ -16,7 +16,8 @@ JAVA_PROXY_PORT = 25565
 BEDROCK_UNCONNECTED_PING = (
     b"\x01"  # Packet ID (Unconnected Ping)
     + b"\x00\x00\x00\x00\x00\x00\x00\x00"  # Nonce (can be anything)
-    + b"\x00\xff\xff\x00\xfe\xfe\xfe\xfe\xfd\xfd\xfd\xfd\x12\x34\x56\x78"  # RakNet Magic
+    + b"\x00\xff\xff\x00\xfe\xfe\xfe\xfe"
+    + b"\xfd\xfd\xfd\xfd\x12\x34\x56\x78"  # RakNet Magic
     + b"\x00\x00\x00\x00\x00\x00\x00\x00"  # Client GUID (can be anything)
 )
 
@@ -80,7 +81,10 @@ def test_bedrock_server():
         print(f"SUCCESS: Received {len(data)} bytes back from {addr}.")
         if b"MCPE" in data:
             print(
-                "Response contains 'MCPE', server is likely up and responding correctly."
+                (
+                    "Response contains 'MCPE', server is likely up and responding "
+                    "correctly."
+                )
             )
         else:
             print("Response received, but may not be a standard Minecraft pong packet.")
@@ -121,7 +125,10 @@ def test_java_server():
             print("Response appears to be valid JSON from a Minecraft server.")
         else:
             print(
-                "Response received, but may not be a standard Minecraft status response."
+                (
+                    "Response received, but may not be a standard Minecraft "
+                    "status response."
+                )
             )
 
     except ConnectionRefusedError:

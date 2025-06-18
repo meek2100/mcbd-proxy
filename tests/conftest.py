@@ -1,12 +1,13 @@
 # tests/conftest.py
-import pytest
-import docker
-import subprocess
-import time
 import os
-from pathlib import Path
-import sys
 import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import docker
+import pytest
 
 # Try to load local environment specific IP and DOCKER_HOST for testing
 _local_vm_host_ip = None
@@ -31,7 +32,10 @@ try:
 
 except ImportError:
     print(
-        "local_env.py not found in tests/. Relying on environment or default 127.0.0.1 for local/CI."
+        (
+            "local_env.py not found in tests/. "
+            "Relying on environment or default 127.0.0.1 for local/CI."
+        )
     )
 finally:
     if "current_tests_dir" in locals() and current_tests_dir in sys.path:
@@ -102,12 +106,22 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
             "mc-java",
             "nb-tester",
         ]
-        list_cmd = ["docker", "ps", "-aq", "--filter", "name=netherbridge_test_"]
+        list_cmd = [
+            "docker",
+            "ps",
+            "-aq",
+            "--filter",
+            "name=netherbridge_test_",
+        ]
         for name in hardcoded_names_to_remove:
             list_cmd.extend(["--filter", f"name={name}"])
 
         result = subprocess.run(
-            list_cmd, capture_output=True, encoding="utf-8", check=False, env=env_vars
+            list_cmd,
+            capture_output=True,
+            encoding="utf-8",
+            check=False,
+            env=env_vars,
         )
         stale_ids = result.stdout.strip().splitlines()
         if stale_ids:
@@ -179,7 +193,10 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
     except subprocess.CalledProcessError as e:
         print(f"Error during Docker Compose setup: {e.stderr}")
         print(
-            f"\n--- Logs for project '{docker_compose_project_name}' (during setup failure) ---"
+            (
+                f"\n--- Logs for project '{docker_compose_project_name}' "
+                "(during setup failure) ---"
+            )
         )
         try:
             logs_cmd = [
@@ -205,7 +222,10 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
         except Exception as log_e:
             print(f"Could not retrieve logs: {log_e}")
         print(
-            f"\nAttempting forceful teardown after setup failure for '{docker_compose_project_name}'..."
+            (
+                f"\nAttempting forceful teardown after setup failure for "
+                f"'{docker_compose_project_name}'..."
+            )
         )
         try:
             subprocess.run(
@@ -233,7 +253,8 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
     except Exception as e:
         print(f"An unexpected error occurred during Docker Compose setup: {e}")
         print(
-            f"\nAttempting forceful teardown after unexpected setup error for '{docker_compose_project_name}'..."
+            f"\nAttempting forceful teardown after unexpected setup error for "
+            f"'{docker_compose_project_name}'..."
         )
         try:
             subprocess.run(
@@ -265,7 +286,10 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
     # Teardown: Capture logs on test failure
     if request.session.testsfailed > 0:
         print(
-            f"\n--- DUMPING ALL CONTAINER LOGS DUE TO TEST FAILURE in project '{docker_compose_project_name}' ---"
+            (
+                f"\n--- DUMPING ALL CONTAINER LOGS DUE TO TEST FAILURE in project "
+                f"'{docker_compose_project_name}' ---"
+            )
         )
         try:
             logs_cmd = [
@@ -329,7 +353,8 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
                 os.remove(str(temp_compose_file_path_abs))
             except OSError as e:
                 print(
-                    f"Warning: Could not remove temporary compose file {temp_compose_file_path_abs}: {e}"
+                    "Warning: Could not remove temporary compose file "
+                    f"{temp_compose_file_path_abs}: {e}"
                 )
 
         if temp_compose_file_dir and temp_compose_file_dir.exists():
@@ -337,7 +362,10 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request):
                 shutil.rmtree(temp_compose_file_dir, ignore_errors=True)
             except OSError as e:
                 print(
-                    f"Warning: Could not remove temporary directory {temp_compose_file_dir}: {e}"
+                    (
+                        f"Warning: Could not remove temporary directory "
+                        f"{temp_compose_file_dir}: {e}"
+                    )
                 )
 
 
@@ -368,8 +396,7 @@ def docker_client_fixture():
         )
     except Exception as e:
         pytest.fail(
-            "An unexpected error occurred while setting up Docker client fixture: "
-            f"{e}"
+            f"An unexpected error occurred while setting up Docker client fixture: {e}"
         )
 
     yield client
