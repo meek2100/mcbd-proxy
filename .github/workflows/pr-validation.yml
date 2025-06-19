@@ -1,3 +1,4 @@
+# .github/workflows/pr-validation.yml
 name: Pull Request Validation
 
 on:
@@ -26,32 +27,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build 'nether-bridge' image with cache
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          tags: nether-bridge:local
-          load: true
-          push: false
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr
-          cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr,mode=max
-
-      - name: Build 'nb-tester' image with cache
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          tags: nb-tester:local
-          target: testing
-          load: true
-          push: false
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr
-          cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/mcbd-proxy-cache:pr,mode=max
+      - name: Get Docker GID
+        id: docker-gid
+        run: 'echo "DOCKER_GID=$(getent group docker | cut -d: -f3)" >> $GITHUB_ENV'
 
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
       - name: Start Test Environment
-        run: docker compose -f tests/docker-compose.tests.yml up -d --remove-orphans
+        run: docker compose -f tests/docker-compose.tests.yml up -d --build --remove-orphans
         id: start-env
 
       - name: Wait for Nether-bridge to be healthy
@@ -68,7 +52,7 @@ jobs:
           done
           echo "Timeout: Nether-bridge did not become healthy after 2 minutes."
           exit 1
-
+      
       - name: Lint with ruff
         run: |
           echo "Running ruff linter..."

@@ -18,16 +18,17 @@ JAVA_PROXY_PORT = 25565
 def get_proxy_host():
     """
     Helper function to get the target host for integration tests.
-    In CI/CD, the actual IP of the 'nether-bridge' container is passed
-    as an environment variable to the 'tester' container.
-    Locally with remote Docker, local_env.py sets VM_HOST_IP.
-    Otherwise, default to '127.0.0.1' for local Docker Desktop.
     """
     if "PROXY_IP" in os.environ:
+        # Used by GitHub Actions CI
         return os.environ["PROXY_IP"]
-    if "VM_HOST_IP" in os.environ:
-        return os.environ["VM_HOST_IP"]
 
+    # --- FIX: Look for the correct environment variable ---
+    if "DOCKER_HOST_IP" in os.environ:
+        # Used for remote testing, variable is set by conftest.py
+        return os.environ["DOCKER_HOST_IP"]
+
+    # Fallback for local Docker Desktop testing
     return "127.0.0.1"
 
 
