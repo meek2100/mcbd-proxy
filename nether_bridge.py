@@ -95,6 +95,8 @@ class NetherBridgeProxy:
         self.listen_sockets = {}
         self.inputs = []
         self.last_heartbeat_time = time.time()
+        # --- THREAD SAFETY --- Initialize the lock
+        self.state_lock = threading.Lock()
         self._shutdown_requested = False
         self._reload_requested = False
 
@@ -217,14 +219,16 @@ class NetherBridgeProxy:
 
                 time.sleep(self.settings.server_startup_delay_seconds)
 
-                target_server_config = next(
-                    (
-                        s
-                        for s in self.servers_list
-                        if s.container_name == container_name
-                    ),
-                    None,
-                )
+                # --- THREAD SAFETY --- Protect access to servers_list
+                with self.state_lock:
+                    target_server_config = next(
+                        (
+                            s
+                            for s in self.servers_list
+                            if s.container_name == container_name
+                        ),
+                        None,
+                    )
                 if not target_server_config:
                     self.logger.error(
                         "Configuration not found. Cannot query for readiness.",
@@ -238,7 +242,9 @@ class NetherBridgeProxy:
                     self.settings.query_timeout_seconds,
                 )
 
-                self.server_states[container_name]["running"] = True
+                # --- THREAD SAFETY --- Protect access to server_states
+                with self.state_lock:
+                    self.server_states[container_name]["running"] = True
                 RUNNING_SERVERS.inc()
 
                 duration = time.time() - startup_timer_start
@@ -288,7 +294,9 @@ class NetherBridgeProxy:
                     extra={"container_name": container_name},
                 )
                 container.stop()
-                self.server_states[container_name]["running"] = False
+                # --- THREAD SAFETY --- Protect access to server_states
+                with self.state_lock:
+                    self.server_states[container_name]["running"] = False
                 RUNNING_SERVERS.dec()
                 self.logger.info(
                     "Server stopped successfully.",
@@ -303,15 +311,19 @@ class NetherBridgeProxy:
                         "status": container.status,
                     },
                 )
-                self.server_states[container_name]["running"] = False
+                # --- THREAD SAFETY --- Protect access to server_states
+                with self.state_lock:
+                    self.server_states[container_name]["running"] = False
                 return True
         except docker.errors.NotFound:
             self.logger.debug(
                 "Docker container not found. Assuming already stopped.",
                 extra={"container_name": container_name},
             )
-            if container_name in self.server_states:
-                self.server_states[container_name]["running"] = False
+            # --- THREAD SAFETY --- Protect access to server_states
+            with self.state_lock:
+                if container_name in self.server_states:
+                    self.server_states[container_name]["running"] = False
             return True
         except docker.errors.APIError as e:
             self.logger.error(
@@ -336,6 +348,7 @@ class NetherBridgeProxy:
                 "initially stopped."
             )
         )
+        # servers_list is read-only here so no lock needed for this loop
         for srv_conf in self.servers_list:
             container_name = srv_conf.container_name
             if self._is_container_running(container_name):
@@ -361,73 +374,84 @@ class NetherBridgeProxy:
         Periodically checks running servers for player count and stops them if idle.
         """
         while not self._shutdown_requested:
-            # Use the setting from the current self.settings object
             time.sleep(self.settings.player_check_interval_seconds)
             if self._shutdown_requested:
                 break
 
-            current_time = time.time()
-            idle_timeout = self.settings.idle_timeout_seconds
+            containers_to_stop = []
 
-            idle_sessions_to_remove = [
-                key
-                for key, info in self.active_sessions.items()
-                if current_time - info["last_packet_time"] > idle_timeout
-            ]
-            for session_key in idle_sessions_to_remove:
-                session_info = self.active_sessions.pop(session_key, None)
-                if session_info:
-                    server_config = self.servers_config_map.get(
-                        session_info["listen_port"]
-                    )
-                    if server_config:
-                        ACTIVE_SESSIONS.labels(server_name=server_config.name).dec()
-                    self.logger.info(
-                        "Cleaning up idle client session.",
-                        extra={
-                            "container_name": session_info["target_container"],
-                            "client_addr": session_key[0],
-                        },
-                    )
-                    self._close_session_sockets(session_info)
-                    self.socket_to_session_map.pop(
-                        session_info.get("client_socket"), None
-                    )
-                    self.socket_to_session_map.pop(
-                        session_info.get("server_socket"), None
-                    )
+            # --- THREAD SAFETY ---
+            # Lock the entire check phase to ensure data consistency
+            with self.state_lock:
+                current_time = time.time()
+                idle_timeout = self.settings.idle_timeout_seconds
 
-            for server_conf in self.servers_list:
-                container_name = server_conf.container_name
-                state = self.server_states.get(container_name)
-
-                if not (state and state.get("running")):
-                    continue
-
-                has_active_sessions = any(
-                    info["target_container"] == container_name
-                    for info in self.active_sessions.values()
-                )
-
-                if not has_active_sessions:
-                    if current_time - state.get("last_activity", 0) > idle_timeout:
+                idle_sessions_to_remove = [
+                    key
+                    for key, info in self.active_sessions.items()
+                    if current_time - info["last_packet_time"] > idle_timeout
+                ]
+                for session_key in idle_sessions_to_remove:
+                    session_info = self.active_sessions.pop(session_key, None)
+                    if session_info:
+                        server_config = self.servers_config_map.get(
+                            session_info["listen_port"]
+                        )
+                        if server_config:
+                            ACTIVE_SESSIONS.labels(server_name=server_config.name).dec()
                         self.logger.info(
-                            "Server idle with 0 sessions. Initiating shutdown.",
+                            "Cleaning up idle client session.",
                             extra={
-                                "container_name": container_name,
-                                "idle_threshold_seconds": idle_timeout,
+                                "container_name": session_info["target_container"],
+                                "client_addr": session_key[0],
                             },
                         )
-                        self._stop_minecraft_server(container_name)
-                else:
-                    self.logger.debug(
-                        "Server has active sessions. Not stopping.",
-                        extra={"container_name": container_name},
+                        self._close_session_sockets(session_info)
+                        self.socket_to_session_map.pop(
+                            session_info.get("client_socket"), None
+                        )
+                        self.socket_to_session_map.pop(
+                            session_info.get("server_socket"), None
+                        )
+
+                for server_conf in self.servers_list:
+                    container_name = server_conf.container_name
+                    state = self.server_states.get(container_name)
+
+                    if not (state and state.get("running")):
+                        continue
+
+                    has_active_sessions = any(
+                        info["target_container"] == container_name
+                        for info in self.active_sessions.values()
                     )
+
+                    if not has_active_sessions:
+                        if current_time - state.get("last_activity", 0) > idle_timeout:
+                            self.logger.info(
+                                "Server idle with 0 sessions. Flagging for shutdown.",
+                                extra={
+                                    "container_name": container_name,
+                                    "idle_threshold_seconds": idle_timeout,
+                                },
+                            )
+                            containers_to_stop.append(container_name)
+                    else:
+                        self.logger.debug(
+                            "Server has active sessions. Not stopping.",
+                            extra={"container_name": container_name},
+                        )
+
+            # --- THREAD SAFETY --- Stop operations are performed outside the lock
+            # because they are long-running I/O operations. _stop_minecraft_server
+            # has its own internal locks for the state changes it makes.
+            for container_name in containers_to_stop:
+                self._stop_minecraft_server(container_name)
 
     def _close_session_sockets(self, session_info):
         """
         Helper to safely close sockets associated with a session and remove from inputs.
+        This method MUST be called from within a block that holds the state_lock.
         """
         client_socket = session_info.get("client_socket")
         server_socket = session_info.get("server_socket")
@@ -458,14 +482,6 @@ class NetherBridgeProxy:
 
         try:
             new_settings, new_servers = load_application_config()
-            self.logger.setLevel(
-                getattr(logging, new_settings.log_level.upper(), logging.INFO)
-            )
-            self.settings = new_settings
-            self.logger.info(
-                "Proxy settings have been reloaded.",
-                extra={"new_log_level": self.settings.log_level},
-            )
         except Exception as e:
             self.logger.error(
                 f"Failed to reload settings, aborting reload: {e}",
@@ -474,41 +490,49 @@ class NetherBridgeProxy:
             self._reload_requested = False
             return
 
-        old_ports = set(self.servers_config_map.keys())
-        new_servers_map = {s.listen_port: s for s in new_servers}
-        new_ports = set(new_servers_map.keys())
-
-        # Remove listeners for servers that are no longer in the config
-        for port in old_ports - new_ports:
-            server_name = self.servers_config_map.get(
-                port, ServerConfig("Unknown", "", port, "", port)
-            ).name
-            self.logger.info(
-                f"Removing listener for old server '{server_name}' on port {port}."
+        # --- THREAD SAFETY --- Lock the entire configuration swap
+        with self.state_lock:
+            self.logger.setLevel(
+                getattr(logging, new_settings.log_level.upper(), logging.INFO)
             )
-            sock = self.listen_sockets.pop(port, None)
-            if sock:
-                if sock in self.inputs:
-                    self.inputs.remove(sock)
-                sock.close()
-            self.servers_config_map.pop(port, None)
-
-        # Add listeners for new servers
-        for port in new_ports - old_ports:
-            srv_cfg = new_servers_map[port]
+            self.settings = new_settings
             self.logger.info(
-                f"Adding new listener for server '{srv_cfg.name}' on port {port}."
+                "Proxy settings have been reloaded.",
+                extra={"new_log_level": self.settings.log_level},
             )
-            self._create_listening_socket(srv_cfg)
-            if srv_cfg.container_name not in self.server_states:
-                self.server_states[srv_cfg.container_name] = {
-                    "running": False,
-                    "last_activity": 0.0,
-                }
 
-        # Update server configurations and the main list
-        self.servers_config_map = new_servers_map
-        self.servers_list = new_servers
+            old_ports = set(self.servers_config_map.keys())
+            new_servers_map = {s.listen_port: s for s in new_servers}
+            new_ports = set(new_servers_map.keys())
+
+            for port in old_ports - new_ports:
+                server_name = self.servers_config_map.get(
+                    port, ServerConfig("Unknown", "", port, "", port)
+                ).name
+                self.logger.info(
+                    f"Removing listener for old server '{server_name}' on port {port}."
+                )
+                sock = self.listen_sockets.pop(port, None)
+                if sock:
+                    if sock in self.inputs:
+                        self.inputs.remove(sock)
+                    sock.close()
+                self.servers_config_map.pop(port, None)
+
+            for port in new_ports - old_ports:
+                srv_cfg = new_servers_map[port]
+                self.logger.info(
+                    f"Adding new listener for server '{srv_cfg.name}' on port {port}."
+                )
+                self._create_listening_socket(srv_cfg)
+                if srv_cfg.container_name not in self.server_states:
+                    self.server_states[srv_cfg.container_name] = {
+                        "running": False,
+                        "last_activity": 0.0,
+                    }
+
+            self.servers_config_map = new_servers_map
+            self.servers_list = new_servers
 
         self.logger.info("Configuration reload complete.")
         self._reload_requested = False
@@ -521,8 +545,12 @@ class NetherBridgeProxy:
             if self._reload_requested:
                 self._reload_configuration()
 
+            # --- THREAD SAFETY --- Create a copy of inputs to select on
+            with self.state_lock:
+                inputs_copy = list(self.inputs)
+
             try:
-                readable, _, _ = select.select(self.inputs, [], [], 1.0)
+                readable, _, _ = select.select(inputs_copy, [], [], 1.0)
             except select.error as e:
                 self.logger.error(f"Error in select.select(): {e}", exc_info=True)
                 time.sleep(1)
@@ -543,132 +571,70 @@ class NetherBridgeProxy:
                         extra={"path": str(HEARTBEAT_FILE)},
                     )
 
-            for sock in readable:
-                try:
-                    # Logic for handling listening sockets (new connections)
-                    if sock in self.listen_sockets.values():
-                        if sock.type == socket.SOCK_STREAM:  # New TCP connection
-                            conn, client_addr = sock.accept()
-                            conn.setblocking(False)
-                            self.inputs.append(conn)
+            # --- THREAD SAFETY ---
+            # Lock the entire block for processing readable sockets
+            with self.state_lock:
+                for sock in readable:
+                    try:
+                        # Logic for handling listening sockets (new connections)
+                        if sock in self.listen_sockets.values():
+                            if sock.type == socket.SOCK_STREAM:  # New TCP connection
+                                conn, client_addr = sock.accept()
+                                conn.setblocking(False)
+                                self.inputs.append(conn)
 
-                            server_port = sock.getsockname()[1]
-                            server_config = self.servers_config_map[server_port]
-                            container_name = server_config.container_name
+                                server_port = sock.getsockname()[1]
+                                server_config = self.servers_config_map[server_port]
+                                container_name = server_config.container_name
 
-                            self.logger.info(
-                                "Accepted new TCP connection.",
-                                extra={
-                                    "client_addr": client_addr,
-                                    "server_name": server_config.name,
-                                },
-                            )
-
-                            if not self._is_container_running(container_name):
-                                self._start_minecraft_server(container_name)
-
-                            server_sock = socket.socket(
-                                socket.AF_INET, socket.SOCK_STREAM
-                            )
-                            server_sock.setblocking(False)
-                            try:
-                                server_sock.connect_ex(
-                                    (
-                                        container_name,
-                                        server_config.internal_port,
-                                    )
-                                )
-                            except socket.gaierror:
-                                self.logger.error(
-                                    "DNS resolution failed for container.",
-                                    extra={"container_name": container_name},
-                                )
-                                self.inputs.remove(conn)
-                                conn.close()
-                                continue
-
-                            self.inputs.append(server_sock)
-
-                            session_key = (client_addr, server_port, "tcp")
-                            session_info = {
-                                "client_socket": conn,
-                                "server_socket": server_sock,
-                                "target_container": container_name,
-                                "last_packet_time": time.time(),
-                                "listen_port": server_port,
-                                "protocol": "tcp",
-                            }
-                            self.active_sessions[session_key] = session_info
-                            self.socket_to_session_map[conn] = (
-                                session_key,
-                                "client_socket",
-                            )
-                            self.socket_to_session_map[server_sock] = (
-                                session_key,
-                                "server_socket",
-                            )
-                            ACTIVE_SESSIONS.labels(server_name=server_config.name).inc()
-
-                        elif sock.type == socket.SOCK_DGRAM:  # New UDP "connection"
-                            data, client_addr = sock.recvfrom(4096)
-                            server_port = sock.getsockname()[1]
-                            server_config = self.servers_config_map[server_port]
-                            container_name = server_config.container_name
-
-                            if not self._is_container_running(container_name):
                                 self.logger.info(
-                                    "First packet received for stopped server. "
-                                    "Starting...",
-                                    extra={
-                                        "container_name": container_name,
-                                        "client_addr": client_addr,
-                                    },
-                                )
-                                self._start_minecraft_server(container_name)
-
-                            session_key = (client_addr, server_port, "udp")
-                            if session_key not in self.active_sessions:
-                                self.logger.info(
-                                    "Establishing new UDP session for running server.",
+                                    "Accepted new TCP connection.",
                                     extra={
                                         "client_addr": client_addr,
                                         "server_name": server_config.name,
                                     },
                                 )
+                                # Start server if needed (long I/O op, but we hold
+                                # lock for simplicity/safety)
+                                if not self._is_container_running(container_name):
+                                    self._start_minecraft_server(container_name)
+
+                                server_sock = socket.socket(
+                                    socket.AF_INET, socket.SOCK_STREAM
+                                )
+                                server_sock.setblocking(False)
                                 try:
-                                    target_ip = socket.gethostbyname(container_name)
-                                    self.logger.info(
+                                    server_sock.connect_ex(
                                         (
-                                            f"Resolved {container_name} to "
-                                            f"{target_ip} for new session."
+                                            container_name,
+                                            server_config.internal_port,
                                         )
                                     )
                                 except socket.gaierror:
                                     self.logger.error(
-                                        (
-                                            "DNS resolution failed for container "
-                                            f"'{container_name}'. "
-                                            "Cannot establish session."
-                                        )
+                                        "DNS resolution failed for container.",
+                                        extra={"container_name": container_name},
                                     )
+                                    self.inputs.remove(conn)
+                                    conn.close()
                                     continue
 
-                                server_sock = socket.socket(
-                                    socket.AF_INET, socket.SOCK_DGRAM
-                                )
-                                server_sock.setblocking(False)
                                 self.inputs.append(server_sock)
 
+                                session_key = (client_addr, server_port, "tcp")
                                 session_info = {
-                                    "client_socket": sock,
+                                    "client_socket": conn,
                                     "server_socket": server_sock,
                                     "target_container": container_name,
-                                    "target_ip": target_ip,
                                     "last_packet_time": time.time(),
                                     "listen_port": server_port,
-                                    "protocol": "udp",
+                                    "protocol": "tcp",
                                 }
                                 self.active_sessions[session_key] = session_info
+                                self.socket_to_session_map[conn] = (
+                                    session_key,
+                                    "client_socket",
+                                )
                                 self.socket_to_session_map[server_sock] = (
                                     session_key,
                                     "server_socket",
@@ -677,117 +643,191 @@ class NetherBridgeProxy:
                                     server_name=server_config.name
                                 ).inc()
 
-                            session_info = self.active_sessions[session_key]
-                            session_info["last_packet_time"] = time.time()
+                            elif sock.type == socket.SOCK_DGRAM:  # New UDP "connection"
+                                data, client_addr = sock.recvfrom(4096)
+                                server_port = sock.getsockname()[1]
+                                server_config = self.servers_config_map[server_port]
+                                container_name = server_config.container_name
+
+                                if not self._is_container_running(container_name):
+                                    self.logger.info(
+                                        "First packet received for stopped server. "
+                                        "Starting...",
+                                        extra={
+                                            "container_name": container_name,
+                                            "client_addr": client_addr,
+                                        },
+                                    )
+                                    self._start_minecraft_server(container_name)
+
+                                session_key = (client_addr, server_port, "udp")
+                                if session_key not in self.active_sessions:
+                                    self.logger.info(
+                                        (
+                                            "Establishing new UDP session for "
+                                            "running server."
+                                        ),
+                                        extra={
+                                            "client_addr": client_addr,
+                                            "server_name": server_config.name,
+                                        },
+                                    )
+                                    try:
+                                        target_ip = socket.gethostbyname(container_name)
+                                        self.logger.info(
+                                            (
+                                                f"Resolved {container_name} to "
+                                                f"{target_ip} for new session."
+                                            )
+                                        )
+                                    except socket.gaierror:
+                                        self.logger.error(
+                                            (
+                                                "DNS resolution failed for container "
+                                                f"'{container_name}'. "
+                                                "Cannot establish session."
+                                            )
+                                        )
+                                        continue
+
+                                    server_sock = socket.socket(
+                                        socket.AF_INET, socket.SOCK_DGRAM
+                                    )
+                                    server_sock.setblocking(False)
+                                    self.inputs.append(server_sock)
+
+                                    session_info = {
+                                        "client_socket": sock,
+                                        "server_socket": server_sock,
+                                        "target_container": container_name,
+                                        "target_ip": target_ip,
+                                        "last_packet_time": time.time(),
+                                        "listen_port": server_port,
+                                        "protocol": "udp",
+                                    }
+                                    self.active_sessions[session_key] = session_info
+                                    self.socket_to_session_map[server_sock] = (
+                                        session_key,
+                                        "server_socket",
+                                    )
+                                    ACTIVE_SESSIONS.labels(
+                                        server_name=server_config.name
+                                    ).inc()
+
+                                session_info = self.active_sessions[session_key]
+                                session_info["last_packet_time"] = time.time()
+                                self.server_states[container_name]["last_activity"] = (
+                                    time.time()
+                                )
+                                target_ip = session_info["target_ip"]
+                                session_info["server_socket"].sendto(
+                                    data, (target_ip, server_config.internal_port)
+                                )
+                            continue
+
+                        # Logic for established connections
+                        session_info_tuple = self.socket_to_session_map.get(sock)
+                        if not session_info_tuple:
+                            if sock in self.inputs:
+                                self.inputs.remove(sock)
+                            sock.close()
+                            continue
+
+                        session_key, socket_role = session_info_tuple
+                        session_info = self.active_sessions.get(session_key)
+
+                        if not session_info:
+                            if sock in self.inputs:
+                                self.inputs.remove(sock)
+                            sock.close()
+                            self.socket_to_session_map.pop(sock, None)
+                            continue
+
+                        container_name = session_info["target_container"]
+                        protocol = session_info["protocol"]
+
+                        if protocol == "tcp":
+                            data = sock.recv(4096)
+                            if not data:
+                                raise ConnectionResetError("Connection closed by peer")
+                        else:
+                            data, _ = sock.recvfrom(4096)
+
+                        session_info["last_packet_time"] = time.time()
+
+                        if socket_role == "client_socket":
                             self.server_states[container_name]["last_activity"] = (
                                 time.time()
                             )
-
-                            target_ip = session_info["target_ip"]
-                            session_info["server_socket"].sendto(
-                                data, (target_ip, server_config.internal_port)
+                            destination_socket = session_info["server_socket"]
+                            destination_address = (
+                                session_info.get("target_ip", container_name),
+                                self.servers_config_map[
+                                    session_info["listen_port"]
+                                ].internal_port,
                             )
-                        continue
+                        else:
+                            destination_socket = session_info["client_socket"]
+                            destination_address = session_key[0]
 
-                    # Logic for established connections
-                    session_info_tuple = self.socket_to_session_map.get(sock)
-                    if not session_info_tuple:
-                        if sock in self.inputs:
-                            self.inputs.remove(sock)
-                        sock.close()
-                        continue
+                        if protocol == "tcp":
+                            destination_socket.sendall(data)
+                        else:
+                            destination_socket.sendto(data, destination_address)
 
-                    session_key, socket_role = session_info_tuple
-                    session_info = self.active_sessions.get(session_key)
+                    except (ConnectionResetError, socket.error, OSError) as e:
+                        if "session_key" not in locals():
+                            session_key_tuple = self.socket_to_session_map.get(sock)
+                            session_key = (
+                                session_key_tuple[0] if session_key_tuple else None
+                            )
 
-                    if not session_info:
-                        if sock in self.inputs:
-                            self.inputs.remove(sock)
-                        sock.close()
-                        self.socket_to_session_map.pop(sock, None)
-                        continue
-
-                    container_name = session_info["target_container"]
-                    protocol = session_info["protocol"]
-
-                    if protocol == "tcp":
-                        data = sock.recv(4096)
-                        if not data:
-                            raise ConnectionResetError("Connection closed by peer")
-                    else:
-                        data, _ = sock.recvfrom(4096)
-
-                    session_info["last_packet_time"] = time.time()
-
-                    if socket_role == "client_socket":
-                        self.server_states[container_name]["last_activity"] = (
-                            time.time()
+                        self.logger.warning(
+                            "Session disconnected. Cleaning up.",
+                            extra={"session_key": session_key, "error": str(e)},
                         )
-                        destination_socket = session_info["server_socket"]
-                        destination_address = (
-                            session_info.get("target_ip", container_name),
-                            self.servers_config_map[
+                        session_info = self.active_sessions.pop(session_key, None)
+                        if session_info:
+                            server_config = self.servers_config_map.get(
                                 session_info["listen_port"]
-                            ].internal_port,
+                            )
+                            if server_config:
+                                ACTIVE_SESSIONS.labels(
+                                    server_name=server_config.name
+                                ).dec()
+                            self._close_session_sockets(session_info)
+                            self.socket_to_session_map.pop(
+                                session_info.get("client_socket"), None
+                            )
+                            self.socket_to_session_map.pop(
+                                session_info.get("server_socket"), None
+                            )
+
+                    except Exception:
+                        self.logger.error(
+                            (
+                                f"Unhandled exception for socket {sock.fileno()}."
+                                " Closing socket."
+                            ),
+                            exc_info=True,
                         )
-                    else:
-                        destination_socket = session_info["client_socket"]
-                        destination_address = session_key[0]
+                        if sock in self.inputs:
+                            self.inputs.remove(sock)
+                        try:
+                            sock.close()
+                        except OSError:
+                            pass
+                        self.socket_to_session_map.pop(sock, None)
 
-                    if protocol == "tcp":
-                        destination_socket.sendall(data)
-                    else:
-                        destination_socket.sendto(data, destination_address)
-
-                except (ConnectionResetError, socket.error, OSError) as e:
-                    if "session_key" not in locals():
-                        session_key_tuple = self.socket_to_session_map.get(sock)
-                        session_key = (
-                            session_key_tuple[0] if session_key_tuple else None
-                        )
-
-                    self.logger.warning(
-                        "Session disconnected. Cleaning up.",
-                        extra={"session_key": session_key, "error": str(e)},
-                    )
-                    session_info = self.active_sessions.pop(session_key, None)
-                    if session_info:
-                        server_config = self.servers_config_map.get(
-                            session_info["listen_port"]
-                        )
-                        if server_config:
-                            ACTIVE_SESSIONS.labels(server_name=server_config.name).dec()
-
-                        self._close_session_sockets(session_info)
-                        self.socket_to_session_map.pop(
-                            session_info.get("client_socket"), None
-                        )
-                        self.socket_to_session_map.pop(
-                            session_info.get("server_socket"), None
-                        )
-
-                except Exception:
-                    self.logger.error(
-                        (
-                            f"Unhandled exception for socket {sock.fileno()}. "
-                            "Closing socket."
-                        ),
-                        exc_info=True,
-                    )
-                    if sock in self.inputs:
-                        self.inputs.remove(sock)
-                    try:
-                        sock.close()
-                    except OSError:
-                        pass
-                    self.socket_to_session_map.pop(sock, None)
-
-        self.logger.info("Shutdown requested. Closing all listening sockets.")
-        for sock in self.listen_sockets.values():
-            sock.close()
+        # --- THREAD SAFETY --- Lock around the final socket closing
+        with self.state_lock:
+            self.logger.info("Shutdown requested. Closing all listening sockets.")
+            for sock in self.listen_sockets.values():
+                sock.close()
 
     def _create_listening_socket(self, srv_cfg: ServerConfig):
-        """Creates and binds a single listening socket based on server config."""
+        """Creates and binds a single listening socket based on server config.
+        This must be called from within a lock."""
         listen_port = srv_cfg.listen_port
         sock_type = (
             socket.SOCK_DGRAM
@@ -866,8 +906,10 @@ class NetherBridgeProxy:
         self._connect_to_docker()
         self._ensure_all_servers_stopped_on_startup()
 
-        for srv_cfg in self.servers_list:
-            self._create_listening_socket(srv_cfg)
+        # --- THREAD SAFETY --- Lock the initial setup of listening sockets
+        with self.state_lock:
+            for srv_cfg in self.servers_list:
+                self._create_listening_socket(srv_cfg)
 
         monitor_thread = threading.Thread(
             target=self._monitor_servers_activity, daemon=True
