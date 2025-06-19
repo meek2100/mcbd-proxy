@@ -94,7 +94,7 @@ class NetherBridgeProxy:
         self.listen_sockets = {}
         self.inputs = []
         self.last_heartbeat_time = time.time()
-        self.state_lock = threading.Lock()
+        self.state_lock = threading.RLock()
         self._shutdown_requested = False
         self._reload_requested = False
 
