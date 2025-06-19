@@ -5,6 +5,14 @@ on:
   pull_request:
     branches: [ main ]
 
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'The branch to run validation against'
+        required: true
+        default: 'develop'
+        type: string
+
 permissions:
   contents: read
   packages: write
@@ -16,6 +24,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch || github.ref }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
