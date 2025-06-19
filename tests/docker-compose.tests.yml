@@ -7,6 +7,9 @@ services:
     build:
       context: ../
       dockerfile: Dockerfile
+      args:
+        # Pass the DOCKER_GID from the host environment into the build
+        - DOCKER_GID=${DOCKER_GID}
     restart: "no" # Explicitly set to 'no' for testing lifecycle control
     networks:
       - mc-network
@@ -86,6 +89,9 @@ services:
       context: ../
       dockerfile: Dockerfile
       target: testing
+      args:
+        # Pass the DOCKER_GID to this build as well
+        - DOCKER_GID=${DOCKER_GID}
     networks:
       - mc-network
     volumes:
