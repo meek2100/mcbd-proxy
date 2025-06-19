@@ -145,25 +145,14 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request, env_co
             "mc-java",
             "nb-tester",
         ]
-        list_cmd = ["docker", "ps", "-aq", "--filter", "name=netherbridge_test_"]
-        for name in hardcoded_names_to_remove:
-            list_cmd.extend(["--filter", f"name={name}"])
-
-        result = subprocess.run(
-            list_cmd, capture_output=True, encoding="utf-8", check=False, env=env_vars
+        subprocess.run(
+            ["docker", "rm", "-f"] + hardcoded_names_to_remove,
+            capture_output=True,
+            encoding="utf-8",
+            check=False,
+            env=env_vars,
         )
-        stale_ids = result.stdout.strip().splitlines()
-        if stale_ids:
-            print(
-                f"Found stale containers: {', '.join(stale_ids)}. Forcibly removing..."
-            )
-            subprocess.run(
-                ["docker", "rm", "-f"] + stale_ids,
-                check=False,
-                capture_output=True,
-                encoding="utf-8",
-                env=env_vars,
-            )
+        print("Pre-cleanup complete.")
     except Exception as e:
         print(f"Warning during aggressive pre-cleanup: {e}")
 
@@ -199,15 +188,36 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request, env_co
                 if health_status == "healthy":
                     print("Nether-bridge is healthy.")
                     break
+                if container.status == "exited":
+                    print("Container exited unexpectedly during health check.")
+                    break
                 time.sleep(2)
             else:
-                health_log = (
-                    container.attrs.get("State", {}).get("Health", {}).get("Log")
-                )
-                last_log = health_log[-1] if health_log else "No health log."
+                print("Health check loop timed out.")
+
+            container.reload()
+            final_health_status = (
+                container.attrs.get("State", {}).get("Health", {}).get("Status")
+            )
+            if final_health_status != "healthy":
+                final_state = container.attrs.get("State", {})
+                full_logs = container.logs().decode("utf-8", errors="ignore")
+
+                print("\n" + "!" * 60)
+                print("! HEALTH CHECK FAILED. DUMPING CONTAINER STATE AND LOGS !")
+                print(f"! Container:      {container.name}")
+                print(f"! Final Status:     {final_state.get('Status')}")
+                print(f"! Exit Code:        {final_state.get('ExitCode')}")
+                print(f"! Error Message:    {final_state.get('Error')}")
+                print("--- Full Container Logs ---")
+                print(full_logs)
+                print("---------------------------")
+                print("!" * 60 + "\n")
+
                 raise Exception(
-                    "Timeout waiting for nether-bridge container to become healthy. "
-                    f"Last status: {health_status}. Last log: {last_log}"
+                    "Timeout or failure waiting for nether-bridge container to become "
+                    "healthy. "
+                    f"Final status: {final_state.get('Status')}"
                 )
         finally:
             client.close()
@@ -215,8 +225,10 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request, env_co
     except subprocess.CalledProcessError as e:
         print(f"Error during Docker Compose setup: {e.stderr}")
         print(
-            f"\n--- Logs for project '{docker_compose_project_name}' "
-            f"(during setup failure) ---"
+            (
+                f"\n--- Logs for project '{docker_compose_project_name}' "
+                "(during setup failure) ---"
+            )
         )
         try:
             logs_cmd = (
