@@ -8,9 +8,6 @@ services:
       dockerfile: Dockerfile
       args:
         - DOCKER_GID=${DOCKER_GID}
-      cache_from:
-        - ghcr.io/meek2100/mcbd-proxy-cache:main
-    restart: "no"
     networks:
       - mc-network
     ports:
@@ -92,8 +89,6 @@ services:
       target: testing
       args:
         - DOCKER_GID=${DOCKER_GID}
-      cache_from:
-        - ghcr.io/meek2100/mcbd-proxy-cache:main
     networks:
       - mc-network
     volumes:
