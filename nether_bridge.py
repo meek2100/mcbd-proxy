@@ -346,27 +346,24 @@ class NetherBridgeProxy:
         """
         self.logger.info(
             (
-                "Proxy startup: Ensuring all managed Minecraft servers "
-                "are initially stopped."
+                "Proxy startup: Ensuring all managed Minecraft servers are "
+                "initially stopped."
             )
         )
         for srv_conf in self.servers_list:
             container_name = srv_conf.container_name
             if self._is_container_running(container_name):
                 self.logger.warning(
-                    "Found running at proxy startup. Issuing a safe stop.",
+                    (
+                        "Found server running at proxy startup. "
+                        "Issuing a direct stop command."
+                    ),
                     extra={"container_name": container_name},
-                )
-                time.sleep(self.settings.initial_server_query_delay_seconds)
-                self._wait_for_server_query_ready(
-                    srv_conf,
-                    self.settings.initial_boot_ready_max_wait_time_seconds,
-                    self.settings.query_timeout_seconds,
                 )
                 self._stop_minecraft_server(container_name)
             else:
                 self.logger.info(
-                    "Is confirmed to be stopped.",
+                    "Server is confirmed to be stopped.",
                     extra={"container_name": container_name},
                 )
 
