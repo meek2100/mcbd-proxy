@@ -17,13 +17,19 @@ JAVA_PROXY_PORT = 25565
 
 def get_proxy_host():
     """
-    Helper function to get the target host for integration tests.
+    Determines the correct IP address or hostname to target for integration tests.
+
+    It checks for specific environment variables used in different test
+    scenarios (CI, remote Docker host) and falls back to localhost for
+    standard local testing.
+
+    Returns:
+        str: The IP address or hostname of the proxy.
     """
     if "PROXY_IP" in os.environ:
         # Used by GitHub Actions CI
         return os.environ["PROXY_IP"]
 
-    # --- FIX: Look for the correct environment variable ---
     if "DOCKER_HOST_IP" in os.environ:
         # Used for remote testing, variable is set by conftest.py
         return os.environ["DOCKER_HOST_IP"]
@@ -33,7 +39,16 @@ def get_proxy_host():
 
 
 def get_container_status(docker_client_fixture, container_name):
-    """Helper function to check container status via Docker API."""
+    """
+    Retrieves the current status of a Docker container.
+
+    Args:
+        docker_client_fixture: The Docker client fixture.
+        container_name (str): The name of the container to check.
+
+    Returns:
+        str: The container status (e.g., 'running', 'exited') or 'not_found'.
+    """
     try:
         container = docker_client_fixture.containers.get(container_name)
         return container.status
@@ -50,7 +65,19 @@ def wait_for_container_status(
     timeout=240,
     interval=5,
 ):
-    """Helper function to wait for a specific container status."""
+    """
+    Waits for a container to enter one of a list of target statuses.
+
+    Args:
+        docker_client_fixture: The Docker client fixture.
+        container_name (str): The name of the container.
+        target_statuses (list): A list of desired statuses (e.g., ['running']).
+        timeout (int): The maximum time to wait in seconds.
+        interval (int): The interval between checks in seconds.
+
+    Returns:
+        bool: True if the container reached a target status, False otherwise.
+    """
     start_time = time.time()
     print(
         f"Waiting for container '{container_name}' to reach status in "
@@ -75,7 +102,17 @@ def wait_for_container_status(
 
 
 def wait_for_mc_server_ready(server_config, timeout=60, interval=1):
-    """Helper function to wait for a server to be query-ready via mcstatus."""
+    """
+    Waits for a Minecraft server to become query-ready via mcstatus.
+
+    Args:
+        server_config (dict): A dict with 'host', 'port', and 'type'.
+        timeout (int): Maximum time to wait in seconds.
+        interval (int): Interval between queries in seconds.
+
+    Returns:
+        bool: True if the server responded, False otherwise.
+    """
     host, port = server_config["host"], server_config["port"]
     server_type = server_config["type"]
     start_time = time.time()
@@ -171,7 +208,21 @@ def wait_for_proxy_to_be_ready(docker_client_fixture, timeout=60):
 
 
 def wait_for_log_message(docker_client_fixture, container_name, message, timeout=30):
-    """Helper function to wait for a specific message in a container's logs."""
+    """
+    Waits for a specific message to appear in a container's logs.
+
+    Checks historical logs first, then streams new logs until the message is
+    found or the timeout is reached.
+
+    Args:
+        docker_client_fixture: The Docker client fixture.
+        container_name (str): The name of the container to monitor.
+        message (str): The log message to search for.
+        timeout (int): The maximum time to wait in seconds.
+
+    Returns:
+        bool: True if the message was found, False otherwise.
+    """
     container = docker_client_fixture.containers.get(container_name)
     start_time = time.time()
 
@@ -383,3 +434,78 @@ def test_server_shuts_down_on_idle(docker_compose_up, docker_client_fixture):
         timeout=15,
         interval=2,
     ), "Bedrock container did not stop after proxy initiated shutdown."
+
+
+@pytest.mark.integration
+def test_proxy_restarts_crashed_server_on_new_connection(
+    docker_compose_up, docker_client_fixture
+):
+    """
+    Tests that the proxy can detect a crashed/stopped server and restart it
+    when a new connection is attempted.
+    """
+    proxy_host = get_proxy_host()
+    bedrock_proxy_port = BEDROCK_PROXY_PORT
+    mc_bedrock_container_name = "mc-bedrock"
+
+    assert wait_for_proxy_to_be_ready(docker_client_fixture), (
+        "Proxy did not become ready."
+    )
+
+    # --- 1. Trigger the server to start normally ---
+    print(f"\n(Crash Test) Triggering server '{mc_bedrock_container_name}' to start...")
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        unconnected_ping_packet = (
+            b"\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\x00\xfe\xfe\xfe\xfe"
+            b"\xfd\xfd\xfd\xfd\x12\x34\x56\x78\x00\x00\x00\x00\x00\x00\x00\x00"
+        )
+        client_socket.sendto(unconnected_ping_packet, (proxy_host, bedrock_proxy_port))
+    finally:
+        client_socket.close()
+
+    assert wait_for_container_status(
+        docker_client_fixture, mc_bedrock_container_name, ["running"], timeout=180
+    ), "Server did not start initially."
+    print("(Crash Test) Server is running.")
+
+    # --- 2. Manually stop the container to simulate a crash ---
+    print(
+        f"\n(Crash Test) Simulating crash of container '{mc_bedrock_container_name}'..."
+    )
+    container = docker_client_fixture.containers.get(mc_bedrock_container_name)
+    container.stop(timeout=10)
+    assert wait_for_container_status(
+        docker_client_fixture, mc_bedrock_container_name, ["exited"], timeout=30
+    ), "Container did not stop after manual command."
+    print("(Crash Test) Container successfully stopped.")
+
+    # Give the proxy a moment to register the change if needed
+    time.sleep(2)
+
+    # --- 3. Attempt a new connection to the 'crashed' server ---
+    print("\n(Crash Test) Attempting new connection to trigger restart...")
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        unconnected_ping_packet = (
+            b"\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\x00\xfe\xfe\xfe\xfe"
+            b"\xfd\xfd\xfd\xfd\x12\x34\x56\x78\x00\x00\x00\x00\x00\x00\x00\x00"
+        )
+        client_socket.sendto(unconnected_ping_packet, (proxy_host, bedrock_proxy_port))
+    finally:
+        client_socket.close()
+
+    # --- 4. Verify that the proxy detects this and tries to start it again ---
+    assert wait_for_log_message(
+        docker_client_fixture,
+        "nether-bridge",
+        "First packet received for stopped server. Starting...",
+        timeout=15,
+    ), "Proxy did not log a restart attempt for the crashed server."
+
+    # --- 5. Verify the server is running again ---
+    assert wait_for_container_status(
+        docker_client_fixture, mc_bedrock_container_name, ["running"], timeout=180
+    ), "Crashed server did not restart successfully."
+
+    print("\n(Crash Test) Successfully verified proxy can recover from a crash.")
