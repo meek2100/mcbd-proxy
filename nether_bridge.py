@@ -98,6 +98,15 @@ class NetherBridgeProxy:
         self._shutdown_requested = False
         self._reload_requested = False
 
+    def signal_handler(self, sig, frame):
+        """Handles signals for graceful shutdown and configuration reloads."""
+        if hasattr(signal, "SIGHUP") and sig == signal.SIGHUP:
+            self._reload_requested = True
+            self.logger.warning("SIGHUP signal received, flagging for reload.")
+        else:  # SIGINT, SIGTERM
+            self.logger.warning(f"Shutdown signal {sig} received, initiating shutdown.")
+            self._shutdown_requested = True
+
     def _connect_to_docker(self):
         """Connects to the Docker daemon via the mounted socket."""
         try:
@@ -201,82 +210,79 @@ class NetherBridgeProxy:
 
     def _start_minecraft_server(self, container_name: str) -> bool:
         """Starts a Minecraft server container and waits for it to become ready."""
-        if not self._is_container_running(container_name):
-            self.logger.info(
-                "Attempting to start Minecraft server...",
+        if self._is_container_running(container_name):
+            self.logger.debug(
+                "Server already running, no start action needed.",
                 extra={"container_name": container_name},
             )
-            try:
-                startup_timer_start = time.time()
-                container = self.docker_client.containers.get(container_name)
-                container.start()
-                self.logger.info(
-                    "Docker container start command issued.",
-                    extra={"container_name": container_name},
-                )
+            return True
 
-                time.sleep(self.settings.server_startup_delay_seconds)
-
-                target_server_config = next(
-                    (
-                        s
-                        for s in self.servers_list
-                        if s.container_name == container_name
-                    ),
-                    None,
-                )
-                if not target_server_config:
-                    self.logger.error(
-                        "Configuration not found. Cannot query for readiness.",
-                        extra={"container_name": container_name},
-                    )
-                    return False
-
-                self._wait_for_server_query_ready(
-                    target_server_config,
-                    self.settings.server_ready_max_wait_time_seconds,
-                    self.settings.query_timeout_seconds,
-                )
-
-                self.server_states[container_name]["running"] = True
-                RUNNING_SERVERS.inc()
-
-                duration = time.time() - startup_timer_start
-                SERVER_STARTUP_DURATION.labels(
-                    server_name=target_server_config.name
-                ).observe(duration)
-
-                self.logger.info(
-                    "Startup process complete. Now handling traffic.",
-                    extra={
-                        "container_name": container_name,
-                        "duration_seconds": duration,
-                    },
-                )
-                return True
-            except docker.errors.NotFound:
-                self.logger.error(
-                    "Docker container not found. Cannot start.",
-                    extra={"container_name": container_name},
-                )
-                return False
-            except docker.errors.APIError as e:
-                self.logger.error(
-                    "Docker API error during start.",
-                    extra={"container_name": container_name, "error": str(e)},
-                )
-                return False
-            except Exception as e:
-                self.logger.error(
-                    "Unexpected error during server startup.",
-                    extra={"container_name": container_name, "error": str(e)},
-                )
-                return False
-        self.logger.debug(
-            "Server already running, no start action needed.",
+        self.logger.info(
+            "Attempting to start Minecraft server...",
             extra={"container_name": container_name},
         )
-        return True
+        try:
+            startup_timer_start = time.time()
+            container = self.docker_client.containers.get(container_name)
+            container.start()
+            self.logger.info(
+                "Docker container start command issued.",
+                extra={"container_name": container_name},
+            )
+
+            time.sleep(self.settings.server_startup_delay_seconds)
+
+            target_server_config = next(
+                (s for s in self.servers_list if s.container_name == container_name),
+                None,
+            )
+            if not target_server_config:
+                self.logger.error(
+                    "Configuration not found. Cannot query for readiness.",
+                    extra={"container_name": container_name},
+                )
+                return False
+
+            self._wait_for_server_query_ready(
+                target_server_config,
+                self.settings.server_ready_max_wait_time_seconds,
+                self.settings.query_timeout_seconds,
+            )
+
+            self.server_states[container_name]["running"] = True
+            RUNNING_SERVERS.inc()
+
+            duration = time.time() - startup_timer_start
+            SERVER_STARTUP_DURATION.labels(
+                server_name=target_server_config.name
+            ).observe(duration)
+
+            self.logger.info(
+                "Startup process complete. Now handling traffic.",
+                extra={
+                    "container_name": container_name,
+                    "duration_seconds": duration,
+                },
+            )
+            return True
+        except docker.errors.NotFound:
+            self.logger.error(
+                "Docker container not found. Cannot start.",
+                extra={"container_name": container_name},
+            )
+            return False
+        except docker.errors.APIError as e:
+            self.logger.error(
+                "Docker API error during start.",
+                extra={"container_name": container_name, "error": str(e)},
+            )
+            return False
+        except Exception as e:
+            self.logger.error(
+                "Unexpected error during server startup.",
+                extra={"container_name": container_name, "error": str(e)},
+            )
+            return False
 
     def _stop_minecraft_server(self, container_name: str) -> bool:
         """Stops a Minecraft server container."""
@@ -368,7 +374,6 @@ class NetherBridgeProxy:
             than the idle timeout, it initiates a safe shutdown of that server.
         """
         while not self._shutdown_requested:
-            # Use the setting from the current self.settings object
             time.sleep(self.settings.player_check_interval_seconds)
             if self._shutdown_requested:
                 break
@@ -458,9 +463,7 @@ class NetherBridgeProxy:
 
     def _reload_configuration(self):
         """
-
-        Reloads proxy settings and server definitions from source,
-        then adds/removes listening sockets as needed.
+        Reloads proxy settings and server definitions from source.
         """
         self.logger.warning("SIGHUP received. Reloading configuration...")
 
@@ -486,7 +489,6 @@ class NetherBridgeProxy:
         new_servers_map = {s.listen_port: s for s in new_servers}
         new_ports = set(new_servers_map.keys())
 
-        # Remove listeners for servers that are no longer in the config
         for port in old_ports - new_ports:
             # Note: This reload does not terminate existing player sessions for
             # removed servers. Those sessions will remain active until they disconnect
@@ -505,7 +507,6 @@ class NetherBridgeProxy:
                 sock.close()
             self.servers_config_map.pop(port, None)
 
-        # Add listeners for new servers
         for port in new_ports - old_ports:
             srv_cfg = new_servers_map[port]
             self.logger.info(
@@ -518,7 +519,6 @@ class NetherBridgeProxy:
                     "last_activity": 0.0,
                 }
 
-        # Update server configurations and the main list
         self.servers_config_map = new_servers_map
         self.servers_list = new_servers
 
@@ -549,7 +549,6 @@ class NetherBridgeProxy:
         server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server_sock.setblocking(False)
         try:
-            # Use the container name directly for DNS resolution by Docker
             server_sock.connect_ex((container_name, server_config.internal_port))
         except socket.gaierror:
             self.logger.error(
@@ -602,14 +601,13 @@ class NetherBridgeProxy:
                     "server_name": server_config.name,
                 },
             )
-            # Create a new socket for communication with the target server
             server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             server_sock.setblocking(False)
             self.inputs.append(server_sock)
 
             session_info = {
-                "client_socket": sock,  # This is a main listening socket
-                "server_socket": server_sock,  # This is a ephemeral server-side socket
+                "client_socket": sock,
+                "server_socket": server_sock,
                 "target_container": container_name,
                 "last_packet_time": time.time(),
                 "listen_port": server_port,
@@ -623,8 +621,6 @@ class NetherBridgeProxy:
         session_info["last_packet_time"] = time.time()
         self.server_states[container_name]["last_activity"] = time.time()
 
-        # Forward the initial packet to the target container using its hostname.
-        # This is more resilient than a cached IP as Docker's DNS will resolve it.
         destination_address = (container_name, server_config.internal_port)
         session_info["server_socket"].sendto(data, destination_address)
 
@@ -636,7 +632,7 @@ class NetherBridgeProxy:
 
         if sock.type == socket.SOCK_STREAM:  # New TCP connection
             self._handle_new_tcp_connection(sock)
-        elif sock.type == socket.SOCK_DGRAM:  # New UDP "connection"
+        elif sock.type == socket.SOCK_DGRAM:
             self._handle_new_udp_packet(sock)
 
     def _forward_packet(self, sock: socket.socket):
@@ -667,29 +663,26 @@ class NetherBridgeProxy:
         if protocol == "tcp":
             data = sock.recv(4096)
             if not data:
-                # An empty read on a TCP socket means the connection was closed
                 raise ConnectionResetError("Connection closed by peer")
-        else:  # UDP
+        else:
             data, _ = sock.recvfrom(4096)
 
         session_info["last_packet_time"] = time.time()
 
         if socket_role == "client_socket":
-            # Packet is from the player, send to the Minecraft server
             self.server_states[container_name]["last_activity"] = time.time()
             destination_socket = session_info["server_socket"]
             destination_address = (
-                container_name,  # Use hostname for resilience
+                container_name,
                 self.servers_config_map[session_info["listen_port"]].internal_port,
             )
-        else:  # 'server_socket'
-            # Packet is from the Minecraft server, send to the player
+        else:
             destination_socket = session_info["client_socket"]
-            destination_address = session_key[0]  # The client's (IP, port) tuple
+            destination_address = session_key[0]
 
         if protocol == "tcp":
             destination_socket.sendall(data)
-        else:  # UDP
+        else:
             destination_socket.sendto(data, destination_address)
 
     def _run_proxy_loop(self):
@@ -716,7 +709,6 @@ class NetherBridgeProxy:
                 self._reload_configuration()
 
             try:
-                # Wait for any socket to become readable, with a 1s timeout
                 readable, _, _ = select.select(self.inputs, [], [], 1.0)
             except select.error as e:
                 self.logger.error(f"Error in select.select(): {e}", exc_info=True)
@@ -744,7 +736,6 @@ class NetherBridgeProxy:
                     if sock in self.listen_sockets.values():
                         self._handle_new_connection(sock)
                     else:
-                        # Before forwarding, find the session key in case of an error
                         session_tuple = self.socket_to_session_map.get(sock)
                         session_key_for_error = (
                             session_tuple[0] if session_tuple else None
@@ -1053,8 +1044,8 @@ def load_application_config() -> tuple[ProxySettings, list[ServerConfig]]:
     return proxy_settings, final_servers
 
 
-# --- Main Execution ---
-if __name__ == "__main__":
+def main():
+    """The main entrypoint for the Nether-bridge application."""
     logger = logging.getLogger()
     LOG_LEVEL_EARLY = os.environ.get("LOG_LEVEL", "INFO").upper()
     logger.setLevel(LOG_LEVEL_EARLY)
@@ -1081,17 +1072,14 @@ if __name__ == "__main__":
 
     proxy = NetherBridgeProxy(settings, servers)
 
-    def signal_handler(sig, frame):
-        if hasattr(signal, "SIGHUP") and sig == signal.SIGHUP:
-            proxy._reload_requested = True
-            logger.warning("SIGHUP signal received, flagging for reload.")
-        else:  # SIGINT, SIGTERM
-            logger.warning(f"Shutdown signal {sig} received, initiating shutdown.")
-            proxy._shutdown_requested = True
-
+    # Set the signal handlers to point to the new method on the proxy instance
     if hasattr(signal, "SIGHUP"):
-        signal.signal(signal.SIGHUP, signal_handler)
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+        signal.signal(signal.SIGHUP, proxy.signal_handler)
+    signal.signal(signal.SIGINT, proxy.signal_handler)
+    signal.signal(signal.SIGTERM, proxy.signal_handler)
 
     proxy.run()
+
+
+if __name__ == "__main__":
+    main()
