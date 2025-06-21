@@ -12,15 +12,13 @@ FROM base AS testing
 WORKDIR /app
 
 # Create a non-root user 'naeus'
-# Permissions for Docker socket will be handled at runtime by the entrypoint.
 RUN adduser --system --no-create-home naeus
 
-# FIX: Change ownership of the work directory itself
-# This allows the non-root user to create new files/dirs like .ruff_cache
+# Change ownership of the work directory
 RUN chown naeus:nogroup /app
 
-# Copy source and test files with correct ownership
-COPY . . 
+# Copy source and test files
+COPY . .
 
 # Install the development dependencies
 RUN pip install --no-cache-dir -r tests/requirements-dev.txt
@@ -33,13 +31,13 @@ USER naeus
 FROM python:3.10-slim-buster
 WORKDIR /app
 
-# Install necessary tools for the entrypoint script (su-exec, shadow for usermod)
-RUN apt-get update && apt-get install -y --no-install-recommends su-exec shadow && rm -rf /var/lib/apt/lists/*
+# Install 'gosu' for privilege dropping and 'passwd' for the 'usermod' command.
+RUN apt-get update && apt-get install -y --no-install-recommends gosu passwd && rm -rf /var/lib/apt/lists/*
 
 # Create the same non-root user as the testing stage
 RUN adduser --system --no-create-home naeus
 
-# FIX: Change ownership of the work directory itself.
+# Change ownership of the work directory
 RUN chown naeus:nogroup /app
 
 # Copy only the production packages from the 'base' stage with correct ownership
@@ -47,8 +45,8 @@ COPY --from=base --chown=naeus:nogroup /usr/local/lib/python3.10/site-packages /
 
 # Copy the application code and example configs with correct ownership
 COPY --chown=naeus:nogroup nether_bridge.py .
-COPY --chown=naeus:nogroup examples/settings.json . 
-COPY --chown=naeus:nogroup examples/servers.json . 
+COPY --chown=naeus:nogroup examples/settings.json .
+COPY --chown=naeus:nogroup examples/servers.json .
 
 # Copy and set up the entrypoint script
 COPY --chown=naeus:nogroup entrypoint.sh /usr/local/bin/
@@ -63,7 +61,6 @@ EXPOSE 25565/tcp
 EXPOSE 8000/tcp
 
 # Embed the health check directly into the image.
-# It uses the Python script's built-in health check capability.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
   CMD ["python", "nether_bridge.py", "--healthcheck"]
 

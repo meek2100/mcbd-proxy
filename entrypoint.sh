@@ -25,6 +25,5 @@ else
 fi
 
 # Execute the main command passed to the container (e.g., python nether_bridge.py)
-# The 'exec' command replaces the shell process with the new process.
-# 'su-exec naeus' runs the command as the 'naeus' user.
-exec su-exec naeus "$@"
+# 'gosu' runs the command as the 'naeus' user.
+exec gosu naeus "$@"
