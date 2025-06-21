@@ -17,8 +17,8 @@ RUN adduser --system --no-create-home naeus
 # Change ownership of the work directory
 RUN chown naeus:nogroup /app
 
-# Copy source and test files
-COPY . .
+# Copy source and test files (with --chown to ensure correct ownership)
+COPY --chown=naeus:nogroup . .
 
 # Install the development dependencies
 RUN pip install --no-cache-dir -r tests/requirements-dev.txt
@@ -31,14 +31,14 @@ USER naeus
 FROM python:3.10-slim-buster
 WORKDIR /app
 
-# Install 'gosu' for privilege dropping and 'passwd' for the 'usermod' command.
+# Install 'gosu' for privilege dropping and 'passwd' for the 'adduser' command.
 RUN apt-get update && apt-get install -y --no-install-recommends gosu passwd && rm -rf /var/lib/apt/lists/*
 
-# Create the same non-root user as the testing stage
+# Create the non-root user 'naeus'
 RUN adduser --system --no-create-home naeus
 
-# Change ownership of the work directory
-RUN chown naeus:nogroup /app
+# Change ownership of the work directory and its contents
+RUN chown -R naeus:nogroup /app
 
 # Copy only the production packages from the 'base' stage with correct ownership
 COPY --from=base --chown=naeus:nogroup /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
@@ -48,23 +48,21 @@ COPY --chown=naeus:nogroup nether_bridge.py .
 COPY --chown=naeus:nogroup examples/settings.json .
 COPY --chown=naeus:nogroup examples/servers.json .
 
-# Copy and set up the entrypoint script
-COPY --chown=naeus:nogroup entrypoint.sh /usr/local/bin/
+# Copy and set up the entrypoint script, which will run as root
+COPY entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh
-
-# Switch to the non-root user for the final image
-USER naeus
 
 EXPOSE 19132/udp
 EXPOSE 25565/udp
 EXPOSE 25565/tcp
 EXPOSE 8000/tcp
 
-# Embed the health check directly into the image.
+# Embed the health check, ensuring it runs as the 'naeus' user via gosu.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
-  CMD ["python", "nether_bridge.py", "--healthcheck"]
+  CMD ["gosu", "naeus", "python", "nether_bridge.py", "--healthcheck"]
 
-# Set the entrypoint to our new script.
+# Set the entrypoint. It will run as root by default.
 ENTRYPOINT ["entrypoint.sh"]
-# Set the default command for the entrypoint.
+
+# Set the default command for the entrypoint. The entrypoint script will execute this as the 'naeus' user.
 CMD ["python", "nether_bridge.py"]
