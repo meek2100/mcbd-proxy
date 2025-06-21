@@ -1,48 +1,51 @@
-# Stage 1: Base - Install production dependencies
+# Stage 1: Base - Installs production dependencies.
 FROM python:3.10-slim-buster AS base
 WORKDIR /app
 COPY requirements.txt .
 RUN python -m pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
 
-# Stage 2: Testing - A self-contained environment for running tests in CI
+# Stage 2: Builder - A complete copy of the source code.
+FROM python:3.10-slim-buster AS builder
+WORKDIR /app
+COPY . .
+
+# Stage 3: Testing - A self-contained environment for running tests in CI.
 FROM base AS testing
 WORKDIR /app
-# Install system packages needed by the entrypoint
+# Install system packages needed by the entrypoint.
 RUN apt-get update && apt-get install -y --no-install-recommends gosu passwd && rm -rf /var/lib/apt/lists/*
-# Copy the entire project context
-COPY . .
-# Install development dependencies
+# Copy the entire project context from the builder stage.
+COPY --from=builder /app /app
+# Install development dependencies.
 RUN pip install --no-cache-dir -r tests/requirements-dev.txt
-# Create user and set permissions
+# Create user and set permissions.
 RUN adduser --system --no-create-home naeus && \
     chown -R naeus:nogroup /app && \
     chmod +x /app/entrypoint.sh
-# Set the entrypoint using an absolute path, as WORKDIR is not in $PATH
+# Set the entrypoint using an absolute path.
 ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["/bin/bash"]
 
-# Stage 3: Final Production Image - Built independently for maximum reliability
+# Stage 4: Final Production Image - Built from previous stages for reliability.
 FROM python:3.10-slim-buster AS final
 WORKDIR /app
 
-# Install only 'gosu' for dropping privileges
+# Install only 'gosu' for dropping privileges.
 RUN apt-get update && apt-get install -y --no-install-recommends gosu && rm -rf /var/lib/apt/lists/*
-# Create the non-root user
+# Create the non-root user.
 RUN adduser --system --no-create-home naeus
 
-# Copy entrypoint to a standard PATH location and make it executable
-COPY entrypoint.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/entrypoint.sh
-
-# Copy production python packages from the 'base' stage
+# Copy artifacts from previous stages, not the local context.
+# 1. Production python packages from the 'base' stage.
 COPY --from=base /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+# 2. The entrypoint script from the 'builder' stage.
+COPY --from=builder /app/entrypoint.sh /usr/local/bin/
+# 3. The application code and examples from the 'builder' stage.
+COPY --from=builder --chown=naeus:nogroup /app/nether_bridge.py .
+COPY --from=builder --chown=naeus:nogroup /app/examples/ ./examples/
 
-# Copy only necessary application files from the original build context
-COPY --chown=naeus:nogroup nether_bridge.py .
-COPY --chown=naeus:nogroup examples/ ./examples/
-
-# Set final ownership for the app directory
-RUN chown -R naeus:nogroup /app
+# Make entrypoint executable and set final permissions.
+RUN chmod +x /usr/local/bin/entrypoint.sh && chown -R naeus:nogroup /app
 
 EXPOSE 19132/udp 25565/udp 25565/tcp 8000/tcp
 
