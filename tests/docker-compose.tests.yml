@@ -76,7 +76,7 @@ services:
       - JVM_ARGS=-Xmx512M -Xms512M
       - IDLE_TIMEOUT=-1
       - ONLINE_MODE=FALSE
-  
+      
   nb-tester:
     image: nb-tester:local
     container_name: nb-tester
@@ -84,14 +84,13 @@ services:
       context: ../
       dockerfile: Dockerfile
       target: testing
-      # The DOCKER_GID build-arg is no longer needed.
       cache_from:
         - ghcr.io/meek2100/mcbd-proxy-cache:main
     networks:
       - mc-network
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    entrypoint: ""
+    # REMOVE this line: entrypoint: ""
     command: /bin/bash -c "while true; do sleep 1; done"
 
 networks:

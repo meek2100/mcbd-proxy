@@ -7,24 +7,32 @@ RUN python -m pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
 # --- Stage 2: Testing ---
-# This stage builds on 'base' and adds all code, configs, and dev dependencies.
+# This stage prepares a non-root environment for running tests inside the CI.
 FROM base AS testing
 WORKDIR /app
+
+# Install tools needed for the entrypoint and for testing.
+RUN apt-get update && apt-get install -y --no-install-recommends gosu passwd && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir -r tests/requirements-dev.txt
 
 # Create a non-root user 'naeus'
 RUN adduser --system --no-create-home naeus
 
-# Change ownership of the work directory
-RUN chown naeus:nogroup /app
+# Change ownership of the work directory.
+RUN chown -R naeus:nogroup /app
 
-# Copy source and test files (with --chown to ensure correct ownership)
+# Copy the entrypoint script which will handle runtime permissions.
+COPY --chown=naeus:nogroup entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Copy the rest of the source code with correct ownership.
 COPY --chown=naeus:nogroup . .
 
-# Install the development dependencies
-RUN pip install --no-cache-dir -r tests/requirements-dev.txt
+# Set the entrypoint. It will run as root and drop privileges to naeus.
+ENTRYPOINT ["entrypoint.sh"]
+# The default command for this stage, can be overridden by docker-compose.
+CMD ["/bin/bash"]
 
-# Switch to the non-root user for the test environment
-USER naeus
 
 # --- Stage 3: Final Production Image ---
 # This is the minimal final image.
