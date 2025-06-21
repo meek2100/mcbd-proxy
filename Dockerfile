@@ -11,22 +11,24 @@ RUN pip install --no-cache-dir -r requirements.txt
 FROM base AS testing
 WORKDIR /app
 
-# Install tools needed for the entrypoint and for testing.
+# Install system packages needed by the entrypoint and for testing.
 RUN apt-get update && apt-get install -y --no-install-recommends gosu passwd && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements files first to leverage Docker cache
+COPY requirements.txt .
+COPY tests/requirements-dev.txt tests/requirements-dev.txt
+
+# Install dev dependencies. This layer is cached as long as requirements don't change.
 RUN pip install --no-cache-dir -r tests/requirements-dev.txt
+
+# Now copy the rest of the application code
+COPY . .
 
 # Create a non-root user 'naeus'
 RUN adduser --system --no-create-home naeus
 
-# Change ownership of the work directory.
+# Set ownership for the entire app directory now that it's populated
 RUN chown -R naeus:nogroup /app
-
-# Copy the entrypoint script which will handle runtime permissions.
-COPY --chown=naeus:nogroup entrypoint.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/entrypoint.sh
-
-# Copy the rest of the source code with correct ownership.
-COPY --chown=naeus:nogroup . .
 
 # Set the entrypoint. It will run as root and drop privileges to naeus.
 ENTRYPOINT ["entrypoint.sh"]
