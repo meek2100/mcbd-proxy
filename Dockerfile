@@ -1,68 +1,56 @@
-# --- Stage 1: Base ---
-# This stage installs only the production dependencies.
+# Stage 1: Base - Installs production dependencies.
 FROM python:3.10-slim-buster AS base
 WORKDIR /app
 COPY requirements.txt .
-RUN python -m pip install --upgrade pip
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
 
-# --- Stage 2: Testing ---
-# This stage builds on 'base' and adds all code, configs, and dev dependencies.
+# Stage 2: Builder - A complete copy of the source code.
+FROM python:3.10-slim-buster AS builder
+WORKDIR /app
+COPY . .
+
+# Stage 3: Testing - A self-contained environment for running tests in CI.
 FROM base AS testing
 WORKDIR /app
-
-# Add a build argument to accept the Docker group ID from the host
-ARG DOCKER_GID
-
-# Create a non-root user 'appuser' and add it to a 'docker' group with the correct GID
-# This allows the user to access the mounted docker socket.
-# Defaults to 999 if not provided.
-RUN addgroup --gid ${DOCKER_GID:-999} docker && \
-    adduser --system --ingroup docker --no-create-home appuser
-
-# FIX: Change ownership of the work directory itself
-# This allows the non-root user to create new files/dirs like .ruff_cache
-RUN chown appuser:docker /app
-
-# Copy source and test files with the correct ownership
-COPY --chown=appuser:docker . .
-
-# Install the development dependencies
+# Install system packages needed by the entrypoint.
+RUN apt-get update && apt-get install -y --no-install-recommends gosu passwd && rm -rf /var/lib/apt/lists/*
+# Copy the entire project context from the builder stage.
+COPY --from=builder /app /app
+# Install development dependencies.
 RUN pip install --no-cache-dir -r tests/requirements-dev.txt
+# Create user and set permissions.
+RUN adduser --system --no-create-home naeus && \
+    chown -R naeus:nogroup /app && \
+    chmod +x /app/entrypoint.sh
+# Set the entrypoint using an absolute path.
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["/bin/bash"]
 
-# Switch to the non-root user for the test environment as well
-USER appuser
-
-# --- Stage 3: Final Production Image ---
-# This is the minimal final image.
-FROM python:3.10-slim-buster
+# Stage 4: Final Production Image - Built from previous stages for reliability.
+FROM python:3.10-slim-buster AS final
 WORKDIR /app
 
-# Add the same build argument for the Docker GID
-ARG DOCKER_GID
+# Install only 'gosu' for dropping privileges.
+RUN apt-get update && apt-get install -y --no-install-recommends gosu && rm -rf /var/lib/apt/lists/*
+# Create the non-root user.
+RUN adduser --system --no-create-home naeus
 
-# Create the same non-root user and group as the testing stage
-RUN addgroup --gid ${DOCKER_GID:-999} docker && \
-    adduser --system --ingroup docker --no-create-home appuser
+# Copy artifacts from previous stages, not the local context.
+# 1. Production python packages from the 'base' stage.
+COPY --from=base /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+# 2. The entrypoint script from the 'builder' stage.
+COPY --from=builder /app/entrypoint.sh /usr/local/bin/
+# 3. The application code and examples from the 'builder' stage.
+COPY --from=builder --chown=naeus:nogroup /app/nether_bridge.py .
+COPY --from=builder --chown=naeus:nogroup /app/examples/ ./examples/
 
-# FIX: Change ownership of the work directory itself
-# This ensures the non-root user can write temporary files if needed.
-RUN chown appuser:docker /app
+# Make entrypoint executable and set final permissions.
+RUN chmod +x /usr/local/bin/entrypoint.sh && chown -R naeus:nogroup /app
 
-# Copy only the production packages from the 'base' stage with correct ownership
-COPY --from=base --chown=appuser:docker /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+EXPOSE 19132/udp 25565/udp 25565/tcp 8000/tcp
 
-# Copy the application code and example configs with correct ownership
-COPY --chown=appuser:docker nether_bridge.py .
-COPY --chown=appuser:docker examples/settings.json .
-COPY --chown=appuser:docker examples/servers.json .
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
+  CMD ["gosu", "naeus", "python", "nether_bridge.py", "--healthcheck"]
 
-# Switch to the non-root user for the final image
-USER appuser
-
-EXPOSE 19132/udp
-EXPOSE 25565/udp
-EXPOSE 25565/tcp
-EXPOSE 8000/tcp
-
-ENTRYPOINT ["python", "nether_bridge.py"]
+ENTRYPOINT ["entrypoint.sh"]
+CMD ["python", "nether_bridge.py"]

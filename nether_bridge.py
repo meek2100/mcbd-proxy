@@ -16,7 +16,7 @@ from prometheus_client import Gauge, Histogram, start_http_server
 from pythonjsonlogger.json import JsonFormatter
 
 # --- Constants ---
-HEARTBEAT_FILE = Path("/tmp/proxy_heartbeat")
+HEARTBEAT_FILE = Path("proxy_heartbeat.tmp")
 # Default values for settings, used if not overridden by env vars or settings.json
 DEFAULT_SETTINGS = {
     "idle_timeout_seconds": 600,

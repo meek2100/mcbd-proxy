@@ -37,9 +37,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Get Docker GID
-        id: docker-gid
-        run: 'echo "DOCKER_GID=$(getent group docker | cut -d: -f3)" >> $GITHUB_ENV'
+      # This step is removed as it's no longer necessary with the new entrypoint script.
+      # - name: Get Docker GID
+      #   id: docker-gid
+      #   run: 'echo "DOCKER_GID=$(getent group docker | cut -d: -f3)" >> $GITHUB_ENV'
 
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
@@ -77,7 +78,8 @@ jobs:
         run: |
           PROXY_IP=$(docker inspect nether-bridge | jq -r '.[0].NetworkSettings.Networks | .[] | .IPAddress')
           echo "Found nether-bridge IP: ${PROXY_IP}"
-          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester env CI_MODE=true PROXY_IP=${PROXY_IP} python -m pytest --cov=nether_bridge --cov-report term-missing
+          # ADD THE '--user naeus' FLAG HERE to run pytest as the correct user
+          docker compose -f tests/docker-compose.tests.yml exec -T --user naeus nb-tester env CI_MODE=true PROXY_IP=${PROXY_IP} python -m pytest --cov=nether_bridge --cov-report term-missing
         id: run-tests
 
       - name: Dump All Container Logs on Failure
