@@ -11,29 +11,27 @@ RUN pip install --no-cache-dir -r requirements.txt
 FROM base AS testing
 WORKDIR /app
 
-# Install system packages needed by the entrypoint and for testing.
+# Install system packages needed by the entrypoint.
 RUN apt-get update && apt-get install -y --no-install-recommends gosu passwd && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements files first to leverage Docker cache
-COPY requirements.txt tests/requirements-dev.in ./
-COPY tests/requirements-dev.txt ./tests/
+# Copy requirements files first to leverage Docker cache. This also creates the /app/tests/ directory.
+COPY requirements.txt .
+COPY tests/ ./tests/
 
 # Install dev dependencies. This layer is cached as long as requirements don't change.
 RUN pip install --no-cache-dir -r tests/requirements-dev.txt
 
-# Copy the rest of the application code
+# Now copy the rest of the application source code.
 COPY . .
 
-# Create a non-root user 'naeus'
+# Create a non-root user 'naeus'.
 RUN adduser --system --no-create-home naeus
 
 # Set ownership for the entire app directory now that it's populated
-RUN chown -R naeus:nogroup /app
+# and ensure the entrypoint is executable.
+RUN chown -R naeus:nogroup /app && chmod +x /app/entrypoint.sh
 
-# Make the entrypoint executable (it was copied into /app by 'COPY . .')
-RUN chmod +x /app/entrypoint.sh
-
-# Set the entrypoint using an absolute path.
+# Set the entrypoint using an absolute path, as WORKDIR is not in $PATH.
 ENTRYPOINT ["/app/entrypoint.sh"]
 # The default command for this stage.
 CMD ["/bin/bash"]
@@ -47,23 +45,22 @@ WORKDIR /app
 # Install 'gosu' for privilege dropping and 'passwd' for the 'adduser' command.
 RUN apt-get update && apt-get install -y --no-install-recommends gosu passwd && rm -rf /var/lib/apt/lists/*
 
-# Create the non-root user 'naeus'
+# Create the non-root user 'naeus'.
 RUN adduser --system --no-create-home naeus
 
-# Copy the entrypoint script to a standard bin location and make it executable
+# Copy the entrypoint script to a standard bin location and make it executable.
 COPY entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# Copy application files and set ownership
+# Copy application files and set ownership. Note the heartbeat file is NOT copied.
 COPY --chown=naeus:nogroup nether_bridge.py .
-COPY --chown=naeus:nogroup proxy_heartbeat.tmp .
 COPY --chown=naeus:nogroup examples/ ./examples/
 COPY --chown=naeus:nogroup requirements.txt .
 
-# Copy production packages from the 'base' stage
-COPY --from=base /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+# Copy production packages from the 'base' stage.
+COPY --from=base --chown=naeus:nogroup /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
 
-# Set ownership for the entire app directory
+# Set final ownership for the entire app directory.
 RUN chown -R naeus:nogroup /app
 
 EXPOSE 19132/udp
