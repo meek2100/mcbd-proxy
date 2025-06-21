@@ -6,8 +6,7 @@ services:
     build:
       context: ../
       dockerfile: Dockerfile
-      args:
-        - DOCKER_GID=${DOCKER_GID}
+      # The DOCKER_GID build-arg is no longer needed.
       cache_from:
         - ghcr.io/meek2100/mcbd-proxy-cache:main
     restart: "no"
@@ -40,12 +39,7 @@ services:
       - NB_2_LISTEN_PORT=25565
       - NB_2_CONTAINER_NAME=mc-java
       - NB_2_INTERNAL_PORT=25565
-    healthcheck:
-      test: ["CMD", "python", "nether_bridge.py", "--healthcheck"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
+    # The healthcheck is now built into the Dockerfile, so this section is removed.
     depends_on:
       - mc-bedrock
       - mc-java
@@ -90,8 +84,7 @@ services:
       context: ../
       dockerfile: Dockerfile
       target: testing
-      args:
-        - DOCKER_GID=${DOCKER_GID}
+      # The DOCKER_GID build-arg is no longer needed.
       cache_from:
         - ghcr.io/meek2100/mcbd-proxy-cache:main
     networks:

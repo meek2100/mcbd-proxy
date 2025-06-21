@@ -11,58 +11,63 @@ RUN pip install --no-cache-dir -r requirements.txt
 FROM base AS testing
 WORKDIR /app
 
-# Add a build argument to accept the Docker group ID from the host
-ARG DOCKER_GID
-
-# Create a non-root user 'appuser' and add it to a 'docker' group with the correct GID
-# This allows the user to access the mounted docker socket.
-# Defaults to 999 if not provided.
-RUN addgroup --gid ${DOCKER_GID:-999} docker && \
-    adduser --system --ingroup docker --no-create-home appuser
+# Create a non-root user 'naeus'
+# Permissions for Docker socket will be handled at runtime by the entrypoint.
+RUN adduser --system --no-create-home naeus
 
 # FIX: Change ownership of the work directory itself
 # This allows the non-root user to create new files/dirs like .ruff_cache
-RUN chown appuser:docker /app
+RUN chown naeus:nogroup /app
 
-# Copy source and test files with the correct ownership
-COPY --chown=appuser:docker . .
+# Copy source and test files with correct ownership
+COPY . . 
 
 # Install the development dependencies
 RUN pip install --no-cache-dir -r tests/requirements-dev.txt
 
-# Switch to the non-root user for the test environment as well
-USER appuser
+# Switch to the non-root user for the test environment
+USER naeus
 
 # --- Stage 3: Final Production Image ---
 # This is the minimal final image.
 FROM python:3.10-slim-buster
 WORKDIR /app
 
-# Add the same build argument for the Docker GID
-ARG DOCKER_GID
+# Install necessary tools for the entrypoint script (su-exec, shadow for usermod)
+RUN apt-get update && apt-get install -y --no-install-recommends su-exec shadow && rm -rf /var/lib/apt/lists/*
 
-# Create the same non-root user and group as the testing stage
-RUN addgroup --gid ${DOCKER_GID:-999} docker && \
-    adduser --system --ingroup docker --no-create-home appuser
+# Create the same non-root user as the testing stage
+RUN adduser --system --no-create-home naeus
 
-# FIX: Change ownership of the work directory itself
-# This ensures the non-root user can write temporary files if needed.
-RUN chown appuser:docker /app
+# FIX: Change ownership of the work directory itself.
+RUN chown naeus:nogroup /app
 
 # Copy only the production packages from the 'base' stage with correct ownership
-COPY --from=base --chown=appuser:docker /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+COPY --from=base --chown=naeus:nogroup /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
 
 # Copy the application code and example configs with correct ownership
-COPY --chown=appuser:docker nether_bridge.py .
-COPY --chown=appuser:docker examples/settings.json .
-COPY --chown=appuser:docker examples/servers.json .
+COPY --chown=naeus:nogroup nether_bridge.py .
+COPY --chown=naeus:nogroup examples/settings.json . 
+COPY --chown=naeus:nogroup examples/servers.json . 
+
+# Copy and set up the entrypoint script
+COPY --chown=naeus:nogroup entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # Switch to the non-root user for the final image
-USER appuser
+USER naeus
 
 EXPOSE 19132/udp
 EXPOSE 25565/udp
 EXPOSE 25565/tcp
 EXPOSE 8000/tcp
 
-ENTRYPOINT ["python", "nether_bridge.py"]
+# Embed the health check directly into the image.
+# It uses the Python script's built-in health check capability.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
+  CMD ["python", "nether_bridge.py", "--healthcheck"]
+
+# Set the entrypoint to our new script.
+ENTRYPOINT ["entrypoint.sh"]
+# Set the default command for the entrypoint.
+CMD ["python", "nether_bridge.py"]
