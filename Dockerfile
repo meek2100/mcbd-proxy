@@ -15,13 +15,13 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends gosu passwd && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements files first to leverage Docker cache
-COPY requirements.txt .
-COPY tests/requirements-dev.txt tests/requirements-dev.txt
+COPY requirements.txt tests/requirements-dev.in ./
+COPY tests/requirements-dev.txt ./tests/
 
 # Install dev dependencies. This layer is cached as long as requirements don't change.
 RUN pip install --no-cache-dir -r tests/requirements-dev.txt
 
-# Now copy the rest of the application code
+# Copy the rest of the application code
 COPY . .
 
 # Create a non-root user 'naeus'
@@ -30,9 +30,12 @@ RUN adduser --system --no-create-home naeus
 # Set ownership for the entire app directory now that it's populated
 RUN chown -R naeus:nogroup /app
 
-# Set the entrypoint. It will run as root and drop privileges to naeus.
-ENTRYPOINT ["entrypoint.sh"]
-# The default command for this stage, can be overridden by docker-compose.
+# Make the entrypoint executable (it was copied into /app by 'COPY . .')
+RUN chmod +x /app/entrypoint.sh
+
+# Set the entrypoint using an absolute path.
+ENTRYPOINT ["/app/entrypoint.sh"]
+# The default command for this stage.
 CMD ["/bin/bash"]
 
 
@@ -47,20 +50,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends gosu passwd && 
 # Create the non-root user 'naeus'
 RUN adduser --system --no-create-home naeus
 
-# Change ownership of the work directory and its contents
-RUN chown -R naeus:nogroup /app
-
-# Copy only the production packages from the 'base' stage with correct ownership
-COPY --from=base --chown=naeus:nogroup /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
-
-# Copy the application code and example configs with correct ownership
-COPY --chown=naeus:nogroup nether_bridge.py .
-COPY --chown=naeus:nogroup examples/settings.json .
-COPY --chown=naeus:nogroup examples/servers.json .
-
-# Copy and set up the entrypoint script, which will run as root
+# Copy the entrypoint script to a standard bin location and make it executable
 COPY entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Copy application files and set ownership
+COPY --chown=naeus:nogroup nether_bridge.py .
+COPY --chown=naeus:nogroup proxy_heartbeat.tmp .
+COPY --chown=naeus:nogroup examples/ ./examples/
+COPY --chown=naeus:nogroup requirements.txt .
+
+# Copy production packages from the 'base' stage
+COPY --from=base /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+
+# Set ownership for the entire app directory
+RUN chown -R naeus:nogroup /app
 
 EXPOSE 19132/udp
 EXPOSE 25565/udp
@@ -74,5 +78,5 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
 # Set the entrypoint. It will run as root by default.
 ENTRYPOINT ["entrypoint.sh"]
 
-# Set the default command for the entrypoint. The entrypoint script will execute this as the 'naeus' user.
+# Set the default command. The entrypoint script will execute this as 'naeus'.
 CMD ["python", "nether_bridge.py"]
