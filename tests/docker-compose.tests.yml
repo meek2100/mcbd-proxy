@@ -6,7 +6,7 @@ services:
     build:
       context: ../
       dockerfile: Dockerfile
-      # The DOCKER_GID build-arg is no longer needed.
+      target: final
       cache_from:
         - ghcr.io/meek2100/mcbd-proxy-cache:main
     restart: "no"
@@ -39,7 +39,6 @@ services:
       - NB_2_LISTEN_PORT=25565
       - NB_2_CONTAINER_NAME=mc-java
       - NB_2_INTERNAL_PORT=25565
-    # The healthcheck is now built into the Dockerfile, so this section is removed.
     depends_on:
       - mc-bedrock
       - mc-java
@@ -90,7 +89,6 @@ services:
       - mc-network
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    # REMOVE this line: entrypoint: ""
     command: /bin/bash -c "while true; do sleep 1; done"
 
 networks:
