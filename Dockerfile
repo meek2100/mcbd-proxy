@@ -8,7 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # --- Stage 2: Testing ---
 # Prepares a non-root environment for running tests inside CI.
-# This stage prioritizes correctness over layer caching for reliability.
+# This stage now copies all files at once for maximum reliability.
 FROM base AS testing
 WORKDIR /app
 
@@ -25,31 +25,28 @@ RUN pip install --no-cache-dir -r tests/requirements-dev.txt
 RUN adduser --system --no-create-home naeus
 RUN chown -R naeus:nogroup /app && chmod +x /app/entrypoint.sh
 
-# Set the entrypoint using an absolute path. It runs as root and drops privileges.
+# Set the entrypoint using an absolute path, as WORKDIR is not in $PATH.
 ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["/bin/bash"] # Default command for the testing container.
 
 # --- Stage 3: Final Production Image ---
-# This is the minimal final image for the actual application.
+# This is the minimal final image, built from the stages above.
 FROM python:3.10-slim-buster
 WORKDIR /app
 
 # Install 'gosu' for privilege dropping.
-RUN apt-get update && apt-get install -y --no-install-recommends gosu passwd && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends gosu && rm -rf /var/lib/apt/lists/*
 
 # Create the non-root user 'naeus'.
 RUN adduser --system --no-create-home naeus
 
-# Copy the entrypoint script and make it executable.
-COPY entrypoint.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/entrypoint.sh
+# Copy production python packages from the 'base' stage.
+COPY --from=base /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
 
-# Copy production packages from the 'base' stage.
-COPY --from=base /app /app
-
-# Copy application source from the build context and set ownership.
-COPY --chown=naeus:nogroup nether_bridge.py .
-COPY --chown=naeus:nogroup examples/ ./examples/
+# Copy the entire prepared application directory from the 'testing' stage.
+# This is a robust way to include all source code and the entrypoint script
+# with the correct permissions already set.
+COPY --from=testing --chown=naeus:nogroup /app /app
 
 EXPOSE 19132/udp
 EXPOSE 25565/udp
@@ -60,8 +57,8 @@ EXPOSE 8000/tcp
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
   CMD ["gosu", "naeus", "python", "nether_bridge.py", "--healthcheck"]
 
-# Set the entrypoint. It will run as root by default.
-ENTRYPOINT ["entrypoint.sh"]
+# Set the entrypoint using an absolute path. It will run as root.
+ENTRYPOINT ["/app/entrypoint.sh"]
 
 # Set the default command. The entrypoint script will execute this as 'naeus'.
 CMD ["python", "nether_bridge.py"]
