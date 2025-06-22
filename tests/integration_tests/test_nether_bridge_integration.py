@@ -18,23 +18,17 @@ JAVA_PROXY_PORT = 25565
 def get_proxy_host():
     """
     Determines the correct IP address or hostname to target for integration tests.
-
-    It checks for specific environment variables used in different test
-    scenarios (CI, remote Docker host) and falls back to localhost for
-    standard local testing.
-
-    Returns:
-        str: The IP address or hostname of the proxy.
     """
-    if "PROXY_IP" in os.environ:
-        # Used by GitHub Actions CI
-        return os.environ["PROXY_IP"]
+    # When running inside a Docker container (CI or local simulation),
+    # use the service name, which Docker's internal DNS will resolve.
+    if os.environ.get("CI_MODE"):
+        return "nether-bridge"
 
+    # When running tests against a remote Docker host from the local machine.
     if "DOCKER_HOST_IP" in os.environ:
-        # Used for remote testing, variable is set by conftest.py
         return os.environ["DOCKER_HOST_IP"]
 
-    # Fallback for local Docker Desktop testing
+    # Fallback for running tests against local Docker Desktop from the local machine.
     return "127.0.0.1"
 
 
