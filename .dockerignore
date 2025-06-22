@@ -1,0 +1,36 @@
+# Git and IDE files
+.git/
+.gitignore
+.idea/
+.vscode/
+launch.json
+vscode-settings.json
+
+# Python virtual environment and cache
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Testing artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs and local data
+*.log
+logs/
+data/
+
+# Local environment files
+tests/local_env.py
+*.env
+docker-compose.tests.local.yml
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+desktop.ini
