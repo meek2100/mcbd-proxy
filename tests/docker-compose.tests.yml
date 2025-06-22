@@ -1,14 +1,9 @@
 # tests/docker-compose.tests.yml
 services:
   nether-bridge:
+    # The 'build' section is removed. Compose will now use the pre-built image.
     image: nether-bridge:local
     container_name: nether-bridge
-    build:
-      context: ../
-      dockerfile: Dockerfile
-      target: final
-      cache_from:
-        - ghcr.io/meek2100/mcbd-proxy-cache:main
     restart: "no"
     networks:
       - mc-network
@@ -54,7 +49,7 @@ services:
     environment:
       - EULA=TRUE
       - VERSION=1.20.81.01
-      - DIRECT_DOWNLOAD_URL=https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.20.81.01.zip # Pin download URL
+      - DIRECT_DOWNLOAD_URL=https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.20.81.01.zip
       - IDLE_TIMEOUT=-1
 
   mc-java:
@@ -75,16 +70,11 @@ services:
       - JVM_ARGS=-Xmx512M -Xms512M
       - IDLE_TIMEOUT=-1
       - ONLINE_MODE=FALSE
-      
+  
   nb-tester:
+    # The 'build' section is removed here as well.
     image: nb-tester:local
     container_name: nb-tester
-    build:
-      context: ../
-      dockerfile: Dockerfile
-      target: testing
-      cache_from:
-        - ghcr.io/meek2100/mcbd-proxy-cache:main
     networks:
       - mc-network
     volumes:
