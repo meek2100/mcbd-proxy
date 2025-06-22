@@ -45,9 +45,11 @@ jobs:
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Start Test Environment
-        run: docker compose -f tests/docker-compose.tests.yml up -d --build --remove-orphans
-        id: start-env
+      - name: Build Docker images using Bake
+        run: docker bake
+
+      - name: Start Test Environment from built images
+        run: docker compose -f tests/docker-compose.tests.yml up -d --no-build
 
       - name: Wait for Nether-bridge to be healthy
         run: |
