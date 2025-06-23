@@ -399,7 +399,7 @@ class NetherBridgeProxy:
                         server = JavaServer.lookup(
                             query_target, timeout=self.settings.query_timeout_seconds
                         )
-                    else:  # bedrock
+                    else:
                         server = BedrockServer.lookup(
                             query_target, timeout=self.settings.query_timeout_seconds
                         )
@@ -426,7 +426,6 @@ class NetherBridgeProxy:
                                 idle_seconds=self.settings.idle_timeout_seconds,
                             )
                             self._stop_minecraft_server(container_name)
-
                 except Exception as e:
                     self.logger.warning(
                         "Could not query server for player count during idle check. "
@@ -463,6 +462,59 @@ class NetherBridgeProxy:
             sock.close()
         except socket.error:
             pass
+
+    def _reload_configuration(self):
+        self.logger.warning("SIGHUP received. Reloading configuration...")
+
+        try:
+            new_settings, new_servers = load_application_config()
+            setup_logging(
+                log_level=new_settings.log_level, log_format=new_settings.log_format
+            )
+            self.settings = new_settings
+            self.logger.info("Proxy settings have been reloaded.")
+        except Exception as e:
+            self.logger.error(
+                "Failed to reload settings, aborting reload", error=e, exc_info=True
+            )
+            self._reload_requested = False
+            return
+
+        old_ports = set(self.servers_config_map.keys())
+        new_servers_map = {s.listen_port: s for s in new_servers}
+        new_ports = set(new_servers_map.keys())
+
+        for port in old_ports - new_ports:
+            server_name = self.servers_config_map.get(
+                port, ServerConfig("Unknown", "", port, "", port)
+            ).name
+            self.logger.info(
+                "Removing listener for old server", server_name=server_name, port=port
+            )
+            sock = self.listen_sockets.pop(port, None)
+            if sock:
+                if sock in self.inputs:
+                    self.inputs.remove(sock)
+                sock.close()
+            self.servers_config_map.pop(port, None)
+
+        for port in new_ports - old_ports:
+            srv_cfg = new_servers_map[port]
+            self.logger.info(
+                "Adding new listener for server", server_name=srv_cfg.name, port=port
+            )
+            self._create_listening_socket(srv_cfg)
+            if srv_cfg.container_name not in self.server_states:
+                self.server_states[srv_cfg.container_name] = {
+                    "running": False,
+                    "last_activity": 0.0,
+                }
+
+        self.servers_config_map = new_servers_map
+        self.servers_list = new_servers
+
+        self.logger.info("Configuration reload complete.")
+        self._reload_requested = False
 
     def _handle_new_tcp_connection(self, sock: socket.socket):
         """Accepts a new TCP connection and sets up the session."""
@@ -516,7 +568,7 @@ class NetherBridgeProxy:
 
         try:
             data = sock.recv(4096)
-            if not data:  # Empty recv means connection closed
+            if not data:
                 raise ConnectionResetError
             destination_socket.sendall(data)
         except (ConnectionResetError, socket.error, OSError):
@@ -524,7 +576,6 @@ class NetherBridgeProxy:
                 "TCP session disconnected.", socket_info=str(sock.getpeername())
             )
             server_name = "unknown"
-            # Decrement active sessions metric
             if sock in self.session_map:
                 server_port = sock.getsockname()[1]
                 if server_port in self.servers_config_map:
@@ -549,7 +600,6 @@ class NetherBridgeProxy:
                 # For now, we assume this first packet is what matters most.
                 self._start_minecraft_server(container_name)
 
-            # Create a temporary upstream socket for this transaction
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as upstream_sock:
                 upstream_sock.settimeout(self.settings.query_timeout_seconds)
                 destination = (container_name, server_config.internal_port)
@@ -615,15 +665,12 @@ class NetherBridgeProxy:
                         if sock.type == socket.SOCK_STREAM:
                             self._handle_new_tcp_connection(sock)
                         elif sock.type == socket.SOCK_DGRAM:
-                            # For UDP, read the packet and dispatch to a thread
-                            # to handle the forwarding.
                             data, client_addr = sock.recvfrom(4096)
                             threading.Thread(
                                 target=self._handle_udp_packet,
                                 args=(sock, data, client_addr),
                             ).start()
                     else:
-                        # This must be an established TCP connection
                         self._forward_tcp_packet(sock)
                 except Exception:
                     self.logger.error(
