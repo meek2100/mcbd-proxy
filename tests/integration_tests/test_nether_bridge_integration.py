@@ -17,18 +17,42 @@ JAVA_PROXY_PORT = 25565
 
 def get_proxy_host():
     """
-    Helper function to get the target host for integration tests.
+    Determines the correct IP address or hostname for integration tests
+    by checking the environment in a specific order of precedence.
+
+    This provides redundancy to run tests successfully in various setups:
+    - Inside a Docker container (like in CI).
+    - From a local machine against a local Docker Desktop.
+    - From a local machine against a remote Docker host.
+
+    The order of precedence is:
+    1. Inside Docker ('CI_MODE'): Uses Docker's internal DNS, which is the
+       most performant and reliable method for container-to-container communication.
+    2. Explicit 'PROXY_IP': A direct override for specific CI or testing scenarios.
+    3. Remote Docker 'DOCKER_HOST_IP': For targeting a Docker daemon on another machine.
+    4. Fallback to '127.0.0.1': For standard local development.
     """
+    # --- 1. Highest Precedence: Running inside a container ---
+    # If tests are running within a Docker container on the same network
+    # (e.g., the 'nb-tester' service), use the service name. Docker's
+    # internal DNS is the fastest and most correct way to resolve it.
+    if os.environ.get("CI_MODE"):
+        return "nether-bridge"
+
+    # --- 2. Second Precedence: Explicit override for GitHub Actions or other CI ---
+    # This allows forcing a specific IP address.
     if "PROXY_IP" in os.environ:
-        # Used by GitHub Actions CI
         return os.environ["PROXY_IP"]
 
-    # --- FIX: Look for the correct environment variable ---
+    # --- 3. Third Precedence: Remote Docker Host ---
+    # Used when running tests from your local machine against a Docker
+    # daemon running on a different IP.
     if "DOCKER_HOST_IP" in os.environ:
-        # Used for remote testing, variable is set by conftest.py
         return os.environ["DOCKER_HOST_IP"]
 
-    # Fallback for local Docker Desktop testing
+    # --- 4. Fallback: Local Development ---
+    # Assumes you are running tests from your host OS (e.g., VS Code, PyCharm)
+    # against a container running in Docker Desktop, with ports mapped to localhost.
     return "127.0.0.1"
 
 
