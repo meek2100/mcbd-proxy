@@ -342,8 +342,10 @@ class NetherBridgeProxy:
         Ensures all managed servers are stopped when the proxy starts for a clean state.
         """
         self.logger.info(
-            "Proxy startup: Ensuring all managed Minecraft servers "
-            "are initially stopped."
+            (
+                "Proxy startup: Ensuring all managed Minecraft servers "
+                "are initially stopped."
+            )
         )
         for srv_conf in self.servers_list:
             container_name = srv_conf.container_name
@@ -468,6 +470,7 @@ class NetherBridgeProxy:
 
         try:
             new_settings, new_servers = load_application_config()
+            # Re-initialize logging with the potentially new log level and format
             setup_logging(
                 log_level=new_settings.log_level, log_format=new_settings.log_format
             )
@@ -607,6 +610,7 @@ class NetherBridgeProxy:
             ACTIVE_SESSIONS.labels(server_name=server_config.name).inc()
 
         session_info = self.active_sessions[session_key]
+        # Only update activity timers for packets coming FROM the client
         session_info["last_packet_time"] = time.time()
         self.server_states[container_name]["last_activity"] = time.time()
 
@@ -648,16 +652,16 @@ class NetherBridgeProxy:
         except (ConnectionResetError, socket.error):
             raise
 
-        session_info["last_packet_time"] = time.time()
-
         if socket_role == "client_socket":
+            # Only update activity timers for packets coming FROM the client
+            session_info["last_packet_time"] = time.time()
             self.server_states[container_name]["last_activity"] = time.time()
             destination_socket = session_info["server_socket"]
             destination_address = (
                 container_name,
                 self.servers_config_map[session_info["listen_port"]].internal_port,
             )
-        else:
+        else:  # server_socket
             destination_socket = session_info["client_socket"]
             destination_address = session_key[0]
 
@@ -714,16 +718,12 @@ class NetherBridgeProxy:
             for sock in readable:
                 session_key_for_error = None
                 try:
-                    # This is the reverted logic.
-                    # Check if the readable socket is a listening socket.
                     if sock in self.listen_sockets.values():
-                        # Dispatch based on socket type directly in the loop.
                         if sock.type == socket.SOCK_STREAM:
                             self._handle_new_tcp_connection(sock)
                         elif sock.type == socket.SOCK_DGRAM:
                             self._handle_new_udp_packet(sock)
                     else:
-                        # This is an established session socket, forward the packet.
                         session_tuple = self.socket_to_session_map.get(sock)
                         session_key_for_error = (
                             session_tuple[0] if session_tuple else None
@@ -864,7 +864,6 @@ class NetherBridgeProxy:
 
 def perform_health_check():
     """Performs a self-sufficient two-stage health check."""
-    # Use a temporary logger for health check before main config is loaded
     logger = structlog.get_logger("health_check")
     try:
         settings, servers_list = load_application_config()
@@ -1031,8 +1030,6 @@ def load_application_config() -> tuple[ProxySettings, list[ServerConfig]]:
 
 def main():
     """The main entrypoint for the Nether-bridge application."""
-    # A preliminary setup using environment variables or defaults for early messages
-    # This ensures that health checks or very early errors are logged correctly.
     setup_logging(
         log_level=os.environ.get("LOG_LEVEL", "INFO"),
         log_format=os.environ.get("LOG_FORMAT", "json"),
@@ -1042,11 +1039,8 @@ def main():
         perform_health_check()
         sys.exit(0)
 
-    # Load the full configuration from all sources (env, json files)
     settings, servers = load_application_config()
 
-    # Re-initialize logging with the final, consolidated settings
-    # This applies the user's chosen log level and format from all sources.
     setup_logging(log_level=settings.log_level, log_format=settings.log_format)
 
     if not servers:
@@ -1054,7 +1048,6 @@ def main():
 
     proxy = NetherBridgeProxy(settings, servers)
 
-    # Set the signal handlers to point to the new method on the proxy instance
     if hasattr(signal, "SIGHUP"):
         signal.signal(signal.SIGHUP, proxy.signal_handler)
     signal.signal(signal.SIGINT, proxy.signal_handler)
