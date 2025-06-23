@@ -37,7 +37,8 @@ services:
     environment:
       # General proxy settings can be overridden here (see README for all options).
       - LOG_LEVEL=INFO
-      # - NB_IDLE_TIMEOUT=600
+      # - NB_LOG_FORMATTER=console # Uncomment for human-readable logs
+      - NB_IDLE_TIMEOUT=600
 
       # --- Server Definitions (via environment variables) ---
       # Server 1: Bedrock Survival

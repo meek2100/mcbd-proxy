@@ -10,20 +10,24 @@ certifi==2025.6.15
     # via requests
 charset-normalizer==3.4.2
     # via requests
+colorama==0.4.6
+    # via -r requirements.in
 dnspython==2.7.0
     # via mcstatus
 docker==7.1.0
     # via -r requirements.in
 idna==3.10
     # via requests
-mcstatus==12.0.1
+mcstatus==12.0.2
     # via -r requirements.in
 prometheus-client==0.22.1
     # via -r requirements.in
-python-json-logger==3.3.0
-    # via -r requirements.in
 requests==2.32.4
     # via docker
+structlog==25.4.0
+    # via -r requirements.in
+typing-extensions==4.14.0
+    # via structlog
 urllib3==2.5.0
     # via
     #   docker

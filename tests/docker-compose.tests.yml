@@ -16,6 +16,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - LOG_LEVEL=DEBUG
+      - NB_LOG_FORMATTER=json
       - NB_IDLE_TIMEOUT=30
       - NB_PLAYER_CHECK_INTERVAL=5
       - NB_QUERY_TIMEOUT=2
