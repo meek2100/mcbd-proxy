@@ -106,7 +106,7 @@ class NetherBridgeProxy:
         if hasattr(signal, "SIGHUP") and sig == signal.SIGHUP:
             self._reload_requested = True
             self.logger.warning("SIGHUP signal received, flagging for reload.")
-        else:  # SIGINT, SIGTERM
+        else:
             self.logger.warning(
                 "Shutdown signal received, initiating shutdown.", signal=sig
             )
@@ -468,7 +468,6 @@ class NetherBridgeProxy:
 
         try:
             new_settings, new_servers = load_application_config()
-            # Re-initialize logging with the potentially new log level and format
             setup_logging(
                 log_level=new_settings.log_level, log_format=new_settings.log_format
             )
@@ -614,17 +613,6 @@ class NetherBridgeProxy:
         destination_address = (container_name, server_config.internal_port)
         session_info["server_socket"].sendto(data, destination_address)
 
-    def _handle_new_connection(self, sock: socket.socket):
-        """
-        Dispatches handling for a new connection based on socket type.
-        This is called when `select` finds a listening socket is readable.
-        """
-
-        if sock.type == socket.SOCK_STREAM:  # New TCP connection
-            self._handle_new_tcp_connection(sock)
-        elif sock.type == socket.SOCK_DGRAM:
-            self._handle_new_udp_packet(sock)
-
     def _forward_packet(self, sock: socket.socket):
         """
         Forwards a packet from an established session (TCP or UDP).
@@ -654,12 +642,10 @@ class NetherBridgeProxy:
             if protocol == "tcp":
                 data = sock.recv(4096)
                 if not data:
-                    # An empty recv() indicates the peer has closed the connection
                     raise ConnectionResetError("Connection closed by peer")
-            else:  # UDP
+            else:
                 data, _ = sock.recvfrom(4096)
         except (ConnectionResetError, socket.error):
-            # Re-raise to be handled by the main loop's cleanup logic
             raise
 
         session_info["last_packet_time"] = time.time()
@@ -671,13 +657,13 @@ class NetherBridgeProxy:
                 container_name,
                 self.servers_config_map[session_info["listen_port"]].internal_port,
             )
-        else:  # server_socket
+        else:
             destination_socket = session_info["client_socket"]
-            destination_address = session_key[0]  # The client's (address, port) tuple
+            destination_address = session_key[0]
 
         if protocol == "tcp":
             destination_socket.sendall(data)
-        else:  # UDP
+        else:
             destination_socket.sendto(data, destination_address)
 
     def _run_proxy_loop(self):
@@ -728,9 +714,16 @@ class NetherBridgeProxy:
             for sock in readable:
                 session_key_for_error = None
                 try:
+                    # This is the reverted logic.
+                    # Check if the readable socket is a listening socket.
                     if sock in self.listen_sockets.values():
-                        self._handle_new_connection(sock)
+                        # Dispatch based on socket type directly in the loop.
+                        if sock.type == socket.SOCK_STREAM:
+                            self._handle_new_tcp_connection(sock)
+                        elif sock.type == socket.SOCK_DGRAM:
+                            self._handle_new_udp_packet(sock)
                     else:
+                        # This is an established session socket, forward the packet.
                         session_tuple = self.socket_to_session_map.get(sock)
                         session_key_for_error = (
                             session_tuple[0] if session_tuple else None
