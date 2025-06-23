@@ -46,7 +46,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y jq
 
       - name: Build Docker images using Bake
-        run: docker bake
+        run: docker buildx bake ci
 
       - name: Start Test Environment from built images
         run: docker compose -f tests/docker-compose.tests.yml up -d --no-build

@@ -1,37 +1,50 @@
 # docker-bake.hcl
 
-# Define a variable for the image name to keep it consistent.
-variable "IMAGE_NAME" {
-  default = "nether-bridge"
+# Define variables for reusability.
+variable "DOCKER_IMAGE_PREFIX" {
+  default = "ghcr.io/meek2100"
 }
 
-# Define a common group of settings that all targets can inherit.
-# This avoids repetition and includes your cache settings.
-target "build-defaults" {
-  dockerfile = "Dockerfile"
-  context    = "."
-  cache-from = ["type=registry,ref=ghcr.io/meek2100/mcbd-proxy-cache:main"]
-  cache-to   = ["type=registry,ref=ghcr.io/meek2100/mcbd-proxy-cache:main,mode=max"]
+# The TAGS variable is now a list of strings.
+variable "TAGS" {
+  default = ["latest"]
 }
 
-# Define the "default" group. Running `docker bake` with no arguments
-# will build all targets listed here. This is perfect for your test setup.
+# Group definitions allow building multiple targets at once.
 group "default" {
-  targets = ["nether-bridge", "nb-tester"]
+  targets = ["app"]
 }
 
-# Define the target for your final production image.
-# It inherits the defaults and specifies the final stage and image tag.
-target "nether-bridge" {
-  inherits = ["build-defaults"]
-  target   = "final"
-  tags     = ["${IMAGE_NAME}:local"]
+# A dedicated group for building all images required for CI/testing.
+group "ci" {
+  targets = ["app-testing", "tester"]
 }
 
-# Define the target for your CI test runner image.
-# It inherits the defaults and specifies the testing stage and image tag.
-target "nb-tester" {
-  inherits = ["build-defaults"]
-  target   = "testing"
-  tags     = ["nb-tester:local"]
+# Defines the main production application image.
+target "app" {
+  context    = "."
+  dockerfile = "Dockerfile"
+  target     = "final"
+  # This now iterates over the TAGS list to apply multiple Docker tags.
+  tags       = [for t in TAGS : "${DOCKER_IMAGE_PREFIX}/nether-bridge:${t}"]
+  platforms  = [
+    "linux/amd64",
+    "linux/arm64"
+  ]
+}
+
+# Defines the 'nether-bridge' image for the testing environment.
+target "app-testing" {
+  context    = "."
+  dockerfile = "Dockerfile"
+  target     = "testing"
+  tags       = ["nether-bridge:local"]
+}
+
+# Defines the 'nb-tester' image for running tests in the CI environment.
+target "tester" {
+  context    = "."
+  dockerfile = "Dockerfile"
+  target     = "testing"
+  tags       = ["nb-tester:local"]
 }

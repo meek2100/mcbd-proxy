@@ -4,13 +4,7 @@ name: Reusable Docker Build and Push
 on:
   workflow_call:
     inputs:
-      image_name:
-        required: true
-        type: string
-      tags:
-        required: true
-        type: string
-      app_version:
+      tags_list: # Input is now a comma-separated list of tags
         required: true
         type: string
 
@@ -35,22 +29,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ inputs.image_name }}
-          tags: ${{ inputs.tags }}
-
-      - name: Build and push Docker image
-        id: build-and-push
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          # Use the 'main' branch cache for tag builds, otherwise use the branch name.
-          cache-from: type=registry,ref=${{ inputs.image_name }}-cache:${{ github.ref_type == 'tag' && 'main' || github.ref_name }}
-          cache-to: type=registry,ref=${{ inputs.image_name }}-cache:${{ github.ref_type == 'tag' && 'main' || github.ref_name }},mode=max
+      - name: Build and push Docker image using Bake
+        run: |
+          docker buildx bake app --push \
+            --set "*.tags=${{ inputs.tags_list }}"

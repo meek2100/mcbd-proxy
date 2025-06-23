@@ -1,3 +1,4 @@
+# .github/workflows/develop-build.yml
 name: Build and Push Development Image
 
 on:
@@ -14,7 +15,5 @@ jobs:
   call-reusable-build:
     uses: ./.github/workflows/reusable-build.yml
     with:
-      image_name: ghcr.io/${{ github.repository_owner }}/mcbd-proxy # Development Name
-      tags: type=raw,value=develop,enable=true
-      app_version: develop
+      tags_list: ghcr.io/${{ github.repository_owner }}/mcbd-proxy:develop
     secrets: inherit
