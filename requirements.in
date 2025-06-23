@@ -1,5 +1,5 @@
 # Production Dependencies
 docker
 mcstatus
+structlog
 prometheus_client
-python-json-logger
