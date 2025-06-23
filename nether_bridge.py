@@ -228,6 +228,7 @@ class NetherBridgeProxy:
             startup_timer_start = time.time()
             container = self.docker_client.containers.get(container_name)
             container.start()
+            self.server_states[container_name]["last_activity"] = startup_timer_start
             self.logger.info(
                 "Docker container start command issued.",
                 container_name=container_name,
@@ -383,35 +384,7 @@ class NetherBridgeProxy:
             if self._shutdown_requested:
                 break
 
-            current_time = time.time()
-            idle_timeout = self.settings.idle_timeout_seconds
-
-            idle_sessions_to_remove = [
-                key
-                for key, info in self.active_sessions.items()
-                if current_time - info["last_packet_time"] > idle_timeout
-            ]
-            for session_key in idle_sessions_to_remove:
-                session_info = self.active_sessions.pop(session_key, None)
-                if session_info:
-                    server_config = self.servers_config_map.get(
-                        session_info["listen_port"]
-                    )
-                    if server_config:
-                        ACTIVE_SESSIONS.labels(server_name=server_config.name).dec()
-                    self.logger.info(
-                        "Cleaning up idle client session.",
-                        container_name=session_info["target_container"],
-                        client_addr=session_key[0],
-                    )
-                    self._close_session_sockets(session_info)
-                    self.socket_to_session_map.pop(
-                        session_info.get("client_socket"), None
-                    )
-                    self.socket_to_session_map.pop(
-                        session_info.get("server_socket"), None
-                    )
-
+            # --- This server shutdown logic is new and more robust ---
             for server_conf in self.servers_list:
                 container_name = server_conf.container_name
                 state = self.server_states.get(container_name)
@@ -419,24 +392,51 @@ class NetherBridgeProxy:
                 if not (state and state.get("running")):
                     continue
 
-                has_active_sessions = any(
-                    info["target_container"] == container_name
-                    for info in self.active_sessions.values()
-                )
-
-                if not has_active_sessions:
-                    if current_time - state.get("last_activity", 0) > idle_timeout:
-                        self.logger.info(
-                            "Server idle with 0 sessions. Initiating shutdown.",
-                            container_name=container_name,
-                            idle_threshold_seconds=idle_timeout,
+                player_count = -1
+                try:
+                    query_target = f"{container_name}:{server_conf.internal_port}"
+                    if server_conf.server_type == "java":
+                        server = JavaServer.lookup(
+                            query_target, timeout=self.settings.query_timeout_seconds
                         )
-                        self._stop_minecraft_server(container_name)
-                else:
+                    else:  # bedrock
+                        server = BedrockServer.lookup(
+                            query_target, timeout=self.settings.query_timeout_seconds
+                        )
+
+                    status = server.status()
+                    player_count = status.players.online
+
                     self.logger.debug(
-                        "Server has active sessions. Not stopping.",
+                        "Queried server for player count",
                         container_name=container_name,
+                        players=player_count,
                     )
+
+                    if player_count > 0:
+                        state["last_activity"] = time.time()
+                    elif player_count == 0:
+                        if (
+                            time.time() - state.get("last_activity", 0)
+                            > self.settings.idle_timeout_seconds
+                        ):
+                            self.logger.info(
+                                "Server idle with 0 players. Initiating shutdown.",
+                                container_name=container_name,
+                                idle_seconds=self.settings.idle_timeout_seconds,
+                            )
+                            self._stop_minecraft_server(container_name)
+
+                except Exception as e:
+                    self.logger.warning(
+                        "Could not query server for player count during idle check. "
+                        "Resetting idle timer for safety.",
+                        container_name=container_name,
+                        error=str(e),
+                    )
+                    # Reset last_activity timer to prevent shutting down a
+                    # server that may be busy but not responding to queries
+                    state["last_activity"] = time.time()
 
     def _close_session_sockets(self, session_info):
         """
@@ -533,6 +533,8 @@ class NetherBridgeProxy:
         server_config = self.servers_config_map[server_port]
         container_name = server_config.container_name
 
+        self.server_states[container_name]["last_activity"] = time.time()
+
         self.logger.info(
             "Accepted new TCP connection.",
             client_addr=client_addr,
@@ -561,10 +563,6 @@ class NetherBridgeProxy:
         session_info = {
             "client_socket": conn,
             "server_socket": server_sock,
-            "target_container": container_name,
-            "last_packet_time": time.time(),
-            "listen_port": server_port,
-            "protocol": "tcp",
         }
         self.active_sessions[session_key] = session_info
         self.socket_to_session_map[conn] = (session_key, "client_socket")
@@ -577,6 +575,8 @@ class NetherBridgeProxy:
         server_port = sock.getsockname()[1]
         server_config = self.servers_config_map[server_port]
         container_name = server_config.container_name
+
+        self.server_states[container_name]["last_activity"] = time.time()
 
         if not self._is_container_running(container_name):
             self.logger.info(
@@ -600,20 +600,12 @@ class NetherBridgeProxy:
             session_info = {
                 "client_socket": sock,
                 "server_socket": server_sock,
-                "target_container": container_name,
-                "last_packet_time": time.time(),
-                "listen_port": server_port,
-                "protocol": "udp",
             }
             self.active_sessions[session_key] = session_info
             self.socket_to_session_map[server_sock] = (session_key, "server_socket")
             ACTIVE_SESSIONS.labels(server_name=server_config.name).inc()
 
         session_info = self.active_sessions[session_key]
-        # Only update activity timers for packets coming FROM the client
-        session_info["last_packet_time"] = time.time()
-        self.server_states[container_name]["last_activity"] = time.time()
-
         destination_address = (container_name, server_config.internal_port)
         session_info["server_socket"].sendto(data, destination_address)
 
@@ -639,8 +631,7 @@ class NetherBridgeProxy:
             self.socket_to_session_map.pop(sock, None)
             return
 
-        container_name = session_info["target_container"]
-        protocol = session_info["protocol"]
+        protocol = "tcp" if sock.type == socket.SOCK_STREAM else "udp"
 
         try:
             if protocol == "tcp":
@@ -653,13 +644,13 @@ class NetherBridgeProxy:
             raise
 
         if socket_role == "client_socket":
-            # Only update activity timers for packets coming FROM the client
-            session_info["last_packet_time"] = time.time()
-            self.server_states[container_name]["last_activity"] = time.time()
+            self.server_states[session_info["target_container"]]["last_activity"] = (
+                time.time()
+            )
             destination_socket = session_info["server_socket"]
             destination_address = (
-                container_name,
-                self.servers_config_map[session_info["listen_port"]].internal_port,
+                session_info["target_container"],
+                self.servers_config_map[session_key[1]].internal_port,
             )
         else:  # server_socket
             destination_socket = session_info["client_socket"]
@@ -724,10 +715,6 @@ class NetherBridgeProxy:
                         elif sock.type == socket.SOCK_DGRAM:
                             self._handle_new_udp_packet(sock)
                     else:
-                        session_tuple = self.socket_to_session_map.get(sock)
-                        session_key_for_error = (
-                            session_tuple[0] if session_tuple else None
-                        )
                         self._forward_packet(sock)
 
                 except (ConnectionResetError, socket.error, OSError) as e:
@@ -738,12 +725,7 @@ class NetherBridgeProxy:
                     )
                     session_info = self.active_sessions.pop(session_key_for_error, None)
                     if session_info:
-                        server_config = self.servers_config_map.get(
-                            session_info["listen_port"]
-                        )
-                        if server_config:
-                            ACTIVE_SESSIONS.labels(server_name=server_config.name).dec()
-
+                        ACTIVE_SESSIONS.dec()
                         self._close_session_sockets(session_info)
                         self.socket_to_session_map.pop(
                             session_info.get("client_socket"), None
