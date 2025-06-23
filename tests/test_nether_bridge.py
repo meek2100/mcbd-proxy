@@ -209,23 +209,36 @@ def test_wait_for_server_query_ready_timeout(
 
 @patch("nether_bridge.time.sleep")
 @patch("nether_bridge.NetherBridgeProxy._stop_minecraft_server")
+@patch("nether_bridge.JavaServer.lookup")
 def test_monitor_servers_activity_stops_idle_server(
-    mock_stop, mock_sleep, nether_bridge_instance, mock_servers_config
+    mock_lookup, mock_stop, mock_sleep, nether_bridge_instance, mock_servers_config
 ):
-    config = mock_servers_config[0]
+    # This test now mocks the lookup call to simulate a server with 0 players
+    config = mock_servers_config[1]  # Use the java server for simplicity
     nether_bridge_instance.server_states[config.container_name]["running"] = True
     nether_bridge_instance.server_states[config.container_name]["last_activity"] = (
         time.time() - 1000
     )
+
+    mock_status = MagicMock()
+    mock_status.players.online = 0
+    mock_lookup.return_value.status.return_value = mock_status
+
     mock_sleep.side_effect = [None, Exception("Stop loop")]
     try:
         nether_bridge_instance._monitor_servers_activity()
     except Exception as e:
         assert str(e) == "Stop loop"
+
     mock_stop.assert_called_once_with(config.container_name)
 
 
-def test_load_config_invalid_env_var_falls_back():
+@patch("pathlib.Path.is_file", return_value=False)
+def test_load_config_invalid_env_var_falls_back(mock_is_file):
+    """
+    Tests that an invalid env var for a setting correctly falls back to the
+    hardcoded default value, by preventing any settings.json from loading.
+    """
     with patch.dict(os.environ, {"NB_IDLE_TIMEOUT": "not-a-number"}):
         settings, _ = load_application_config()
         assert settings.idle_timeout_seconds == DEFAULT_SETTINGS["idle_timeout_seconds"]
@@ -393,17 +406,11 @@ def test_main_prometheus_startup_error(mock_proxy_run):
                 ),
             ):
                 with patch("signal.signal"):
-                    # We call main, which will try to start prometheus, fail, log, and
-                    # continue.
                     main()
-    # The main assertion is that the code doesn't crash and still proceeds to create
-    # and run the proxy.
     mock_proxy_run.assert_called_once()
 
 
-@patch(
-    "nether_bridge.NetherBridgeProxy._run_proxy_loop"
-)  # Prevent the loop from running
+@patch("nether_bridge.NetherBridgeProxy._run_proxy_loop")
 @patch("pathlib.Path.exists", return_value=True)
 @patch("pathlib.Path.unlink")
 def test_main_cannot_remove_stale_heartbeat(mock_unlink, mock_exists, mock_proxy_run):
@@ -417,8 +424,6 @@ def test_main_cannot_remove_stale_heartbeat(mock_unlink, mock_exists, mock_proxy
                 [MagicMock()],
             ),
         ):
-            # We only need to patch the methods inside run() that would block
-            # or have side effects
             with patch("nether_bridge.NetherBridgeProxy._connect_to_docker"):
                 with patch(
                     "nether_bridge.NetherBridgeProxy._ensure_all_servers_stopped_on_startup"
@@ -432,5 +437,4 @@ def test_main_cannot_remove_stale_heartbeat(mock_unlink, mock_exists, mock_proxy
                                     main()
     mock_exists.assert_called_once()
     mock_unlink.assert_called_once()
-    # Verify the app continued past the error to the run stage
     mock_proxy_run.assert_called_once()
