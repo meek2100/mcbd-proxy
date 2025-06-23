@@ -41,6 +41,7 @@ COPY --from=base /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.
 # 2. The entrypoint script from the 'builder' stage.
 COPY --from=builder /app/entrypoint.sh /usr/local/bin/
 # 3. The application code and examples from the 'builder' stage.
+COPY --from=builder --chown=naeus:nogroup /app/logging_config.py .
 COPY --from=builder --chown=naeus:nogroup /app/nether_bridge.py .
 COPY --from=builder --chown=naeus:nogroup /app/examples/ ./examples/
 
