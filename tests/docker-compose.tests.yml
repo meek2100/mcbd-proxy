@@ -5,6 +5,7 @@ services:
     image: nether-bridge:local
     container_name: nether-bridge
     restart: "no"
+    command: python nether_bridge.py
     networks:
       - mc-network
     ports:
