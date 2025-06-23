@@ -192,6 +192,7 @@ These settings control the proxy's behavior, such as idle timeouts and query int
 | Environment Variable | `settings.json` Key | Default Value | Description |
 | :------------------------------- | :----------------------------------- | :------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `LOG_LEVEL` | `log_level` | `INFO` | Sets the logging verbosity. Options: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
+| `LOG_FORMAT` | `log_format` | `console` | Sets the logging format. console for human-readable, colored logs (ideal for development/debugging). json for structured, machine-readable logs (recommended for production/CI). |
 | `NB_IDLE_TIMEOUT` | `idle_timeout_seconds` | `600` | Time in seconds a server must have 0 players before it's automatically stopped. |
 | `NB_PLAYER_CHECK_INTERVAL` | `player_check_interval_seconds` | `60` | How often (in seconds) the proxy checks for active players on running servers. |
 | `NB_QUERY_TIMEOUT` | `query_timeout_seconds` | `5` | Timeout (in seconds) for `mcstatus` queries when checking server readiness or player counts. |

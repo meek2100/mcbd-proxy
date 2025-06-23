@@ -35,7 +35,9 @@ services:
       # - ./config/settings.json:/app/settings.json:ro
       # - ./config/servers.json:/app/servers.json:ro
     environment:
-      # General proxy settings can be overridden here (see README for all options).
+      # --- General proxy settings (see README for all options) ---
+      # LOG_FORMAT: "console" for human-readable logs, or "json" for production.
+      - LOG_FORMAT=console
       - LOG_LEVEL=INFO
       # - NB_IDLE_TIMEOUT=600
 

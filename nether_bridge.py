@@ -10,11 +10,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import docker
-import structlog  # <-- Import structlog
+import structlog
 from mcstatus import BedrockServer, JavaServer
 from prometheus_client import Gauge, Histogram, start_http_server
 
-# --- New Import ---
 from logging_config import setup_logging
 
 # --- Constants ---
@@ -29,6 +28,7 @@ DEFAULT_SETTINGS = {
     "server_startup_delay_seconds": 5,
     "initial_server_query_delay_seconds": 10,
     "log_level": "INFO",
+    "log_format": "json",
     "healthcheck_stale_threshold_seconds": 60,
     "proxy_heartbeat_interval_seconds": 15,
 }
@@ -73,6 +73,7 @@ class ProxySettings:
     server_startup_delay_seconds: int
     initial_server_query_delay_seconds: int
     log_level: str
+    log_format: str
     healthcheck_stale_threshold_seconds: int
     proxy_heartbeat_interval_seconds: int
 
@@ -83,7 +84,6 @@ class NetherBridgeProxy:
     """
 
     def __init__(self, settings: ProxySettings, servers_list: list[ServerConfig]):
-        # --- Use structlog.get_logger() ---
         self.logger = structlog.get_logger(__name__)
         self.settings = settings
         self.servers_list = servers_list
@@ -119,7 +119,6 @@ class NetherBridgeProxy:
             self.docker_client.ping()
             self.logger.info("Successfully connected to the Docker daemon.")
         except Exception as e:
-            # --- Refactored Logging ---
             self.logger.critical(
                 "FATAL: Could not connect to Docker daemon.",
                 help_text="Is /var/run/docker.sock mounted?",
@@ -134,11 +133,9 @@ class NetherBridgeProxy:
             container = self.docker_client.containers.get(container_name)
             return container.status == "running"
         except docker.errors.NotFound:
-            # --- Refactored Logging ---
             self.logger.debug("Container not found.", container_name=container_name)
             return False
         except docker.errors.APIError as e:
-            # --- Refactored Logging ---
             self.logger.error(
                 "API error checking container.",
                 container_name=container_name,
@@ -146,7 +143,6 @@ class NetherBridgeProxy:
             )
             return False
         except Exception as e:
-            # --- Refactored Logging ---
             self.logger.error(
                 "Unexpected error checking container.",
                 container_name=container_name,
@@ -169,7 +165,6 @@ class NetherBridgeProxy:
         target_port = server_config.internal_port
         server_type = server_config.server_type
 
-        # --- Refactored Logging ---
         self.logger.info(
             "Waiting for server to respond to query",
             container_name=container_name,
@@ -195,7 +190,6 @@ class NetherBridgeProxy:
                     status = server.status()
 
                 if status:
-                    # --- Refactored Logging ---
                     self.logger.info(
                         "Server responded to query. Ready!",
                         container_name=container_name,
@@ -203,7 +197,6 @@ class NetherBridgeProxy:
                     )
                     return True
             except Exception as e:
-                # --- Refactored Logging ---
                 self.logger.debug(
                     "Query failed, retrying...",
                     container_name=container_name,
@@ -211,7 +204,6 @@ class NetherBridgeProxy:
                 )
             time.sleep(query_timeout_seconds)
 
-        # --- Refactored Logging ---
         self.logger.error(
             "Timeout: Server did not respond to query. Proceeding anyway.",
             container_name=container_name,
@@ -476,8 +468,10 @@ class NetherBridgeProxy:
 
         try:
             new_settings, new_servers = load_application_config()
-            # Re-initialize logging with the potentially new log level
-            setup_logging(log_level=new_settings.log_level)
+            # Re-initialize logging with the potentially new log level and format
+            setup_logging(
+                log_level=new_settings.log_level, log_format=new_settings.log_format
+            )
             self.settings = new_settings
             self.logger.info("Proxy settings have been reloaded.")
         except Exception as e:
@@ -1004,6 +998,7 @@ def load_application_config() -> tuple[ProxySettings, list[ServerConfig]]:
             "server_startup_delay_seconds": "NB_SERVER_STARTUP_DELAY",
             "initial_server_query_delay_seconds": "NB_INITIAL_SERVER_QUERY_DELAY",
             "log_level": "LOG_LEVEL",
+            "log_format": "LOG_FORMAT",
             "healthcheck_stale_threshold_seconds": "NB_HEALTHCHECK_STALE_THRESHOLD",
             "proxy_heartbeat_interval_seconds": "NB_HEARTBEAT_INTERVAL",
         }
@@ -1043,19 +1038,23 @@ def load_application_config() -> tuple[ProxySettings, list[ServerConfig]]:
 
 def main():
     """The main entrypoint for the Nether-bridge application."""
-    # --- The entire logging setup is now replaced by a single function call. ---
-    # A preliminary setup is done for health checks or early errors.
-    # The final log level is applied after config is loaded.
-    setup_logging(log_level=os.environ.get("LOG_LEVEL", "INFO").upper())
+    # A preliminary setup using environment variables or defaults for early messages
+    # This ensures that health checks or very early errors are logged correctly.
+    setup_logging(
+        log_level=os.environ.get("LOG_LEVEL", "INFO"),
+        log_format=os.environ.get("LOG_FORMAT", "json"),
+    )
 
     if "--healthcheck" in sys.argv:
         perform_health_check()
         sys.exit(0)
 
+    # Load the full configuration from all sources (env, json files)
     settings, servers = load_application_config()
 
-    # Re-initialize logging with the final log level from config
-    setup_logging(log_level=settings.log_level)
+    # Re-initialize logging with the final, consolidated settings
+    # This applies the user's chosen log level and format from all sources.
+    setup_logging(log_level=settings.log_level, log_format=settings.log_format)
 
     if not servers:
         sys.exit(1)
