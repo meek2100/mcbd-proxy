@@ -2,4 +2,5 @@
 docker
 mcstatus
 structlog
+colorama
 prometheus_client
