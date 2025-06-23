@@ -68,7 +68,6 @@ services:
     environment:
       - EULA=TRUE
       - TYPE=FABRIC
-      # Updated Minecraft and Fabric versions
       - MINECRAFT_VERSION=1.20.1
       - FABRIC_LOADER_VERSION=0.15.11
       - LEVEL_TYPE=FLAT
