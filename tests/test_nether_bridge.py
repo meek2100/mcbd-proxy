@@ -50,6 +50,7 @@ def default_proxy_settings():
         server_startup_delay_seconds=0,
         initial_server_query_delay_seconds=0,
         log_level="DEBUG",
+        log_formatter="console",
         healthcheck_stale_threshold_seconds=0.5,
         proxy_heartbeat_interval_seconds=0.1,
     )
