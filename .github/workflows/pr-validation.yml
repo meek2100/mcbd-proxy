@@ -37,16 +37,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # This step is removed as it's no longer necessary with the new entrypoint script.
-      # - name: Get Docker GID
-      #   id: docker-gid
-      #   run: 'echo "DOCKER_GID=$(getent group docker | cut -d: -f3)" >> $GITHUB_ENV'
-
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
       - name: Build Docker images using Bake
-        run: docker buildx bake ci
+        run: docker buildx bake ci --load
 
       - name: Start Test Environment from built images
         run: docker compose -f tests/docker-compose.tests.yml up -d --no-build
