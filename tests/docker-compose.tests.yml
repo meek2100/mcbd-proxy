@@ -19,6 +19,8 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
+      # --- Set log format to JSON for CI/testing ---
+      - LOG_FORMAT=json
       - LOG_LEVEL=DEBUG
       - NB_IDLE_TIMEOUT=30
       - NB_PLAYER_CHECK_INTERVAL=5

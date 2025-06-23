@@ -1,3 +1,4 @@
+import json
 import os
 import socket
 import sys
@@ -203,68 +204,79 @@ def wait_for_proxy_to_be_ready(docker_client_fixture, timeout=60):
     Waits for the nether-bridge proxy to be fully initialized by watching its logs.
     """
     print("\nWaiting for nether-bridge proxy to be ready...")
-    # Use the static container name defined in the compose file
     container = docker_client_fixture.containers.get("nether-bridge")
 
-    # Check existing logs first in case the message has already been printed
-    if "Starting main proxy packet forwarding loop" in container.logs().decode("utf-8"):
-        print("Proxy is already ready (found message in existing logs).")
+    # We now look for the "Logging configured" message from our new module.
+    # This is a reliable indicator that the proxy is about to start its main loop.
+    if wait_for_log_message(container, "Logging configured", timeout):
+        print("Proxy logging is configured and ready to start main loop.")
         return True
 
-    # Stream new logs if the message wasn't in the historical logs
-    start_time = time.time()
-    for line in container.logs(stream=True, since=int(start_time)):
-        decoded_line = line.decode("utf-8").strip()
-        print(f"  [proxy log]: {decoded_line}")
-        if "Starting main proxy packet forwarding loop" in decoded_line:
-            print("Proxy is now ready.")
-            return True
-        if time.time() - start_time > timeout:
-            print("Timeout waiting for proxy to become ready.")
-            return False
+    print("Timeout waiting for proxy to become ready.")
     return False
 
 
-def wait_for_log_message(docker_client_fixture, container_name, message, timeout=30):
+# --- Updated Log Parsing Function ---
+def wait_for_log_message(container, message, timeout=30):
     """
     Waits for a specific message to appear in a container's logs.
 
-    Checks historical logs first, then streams new logs until the message is
-    found or the timeout is reached.
+    This function can parse both structured JSON logs (used in CI) and
+    plain-text console logs (used for local development).
 
     Args:
-        docker_client_fixture: The Docker client fixture.
-        container_name (str): The name of the container to monitor.
+        container: The Docker container object to monitor.
         message (str): The log message to search for.
         timeout (int): The maximum time to wait in seconds.
 
     Returns:
         bool: True if the message was found, False otherwise.
     """
-    container = docker_client_fixture.containers.get(container_name)
     start_time = time.time()
-
-    print(f"\nWaiting for message in '{container_name}' logs: '{message}'...")
+    print(f"\nWaiting for log in '{container.name}': '{message}'...")
 
     # Check existing logs first
-    if message in container.logs().decode("utf-8"):
-        print("  Found message in existing logs.")
-        return True
+    try:
+        for line in container.logs(tail=100).decode("utf-8").splitlines():
+            try:
+                log_json = json.loads(line)
+                if (
+                    isinstance(log_json.get("event"), str)
+                    and message in log_json["event"]
+                ):
+                    print("  Found message in existing JSON logs.")
+                    return True
+            except (json.JSONDecodeError, TypeError):
+                if message in line:
+                    print("  Found message in existing plain-text logs.")
+                    return True
+    except Exception as e:
+        print(f"Warning: could not check historical logs: {e}")
 
-    # Stream new logs
+    # If not found, stream new logs
     for line in container.logs(stream=True, since=int(start_time)):
         decoded_line = line.decode("utf-8").strip()
         print(f"  [log]: {decoded_line}")
-        if message in decoded_line:
-            print("  Found message.")
-            return True
+
+        # Try to parse as JSON first (for CI environment)
+        try:
+            log_json = json.loads(decoded_line)
+            if isinstance(log_json.get("event"), str) and message in log_json["event"]:
+                print("  Found message in live JSON stream.")
+                return True
+        except (json.JSONDecodeError, TypeError):
+            # Fallback to plain-text search (for local development)
+            if message in decoded_line:
+                print("  Found message in live plain-text stream.")
+                return True
+
         if time.time() - start_time > timeout:
             print("  Timeout waiting for message.")
             return False
     return False
 
 
-# --- Integration Test Cases ---
+# --- Integration Test Cases (No changes needed below this line) ---
 @pytest.mark.integration
 def test_bedrock_server_starts_on_connection(docker_compose_up, docker_client_fixture):
     """
@@ -274,6 +286,7 @@ def test_bedrock_server_starts_on_connection(docker_compose_up, docker_client_fi
     proxy_host = get_proxy_host()
     bedrock_proxy_port = BEDROCK_PROXY_PORT
     mc_bedrock_container_name = "mc-bedrock"
+    nether_bridge_container = docker_client_fixture.containers.get("nether-bridge")
 
     assert wait_for_proxy_to_be_ready(docker_client_fixture), (
         "Proxy did not become ready."
@@ -301,10 +314,8 @@ def test_bedrock_server_starts_on_connection(docker_compose_up, docker_client_fi
         client_socket.sendto(unconnected_ping_packet, (proxy_host, bedrock_proxy_port))
         print("Bedrock 'Unconnected Ping' packet sent.")
 
-        # Assert that the proxy logs its intent to start the server
         assert wait_for_log_message(
-            docker_client_fixture,
-            "nether-bridge",
+            nether_bridge_container,
             "First packet received for stopped server. Starting...",
             timeout=10,
         ), "Proxy did not log that it was starting the Bedrock server."
@@ -339,6 +350,7 @@ def test_java_server_starts_on_connection(docker_compose_up, docker_client_fixtu
     proxy_host = get_proxy_host()
     java_proxy_port = JAVA_PROXY_PORT
     mc_java_container_name = "mc-java"
+    nether_bridge_container = docker_client_fixture.containers.get("nether-bridge")
 
     assert wait_for_proxy_to_be_ready(docker_client_fixture), (
         "Proxy did not become ready."
@@ -360,10 +372,8 @@ def test_java_server_starts_on_connection(docker_compose_up, docker_client_fixtu
         client_socket.connect((proxy_host, java_proxy_port))
         print(f"Successfully connected to {proxy_host}:{java_proxy_port}.")
 
-        # Assert that the proxy logs the new connection
         assert wait_for_log_message(
-            docker_client_fixture,
-            "nether-bridge",
+            nether_bridge_container,
             "Accepted new TCP connection.",
             timeout=10,
         ), "Proxy did not log the new TCP connection."
@@ -402,9 +412,8 @@ def test_server_shuts_down_on_idle(docker_compose_up, docker_client_fixture):
     proxy_host = get_proxy_host()
     bedrock_proxy_port = BEDROCK_PROXY_PORT
     mc_bedrock_container_name = "mc-bedrock"
+    nether_bridge_container = docker_client_fixture.containers.get("nether-bridge")
 
-    # These values must correspond to the test environment variables in
-    # docker-compose.tests.yml
     idle_timeout = 30
     check_interval = 5
 
@@ -436,15 +445,12 @@ def test_server_shuts_down_on_idle(docker_compose_up, docker_client_fixture):
     wait_duration = idle_timeout + (2 * check_interval) + 5
     print(f"Server is running. Waiting up to {wait_duration}s for idle shutdown...")
 
-    # Assert that the proxy LOGS its intent to shut down the idle server.
     assert wait_for_log_message(
-        docker_client_fixture,
-        "nether-bridge",
+        nether_bridge_container,
         "Server idle with 0 sessions. Initiating shutdown.",
         timeout=wait_duration,
     ), "Proxy did not log that it was shutting down an idle server."
 
-    # Now, confirm the container actually stopped as a result.
     assert wait_for_container_status(
         docker_client_fixture,
         mc_bedrock_container_name,
@@ -465,12 +471,12 @@ def test_proxy_restarts_crashed_server_on_new_connection(
     proxy_host = get_proxy_host()
     bedrock_proxy_port = BEDROCK_PROXY_PORT
     mc_bedrock_container_name = "mc-bedrock"
+    nether_bridge_container = docker_client_fixture.containers.get("nether-bridge")
 
     assert wait_for_proxy_to_be_ready(docker_client_fixture), (
         "Proxy did not become ready."
     )
 
-    # --- 1. Trigger the server to start normally ---
     print(f"\n(Crash Test) Triggering server '{mc_bedrock_container_name}' to start...")
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -487,7 +493,6 @@ def test_proxy_restarts_crashed_server_on_new_connection(
     ), "Server did not start initially."
     print("(Crash Test) Server is running.")
 
-    # --- 2. Manually stop the container to simulate a crash ---
     print(
         f"\n(Crash Test) Simulating crash of container '{mc_bedrock_container_name}'..."
     )
@@ -498,30 +503,25 @@ def test_proxy_restarts_crashed_server_on_new_connection(
     ), "Container did not stop after manual command."
     print("(Crash Test) Container successfully stopped.")
 
-    # Give the proxy a moment to register the change if needed
     time.sleep(2)
 
-    # --- 3. Attempt a new connection to the 'crashed' server ---
     print("\n(Crash Test) Attempting new connection to trigger restart...")
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         unconnected_ping_packet = (
-            b"\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\x00\xfe\xfe\xfe\xfe"
+            b"\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\x00\xfe\fe\xfe\xfe"
             b"\xfd\xfd\xfd\xfd\x12\x34\x56\x78\x00\x00\x00\x00\x00\x00\x00\x00"
         )
         client_socket.sendto(unconnected_ping_packet, (proxy_host, bedrock_proxy_port))
     finally:
         client_socket.close()
 
-    # --- 4. Verify that the proxy detects this and tries to start it again ---
     assert wait_for_log_message(
-        docker_client_fixture,
-        "nether-bridge",
+        nether_bridge_container,
         "First packet received for stopped server. Starting...",
         timeout=15,
     ), "Proxy did not log a restart attempt for the crashed server."
 
-    # --- 5. Verify the server is running again ---
     assert wait_for_container_status(
         docker_client_fixture, mc_bedrock_container_name, ["running"], timeout=180
     ), "Crashed server did not restart successfully."
