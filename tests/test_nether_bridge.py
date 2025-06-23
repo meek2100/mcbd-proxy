@@ -50,6 +50,7 @@ def default_proxy_settings():
         server_startup_delay_seconds=0,
         initial_server_query_delay_seconds=0,
         log_level="DEBUG",
+        log_format="console",
         healthcheck_stale_threshold_seconds=0.5,
         proxy_heartbeat_interval_seconds=0.1,
     )
@@ -275,7 +276,7 @@ def test_main_runs_health_check(mock_perform_health):
 @patch("nether_bridge.NetherBridgeProxy")
 @patch("signal.signal")
 def test_main_execution_flow(mock_signal, mock_proxy_class, mock_load_config):
-    mock_settings = MagicMock(log_level="INFO")
+    mock_settings = MagicMock(log_level="INFO", log_format="console")
     mock_servers = [MagicMock()]
     mock_load_config.return_value = (mock_settings, mock_servers)
     mock_proxy_instance = MagicMock()
@@ -386,7 +387,10 @@ def test_main_prometheus_startup_error(mock_proxy_run):
         with patch("nether_bridge.sys.argv", ["nether_bridge.py"]):
             with patch(
                 "nether_bridge.load_application_config",
-                return_value=(MagicMock(log_level="INFO"), [MagicMock()]),
+                return_value=(
+                    MagicMock(log_level="INFO", log_format="console"),
+                    [MagicMock()],
+                ),
             ):
                 with patch("signal.signal"):
                     # We call main, which will try to start prometheus, fail, log, and
@@ -408,7 +412,10 @@ def test_main_cannot_remove_stale_heartbeat(mock_unlink, mock_exists, mock_proxy
     with patch("nether_bridge.sys.argv", ["nether_bridge.py"]):
         with patch(
             "nether_bridge.load_application_config",
-            return_value=(MagicMock(log_level="INFO"), [MagicMock()]),
+            return_value=(
+                MagicMock(log_level="INFO", log_format="console"),
+                [MagicMock()],
+            ),
         ):
             # We only need to patch the methods inside run() that would block
             # or have side effects

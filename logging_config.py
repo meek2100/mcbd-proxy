@@ -25,7 +25,6 @@ def setup_logging(log_level: str = "INFO", log_format: str = "json"):
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
         structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.dict_sort,
     ]
 
     # Processors specific to the standard library logging framework
@@ -39,7 +38,8 @@ def setup_logging(log_level: str = "INFO", log_format: str = "json"):
         # JSON logs for production/CI
         processors = shared_processors + [
             structlog.processors.format_exc_info,
-            structlog.processors.JSONRenderer(),
+            # To sort keys, add the argument to the renderer
+            structlog.processors.JSONRenderer(sort_keys=True),
         ]
     else:
         # Console logs for local development
