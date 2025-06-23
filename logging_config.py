@@ -15,13 +15,15 @@ def setup_logging(log_level: str = "INFO", log_format: str = "json"):
 
     The log level is passed in from the application's configuration.
     """
-    # The log_format is now passed in as an argument.
     log_format_lower = log_format.lower()
 
     # Shared processors for both JSON and console logging
     shared_processors: list[Processor] = [
+        # Add context from structlog.contextvars.bind_contextvars
         structlog.contextvars.merge_contextvars,
-        structlog.threadlocal.merge_threadlocal,
+        # Remove deprecated structlog.threadlocal
+        # structlog.threadlocal.merge_threadlocal,
+        # Add basic info about the log record
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
         structlog.processors.TimeStamper(fmt="iso"),
@@ -34,23 +36,19 @@ def setup_logging(log_level: str = "INFO", log_format: str = "json"):
         structlog.processors.StackInfoRenderer(),
     ]
 
+    # Determine the final renderer processor based on the chosen format
     if log_format_lower == "json":
-        # JSON logs for production/CI
-        processors = shared_processors + [
-            structlog.processors.format_exc_info,
-            # To sort keys, add the argument to the renderer
-            structlog.processors.JSONRenderer(sort_keys=True),
-        ]
+        renderer = structlog.processors.JSONRenderer(sort_keys=True)
     else:
-        # Console logs for local development
-        processors = shared_processors + [
-            structlog.processors.format_exc_info,
-            structlog.dev.ConsoleRenderer(colors=True),
-        ]
+        renderer = structlog.dev.ConsoleRenderer(colors=True)
 
-    # Configure structlog
+    # Configure the main structlog processor chain
     structlog.configure(
-        processors=processors,
+        processors=shared_processors
+        + [
+            structlog.processors.format_exc_info,
+            renderer,  # Use the renderer determined above
+        ],
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
@@ -62,8 +60,11 @@ def setup_logging(log_level: str = "INFO", log_format: str = "json"):
         root_logger.handlers.clear()
 
     handler = logging.StreamHandler(sys.stdout)
+    # Explicitly pass the final renderer to the ProcessorFormatter
+    # This is the key fix for the TypeError
     handler.setFormatter(
         structlog.stdlib.ProcessorFormatter(
+            processor=renderer,
             foreign_pre_chain=stdlib_processors,
         )
     )
