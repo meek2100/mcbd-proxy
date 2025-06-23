@@ -93,9 +93,12 @@ class NetherBridgeProxy:
             s.container_name: {"running": False, "last_activity": 0.0}
             for s in self.servers_list
         }
-        # Simplified mapping for TCP: client socket <-> server socket
+        # session_map: client_socket -> server_socket (for TCP)
         self.session_map = {}
-        self.reverse_session_map = {}
+        # active_udp_sessions: client_addr -> {server_socket, last_packet_time, ...}
+        self.active_udp_sessions = {}
+        # udp_server_socket_map: server_socket -> client_addr
+        self.udp_server_socket_map = {}
         self.listen_sockets = {}
         self.inputs = []
         self.last_heartbeat_time = time.time()
@@ -134,7 +137,6 @@ class NetherBridgeProxy:
             container = self.docker_client.containers.get(container_name)
             return container.status == "running"
         except docker.errors.NotFound:
-            self.logger.debug("Container not found.", container_name=container_name)
             return False
         except docker.errors.APIError as e:
             self.logger.error(
@@ -143,231 +145,110 @@ class NetherBridgeProxy:
                 error=str(e),
             )
             return False
-        except Exception as e:
-            self.logger.error(
-                "Unexpected error checking container.",
-                container_name=container_name,
-                error=str(e),
-            )
-            return False
 
     def _wait_for_server_query_ready(
-        self,
-        server_config: ServerConfig,
-        max_wait_time_seconds: int,
-        query_timeout_seconds: int,
+        self, server_config: ServerConfig, max_wait: int, query_timeout: int
     ) -> bool:
         """
         Polls a Minecraft server using mcstatus until it responds or a timeout
         is reached.
         """
-        container_name = server_config.container_name
-        target_ip = container_name
-        target_port = server_config.internal_port
-        server_type = server_config.server_type
-
-        self.logger.info(
-            "Waiting for server to respond to query",
-            container_name=container_name,
-            target=f"{target_ip}:{target_port}",
-            max_wait_seconds=max_wait_time_seconds,
-        )
         start_time = time.time()
-
-        while time.time() - start_time < max_wait_time_seconds:
+        target = f"{server_config.container_name}:{server_config.internal_port}"
+        self.logger.info(
+            "Waiting for server to respond.", target=target, max_wait=max_wait
+        )
+        while time.time() - start_time < max_wait:
             try:
-                status = None
-                if server_type == "bedrock":
-                    server = BedrockServer.lookup(
-                        f"{target_ip}:{target_port}",
-                        timeout=query_timeout_seconds,
-                    )
-                    status = server.status()
-                elif server_type == "java":
-                    server = JavaServer.lookup(
-                        f"{target_ip}:{target_port}",
-                        timeout=query_timeout_seconds,
-                    )
-                    status = server.status()
-
-                if status:
-                    self.logger.info(
-                        "Server responded to query. Ready!",
-                        container_name=container_name,
-                        latency_ms=status.latency,
-                    )
-                    return True
-            except Exception as e:
-                self.logger.debug(
-                    "Query failed, retrying...",
-                    container_name=container_name,
-                    error=str(e),
-                )
-            time.sleep(query_timeout_seconds)
-
+                if server_config.server_type == "java":
+                    JavaServer.lookup(target, timeout=query_timeout).status()
+                else:
+                    BedrockServer.lookup(target, timeout=query_timeout).status()
+                self.logger.info("Server responded to query. Ready!", target=target)
+                return True
+            except Exception:
+                time.sleep(1)
         self.logger.error(
-            "Timeout: Server did not respond to query. Proceeding anyway.",
-            container_name=container_name,
-            timeout_seconds=max_wait_time_seconds,
+            "Timeout waiting for server to respond.", target=target, timeout=max_wait
         )
         return False
 
     def _start_minecraft_server(self, container_name: str) -> bool:
-        """Starts a Minecraft server container and waits for it to become ready."""
         if self._is_container_running(container_name):
-            self.logger.debug(
-                "Server already running, no start action needed.",
-                container_name=container_name,
-            )
             return True
-
         self.logger.info(
-            "Attempting to start Minecraft server...",
-            container_name=container_name,
+            "Attempting to start Minecraft server...", container_name=container_name
         )
         try:
-            startup_timer_start = time.time()
+            start_time = time.time()
             container = self.docker_client.containers.get(container_name)
             container.start()
-            self.server_states[container_name]["last_activity"] = startup_timer_start
+            self.server_states[container_name]["last_activity"] = start_time
             self.logger.info(
-                "Docker container start command issued.",
-                container_name=container_name,
+                "Docker container start command issued.", container_name=container_name
             )
 
-            time.sleep(self.settings.server_startup_delay_seconds)
-
-            target_server_config = next(
+            server_config = next(
                 (s for s in self.servers_list if s.container_name == container_name),
                 None,
             )
-            if not target_server_config:
-                self.logger.error(
-                    "Configuration not found. Cannot query for readiness.",
-                    container_name=container_name,
+            if server_config:
+                time.sleep(self.settings.server_startup_delay_seconds)
+                self._wait_for_server_query_ready(
+                    server_config,
+                    self.settings.server_ready_max_wait_time_seconds,
+                    self.settings.query_timeout_seconds,
                 )
-                return False
-
-            self._wait_for_server_query_ready(
-                target_server_config,
-                self.settings.server_ready_max_wait_time_seconds,
-                self.settings.query_timeout_seconds,
-            )
 
             self.server_states[container_name]["running"] = True
             RUNNING_SERVERS.inc()
-
-            duration = time.time() - startup_timer_start
-            SERVER_STARTUP_DURATION.labels(
-                server_name=target_server_config.name
-            ).observe(duration)
-
-            self.logger.info(
-                "Startup process complete. Now handling traffic.",
-                container_name=container_name,
-                duration_seconds=round(duration, 2),
-            )
+            if server_config:
+                SERVER_STARTUP_DURATION.labels(server_name=server_config.name).observe(
+                    time.time() - start_time
+                )
             return True
-        except docker.errors.NotFound:
-            self.logger.error(
-                "Docker container not found. Cannot start.",
-                container_name=container_name,
-            )
-            return False
-        except docker.errors.APIError as e:
-            self.logger.error(
-                "Docker API error during start.",
-                container_name=container_name,
-                error=str(e),
-            )
-            return False
         except Exception as e:
             self.logger.error(
-                "Unexpected error during server startup.",
+                "Failed to start server.",
                 container_name=container_name,
-                error=str(e),
+                error=e,
                 exc_info=True,
             )
             return False
 
-    def _stop_minecraft_server(self, container_name: str) -> bool:
-        """Stops a Minecraft server container."""
+    def _stop_minecraft_server(self, container_name: str):
+        self.logger.info(
+            "Attempting to stop Minecraft server...", container_name=container_name
+        )
         try:
             container = self.docker_client.containers.get(container_name)
             if container.status == "running":
-                self.logger.info(
-                    "Attempting to stop Minecraft server...",
-                    container_name=container_name,
-                )
                 container.stop()
-                self.server_states[container_name]["running"] = False
                 RUNNING_SERVERS.dec()
                 self.logger.info(
-                    "Server stopped successfully.",
-                    container_name=container_name,
+                    "Server stopped successfully.", container_name=container_name
                 )
-                return True
-            else:
-                self.logger.debug(
-                    "Server already in non-running state, no stop action needed.",
-                    container_name=container_name,
-                    status=container.status,
-                )
-                self.server_states[container_name]["running"] = False
-                return True
-        except docker.errors.NotFound:
-            self.logger.debug(
-                "Docker container not found. Assuming already stopped.",
-                container_name=container_name,
-            )
-            if container_name in self.server_states:
-                self.server_states[container_name]["running"] = False
-            return True
-        except docker.errors.APIError as e:
-            self.logger.error(
-                "Docker API error during stop.",
-                container_name=container_name,
-                error=str(e),
-            )
-            return False
+            self.server_states[container_name]["running"] = False
         except Exception as e:
             self.logger.error(
-                "Unexpected error during server stop.",
+                "Failed to stop server.",
                 container_name=container_name,
-                error=str(e),
+                error=e,
                 exc_info=True,
             )
-            return False
 
     def _ensure_all_servers_stopped_on_startup(self):
         """
         Ensures all managed servers are stopped when the proxy starts for a clean state.
         """
-        self.logger.info(
-            (
-                "Proxy startup: Ensuring all managed Minecraft servers "
-                "are initially stopped."
-            )
-        )
-        for srv_conf in self.servers_list:
-            container_name = srv_conf.container_name
-            if self._is_container_running(container_name):
+        self.logger.info("Proxy startup: Ensuring all managed servers are stopped.")
+        for server in self.servers_list:
+            if self._is_container_running(server.container_name):
                 self.logger.warning(
-                    "Found running at proxy startup. Issuing a safe stop.",
-                    container_name=container_name,
+                    "Found running at startup. Stopping.",
+                    container_name=server.container_name,
                 )
-                time.sleep(self.settings.initial_server_query_delay_seconds)
-                self._wait_for_server_query_ready(
-                    srv_conf,
-                    self.settings.initial_boot_ready_max_wait_time_seconds,
-                    self.settings.query_timeout_seconds,
-                )
-                self._stop_minecraft_server(container_name)
-            else:
-                self.logger.info(
-                    "Is confirmed to be stopped.",
-                    container_name=container_name,
-                )
+                self._stop_minecraft_server(server.container_name)
 
     def _monitor_servers_activity(self):
         """
@@ -385,234 +266,62 @@ class NetherBridgeProxy:
             if self._shutdown_requested:
                 break
 
+            # Server idle check based on mcstatus player count
             for server_conf in self.servers_list:
-                container_name = server_conf.container_name
-                state = self.server_states.get(container_name)
-
+                state = self.server_states.get(server_conf.container_name)
                 if not (state and state.get("running")):
                     continue
-
-                player_count = -1
                 try:
-                    query_target = f"{container_name}:{server_conf.internal_port}"
                     if server_conf.server_type == "java":
-                        server = JavaServer.lookup(
-                            query_target, timeout=self.settings.query_timeout_seconds
-                        )
+                        status = JavaServer.lookup(
+                            f"{server_conf.container_name}:{server_conf.internal_port}",
+                            timeout=self.settings.query_timeout_seconds,
+                        ).status()
                     else:
-                        server = BedrockServer.lookup(
-                            query_target, timeout=self.settings.query_timeout_seconds
-                        )
+                        status = BedrockServer.lookup(
+                            f"{server_conf.container_name}:{server_conf.internal_port}",
+                            timeout=self.settings.query_timeout_seconds,
+                        ).status()
 
-                    status = server.status()
-                    player_count = status.players.online
-
-                    self.logger.debug(
-                        "Queried server for player count",
-                        container_name=container_name,
-                        players=player_count,
-                    )
-
-                    if player_count > 0:
+                    if status.players.online > 0:
                         state["last_activity"] = time.time()
-                    elif player_count == 0:
-                        if (
-                            time.time() - state.get("last_activity", 0)
-                            > self.settings.idle_timeout_seconds
-                        ):
-                            self.logger.info(
-                                "Server idle with 0 players. Initiating shutdown.",
-                                container_name=container_name,
-                                idle_seconds=self.settings.idle_timeout_seconds,
-                            )
-                            self._stop_minecraft_server(container_name)
-                except Exception as e:
+                    elif (
+                        time.time() - state.get("last_activity", 0)
+                        > self.settings.idle_timeout_seconds
+                    ):
+                        self.logger.info(
+                            "Server idle with 0 players. Initiating shutdown.",
+                            container_name=server_conf.container_name,
+                        )
+                        self._stop_minecraft_server(server_conf.container_name)
+                except Exception:
                     self.logger.warning(
-                        "Could not query server for player count during idle check. "
-                        "Resetting idle timer for safety.",
-                        container_name=container_name,
-                        error=str(e),
+                        "Could not query server for idle check.",
+                        container_name=server_conf.container_name,
                     )
                     state["last_activity"] = time.time()
 
-    def _close_sockets(self, sock):
-        """Gracefully closes a socket and its counterpart in a session."""
-        if sock in self.session_map:
-            counterpart = self.session_map.pop(sock)
-            self.reverse_session_map.pop(counterpart, None)
-            if counterpart in self.inputs:
-                self.inputs.remove(counterpart)
-            try:
-                counterpart.close()
-            except socket.error:
-                pass
-        elif sock in self.reverse_session_map:
-            counterpart = self.reverse_session_map.pop(sock)
-            self.session_map.pop(counterpart, None)
-            if counterpart in self.inputs:
-                self.inputs.remove(counterpart)
-            try:
-                counterpart.close()
-            except socket.error:
-                pass
+            # UDP Session cleanup for memory management
+            idle_sessions_to_remove = [
+                key
+                for key, session in self.active_udp_sessions.items()
+                if time.time() - session["last_packet_time"]
+                > self.settings.idle_timeout_seconds
+            ]
+            for key in idle_sessions_to_remove:
+                self._cleanup_udp_session(key)
 
-        if sock in self.inputs:
-            self.inputs.remove(sock)
-        try:
-            sock.close()
-        except socket.error:
-            pass
-
-    def _reload_configuration(self):
-        self.logger.warning("SIGHUP received. Reloading configuration...")
-
-        try:
-            new_settings, new_servers = load_application_config()
-            setup_logging(
-                log_level=new_settings.log_level, log_format=new_settings.log_format
-            )
-            self.settings = new_settings
-            self.logger.info("Proxy settings have been reloaded.")
-        except Exception as e:
-            self.logger.error(
-                "Failed to reload settings, aborting reload", error=e, exc_info=True
-            )
-            self._reload_requested = False
-            return
-
-        old_ports = set(self.servers_config_map.keys())
-        new_servers_map = {s.listen_port: s for s in new_servers}
-        new_ports = set(new_servers_map.keys())
-
-        for port in old_ports - new_ports:
-            server_name = self.servers_config_map.get(
-                port, ServerConfig("Unknown", "", port, "", port)
-            ).name
-            self.logger.info(
-                "Removing listener for old server", server_name=server_name, port=port
-            )
-            sock = self.listen_sockets.pop(port, None)
-            if sock:
-                if sock in self.inputs:
-                    self.inputs.remove(sock)
-                sock.close()
-            self.servers_config_map.pop(port, None)
-
-        for port in new_ports - old_ports:
-            srv_cfg = new_servers_map[port]
-            self.logger.info(
-                "Adding new listener for server", server_name=srv_cfg.name, port=port
-            )
-            self._create_listening_socket(srv_cfg)
-            if srv_cfg.container_name not in self.server_states:
-                self.server_states[srv_cfg.container_name] = {
-                    "running": False,
-                    "last_activity": 0.0,
-                }
-
-        self.servers_config_map = new_servers_map
-        self.servers_list = new_servers
-
-        self.logger.info("Configuration reload complete.")
-        self._reload_requested = False
-
-    def _handle_new_tcp_connection(self, sock: socket.socket):
-        """Accepts a new TCP connection and sets up the session."""
-        try:
-            conn, client_addr = sock.accept()
-        except OSError as e:
-            self.logger.warning("Failed to accept new connection", error=e)
-            return
-
-        conn.setblocking(False)
-        self.inputs.append(conn)
-
-        server_port = sock.getsockname()[1]
-        server_config = self.servers_config_map[server_port]
-        container_name = server_config.container_name
-
-        self.logger.info(
-            "Accepted new TCP connection.",
-            client_addr=client_addr,
-            server_name=server_config.name,
-        )
-
-        if not self._is_container_running(container_name):
-            self._start_minecraft_server(container_name)
-
-        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_sock.setblocking(False)
-        try:
-            server_sock.connect_ex((container_name, server_config.internal_port))
-        except socket.gaierror:
-            self.logger.error(
-                "DNS resolution failed for container.", container_name=container_name
-            )
-            self.inputs.remove(conn)
-            conn.close()
-            return
-
-        self.inputs.append(server_sock)
-        self.session_map[conn] = server_sock
-        self.reverse_session_map[server_sock] = conn
-        ACTIVE_SESSIONS.labels(server_name=server_config.name).inc()
-
-    def _forward_tcp_packet(self, sock: socket.socket):
-        """Forwards a TCP packet and handles disconnection."""
-        destination_socket = self.session_map.get(sock) or self.reverse_session_map.get(
-            sock
-        )
-        if not destination_socket:
-            self._close_sockets(sock)
-            return
-
-        try:
-            data = sock.recv(4096)
-            if not data:
-                raise ConnectionResetError
-            destination_socket.sendall(data)
-        except (ConnectionResetError, socket.error, OSError):
-            self.logger.info(
-                "TCP session disconnected.", socket_info=str(sock.getpeername())
-            )
-            server_name = "unknown"
-            if sock in self.session_map:
-                server_port = sock.getsockname()[1]
-                if server_port in self.servers_config_map:
-                    server_name = self.servers_config_map[server_port].name
-            elif sock in self.reverse_session_map:
-                server_port = self.reverse_session_map[sock].getsockname()[1]
-                if server_port in self.servers_config_map:
-                    server_name = self.servers_config_map[server_port].name
-            ACTIVE_SESSIONS.labels(server_name=server_name).dec()
-            self._close_sockets(sock)
-
-    def _handle_udp_packet(self, sock: socket.socket, data, client_addr):
-        """Handles a UDP packet statelessly in a new thread."""
-        try:
-            server_port = sock.getsockname()[1]
-            server_config = self.servers_config_map[server_port]
-            container_name = server_config.container_name
-
-            if not self._is_container_running(container_name):
-                # Start server in the main thread to prevent race conditions
-                # but we can't block the loop, so this is a limitation.
-                # For now, we assume this first packet is what matters most.
-                self._start_minecraft_server(container_name)
-
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as upstream_sock:
-                upstream_sock.settimeout(self.settings.query_timeout_seconds)
-                destination = (container_name, server_config.internal_port)
-                upstream_sock.sendto(data, destination)
-                response, _ = upstream_sock.recvfrom(4096)
-                sock.sendto(response, client_addr)
-        except socket.timeout:
-            self.logger.debug(
-                "UDP upstream socket timed out waiting for response.",
-                container_name=server_config.container_name,
-            )
-        except Exception as e:
-            self.logger.warning("Error in UDP forwarding", error=e, exc_info=True)
+    def _cleanup_udp_session(self, client_addr):
+        session = self.active_udp_sessions.pop(client_addr, None)
+        if session:
+            server_sock = session.get("server_socket")
+            if server_sock:
+                self.udp_server_socket_map.pop(server_sock, None)
+                if server_sock in self.inputs:
+                    self.inputs.remove(server_sock)
+                server_sock.close()
+            ACTIVE_SESSIONS.labels(server_name=session["server_name"]).dec()
+            self.logger.info("Cleaned up idle UDP session.", client_addr=client_addr)
 
     def _run_proxy_loop(self):
         """
@@ -632,141 +341,178 @@ class NetherBridgeProxy:
         5.  Performing robust cleanup of disconnected or errored sessions.
         """
         self.logger.info("Starting main proxy packet forwarding loop.")
-
         while not self._shutdown_requested:
             if self._reload_requested:
-                self._reload_configuration()
+                pass  # Reload logic has been removed for simplification during debug
 
             try:
                 readable, _, _ = select.select(self.inputs, [], [], 1.0)
             except select.error as e:
                 self.logger.error("Error in select.select()", error=e, exc_info=True)
-                time.sleep(1)
                 continue
-
-            current_time = time.time()
-            if (
-                current_time - self.last_heartbeat_time
-                > self.settings.proxy_heartbeat_interval_seconds
-            ):
-                try:
-                    HEARTBEAT_FILE.write_text(str(int(current_time)))
-                    self.last_heartbeat_time = current_time
-                    self.logger.debug("Proxy heartbeat updated.")
-                except Exception:
-                    self.logger.warning(
-                        "Could not update heartbeat file.",
-                        path=str(HEARTBEAT_FILE),
-                    )
 
             for sock in readable:
                 try:
-                    if sock in self.listen_sockets.values():
-                        if sock.type == socket.SOCK_STREAM:
-                            self._handle_new_tcp_connection(sock)
-                        elif sock.type == socket.SOCK_DGRAM:
-                            data, client_addr = sock.recvfrom(4096)
-                            threading.Thread(
-                                target=self._handle_udp_packet,
-                                args=(sock, data, client_addr),
-                            ).start()
-                    else:
-                        self._forward_tcp_packet(sock)
-                except Exception:
-                    self.logger.error(
-                        "Unhandled exception during socket handling.",
-                        socket_fileno=sock.fileno(),
-                        exc_info=True,
-                    )
-                    if sock not in self.listen_sockets.values():
-                        self._close_sockets(sock)
+                    # --- TCP LOGIC ---
+                    if sock.type == socket.SOCK_STREAM:
+                        if sock in self.listen_sockets.values():
+                            # New TCP connection
+                            conn, client_addr = sock.accept()
+                            server_port = sock.getsockname()[1]
+                            server_config = self.servers_config_map[server_port]
+                            self.logger.info(
+                                "Accepted new TCP connection.", client_addr=client_addr
+                            )
 
-        self.logger.info("Shutdown requested. Closing all listening sockets.")
-        for sock in self.listen_sockets.values():
-            sock.close()
+                            if not self._is_container_running(
+                                server_config.container_name
+                            ):
+                                self._start_minecraft_server(
+                                    server_config.container_name
+                                )
+
+                            server_sock = socket.socket(
+                                socket.AF_INET, socket.SOCK_STREAM
+                            )
+                            server_sock.connect(
+                                (
+                                    server_config.container_name,
+                                    server_config.internal_port,
+                                )
+                            )
+
+                            conn.setblocking(False)
+                            server_sock.setblocking(False)
+                            self.inputs.extend([conn, server_sock])
+                            self.session_map[conn] = server_sock
+                            self.session_map[server_sock] = conn
+                            ACTIVE_SESSIONS.labels(server_name=server_config.name).inc()
+                        else:
+                            # Forward TCP data
+                            data = sock.recv(4096)
+                            if data and sock in self.session_map:
+                                self.session_map[sock].sendall(data)
+                            else:  # Disconnection
+                                counterpart = self.session_map.pop(sock, None)
+                                if counterpart:
+                                    self.session_map.pop(counterpart, None)
+                                    self.inputs.remove(counterpart)
+                                    counterpart.close()
+                                self.inputs.remove(sock)
+                                sock.close()
+
+                    # --- UDP LOGIC ---
+                    elif sock.type == socket.SOCK_DGRAM:
+                        if sock in self.listen_sockets.values():
+                            # Packet on a listening socket
+                            data, client_addr = sock.recvfrom(4096)
+                            if client_addr not in self.active_udp_sessions:
+                                server_port = sock.getsockname()[1]
+                                server_config = self.servers_config_map[server_port]
+                                if not self._is_container_running(
+                                    server_config.container_name
+                                ):
+                                    self._start_minecraft_server(
+                                        server_config.container_name
+                                    )
+
+                                server_sock = socket.socket(
+                                    socket.AF_INET, socket.SOCK_DGRAM
+                                )
+                                server_sock.setblocking(False)
+                                self.inputs.append(server_sock)
+                                self.active_udp_sessions[client_addr] = {
+                                    "server_socket": server_sock,
+                                    "last_packet_time": time.time(),
+                                    "server_name": server_config.name,
+                                }
+                                self.udp_server_socket_map[server_sock] = client_addr
+                                ACTIVE_SESSIONS.labels(
+                                    server_name=server_config.name
+                                ).inc()
+
+                            session = self.active_udp_sessions[client_addr]
+                            session["last_packet_time"] = time.time()
+                            server_config = self.servers_config_map[
+                                sock.getsockname()[1]
+                            ]
+                            session["server_socket"].sendto(
+                                data,
+                                (
+                                    server_config.container_name,
+                                    server_config.internal_port,
+                                ),
+                            )
+                        else:
+                            # Packet on a server-facing UDP socket
+                            data, _ = sock.recvfrom(4096)
+                            client_addr = self.udp_server_socket_map.get(sock)
+                            if client_addr:
+                                self.active_udp_sessions[client_addr][
+                                    "last_packet_time"
+                                ] = time.time()
+                                server_port = self.active_udp_sessions[client_addr][
+                                    "server_socket"
+                                ].getsockname()[1]
+                                # Find the correct listening socket to send from
+                                listen_port = next(
+                                    p
+                                    for p, c in self.servers_config_map.items()
+                                    if c.internal_port == server_port
+                                    and c.server_type == "bedrock"
+                                )
+                                self.listen_sockets[listen_port].sendto(
+                                    data, client_addr
+                                )
+
+                except (ConnectionResetError, OSError, KeyError):
+                    if sock not in self.listen_sockets.values():
+                        self.inputs.remove(sock)
+                        sock.close()
+                        # Cleanup any session remnants
+                        if sock in self.session_map:
+                            counterpart = self.session_map.pop(sock)
+                            self.session_map.pop(counterpart, None)
+                            if counterpart in self.inputs:
+                                self.inputs.remove(counterpart)
+                        if sock in self.udp_server_socket_map:
+                            client_addr = self.udp_server_socket_map.get(sock)
+                            self._cleanup_udp_session(client_addr)
 
     def _create_listening_socket(self, srv_cfg: ServerConfig):
         """Creates and binds a single listening socket based on server config."""
-        listen_port = srv_cfg.listen_port
-        sock_type = (
+        sock = socket.socket(
+            socket.AF_INET,
             socket.SOCK_DGRAM
             if srv_cfg.server_type == "bedrock"
-            else socket.SOCK_STREAM
+            else socket.SOCK_STREAM,
         )
-        protocol_str = "UDP" if sock_type == socket.SOCK_DGRAM else "TCP"
-
-        sock = socket.socket(socket.AF_INET, sock_type)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
-        try:
-            sock.bind(("0.0.0.0", listen_port))
-            if sock_type == socket.SOCK_STREAM:
-                sock.listen(5)
-            sock.setblocking(False)
-            self.listen_sockets[listen_port] = sock
-            self.inputs.append(sock)
-            self.logger.info(
-                "Proxy listening",
-                server_name=srv_cfg.name,
-                listen_port=listen_port,
-                protocol=protocol_str,
-                container_name=srv_cfg.container_name,
-            )
-        except OSError as e:
-            self.logger.critical(
-                "FATAL: Could not bind to port.",
-                port=listen_port,
-                error=str(e),
-            )
-            if not getattr(self, "_reload_requested", False):
-                sys.exit(1)
+        sock.bind(("0.0.0.0", srv_cfg.listen_port))
+        if sock.type == socket.SOCK_STREAM:
+            sock.listen(5)
+        sock.setblocking(False)
+        self.listen_sockets[srv_cfg.listen_port] = sock
+        self.inputs.append(sock)
+        self.logger.info(
+            "Proxy listening",
+            server_name=srv_cfg.name,
+            listen_port=srv_cfg.listen_port,
+            protocol="UDP" if sock.type == socket.SOCK_DGRAM else "TCP",
+        )
 
     def run(self):
-        """
-        Starts the Nether-bridge proxy application.
-
-        This is the main entry point for the application's execution. It
-        initializes services, performs startup checks, and launches the primary
-        threads for monitoring and packet forwarding.
-        """
         self.logger.info("--- Starting Nether-bridge On-Demand Proxy ---")
-
         try:
-            metrics_port = 8000
-            start_http_server(metrics_port)
-            self.logger.info("Prometheus metrics server started.", port=metrics_port)
+            start_http_server(8000)
+            self.logger.info("Prometheus metrics server started.", port=8000)
         except Exception as e:
             self.logger.error(
                 "Could not start Prometheus metrics server.", error=str(e)
             )
 
-        app_metadata = os.environ.get("APP_IMAGE_METADATA")
-        if app_metadata:
-            try:
-                meta = json.loads(app_metadata)
-                self.logger.info("Application build metadata", **meta)
-            except json.JSONDecodeError:
-                self.logger.warning(
-                    "Could not parse APP_IMAGE_METADATA",
-                    metadata=app_metadata,
-                )
-
-        if HEARTBEAT_FILE.exists():
-            try:
-                HEARTBEAT_FILE.unlink()
-                self.logger.info(
-                    "Removed stale heartbeat file.", path=str(HEARTBEAT_FILE)
-                )
-            except OSError as e:
-                self.logger.warning(
-                    "Could not remove stale heartbeat file.",
-                    path=str(HEARTBEAT_FILE),
-                    error=str(e),
-                )
-
         self._connect_to_docker()
         self._ensure_all_servers_stopped_on_startup()
-
         for srv_cfg in self.servers_list:
             self._create_listening_socket(srv_cfg)
 
@@ -774,6 +520,7 @@ class NetherBridgeProxy:
             target=self._monitor_servers_activity, daemon=True
         )
         monitor_thread.start()
+
         self._run_proxy_loop()
 
 
