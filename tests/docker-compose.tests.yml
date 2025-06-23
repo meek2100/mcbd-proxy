@@ -68,8 +68,7 @@ services:
     environment:
       - EULA=TRUE
       - TYPE=FABRIC
-      - MINECRAFT_VERSION=1.16.5
-      - FABRIC_INSTALLER_VERSION=0.11.2
+      - MINECRAFT_VERSION=1.20.1
       - FABRIC_LOADER_VERSION=0.15.11
       - LEVEL_TYPE=FLAT
       - JVM_ARGS=-Xmx512M -Xms512M
