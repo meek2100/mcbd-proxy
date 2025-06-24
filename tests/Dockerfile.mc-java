@@ -1,0 +1,17 @@
+# Start from the official Minecraft server image
+FROM itzg/minecraft-server:latest
+
+# Set environment variables that are needed to pre-install the server
+ENV EULA="TRUE"
+ENV TYPE="PAPER"
+ENV VERSION="1.20.1"
+
+# Run the installer script during the image build process.
+# This downloads and prepares the Paper server JAR file.
+# If this step fails, the image build fails, not the CI test run.
+RUN /usr/local/bin/install-paper
+
+# Unset the installer variables so they don't conflict with the
+# docker-compose.tests.yml environment variables at runtime.
+ENV TYPE=""
+ENV VERSION=""

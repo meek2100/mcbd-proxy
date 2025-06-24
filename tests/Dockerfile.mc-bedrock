@@ -1,0 +1,14 @@
+# Start from the official Bedrock server image
+FROM itzg/minecraft-bedrock-server:latest
+
+# Set environment variables needed to pre-install a specific version
+ENV EULA="TRUE"
+ENV VERSION="1.20.81.01"
+ENV DIRECT_DOWNLOAD_URL="https://minecraft.azure.com/em/download/server/bedrock/1.20.81.01"
+
+# Run the installer script during the image build process
+RUN /usr/local/bin/install-bedrock
+
+# Unset installer variables to avoid conflicts with runtime environment
+ENV VERSION=""
+ENV DIRECT_DOWNLOAD_URL=""

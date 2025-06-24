@@ -45,13 +45,19 @@ services:
       - mc-java
 
   mc-bedrock:
-    image: itzg/minecraft-bedrock-server:latest
+    # Build the custom image instead of pulling
+    build:
+      context: .
+      dockerfile: Dockerfile.mc-bedrock
+    # Give the built image a local name
+    image: minecraft-bedrock-server:local
     restart: "no"
     container_name: mc-bedrock
     networks:
       - mc-network
     volumes:
       - mc-bedrock-data:/data
+    # The runtime environment is now much simpler
     environment:
       - EULA=TRUE
       - VERSION=1.20.81.01
@@ -59,13 +65,19 @@ services:
       - IDLE_TIMEOUT=-1
 
   mc-java:
-    image: itzg/minecraft-server:latest
+    # Build the custom image instead of pulling from Docker Hub
+    build:
+      context: . # The context is the tests/ directory
+      dockerfile: Dockerfile.mc-java
+    # Give the built image a local name
+    image: minecraft-server:local
     restart: "no"
     container_name: mc-java
     networks:
       - mc-network
     volumes:
       - mc-java-data:/data
+    # The environment for the test run remains simple
     environment:
       - EULA=TRUE
       - TYPE=PAPER
