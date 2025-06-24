@@ -361,12 +361,17 @@ def test_java_server_starts_on_connection(docker_compose_up, docker_client_fixtu
         print(f"Successfully connected to {proxy_host}:{java_proxy_port}.")
 
         # Assert that the proxy logs the new connection
+        # --- FIX STARTS HERE ---
+        # The test was looking for the wrong log message. The correct message
+        # for a stopped server is
+        # "First TCP connection for stopped server. Starting...".
         assert wait_for_log_message(
             docker_client_fixture,
             "nether-bridge",
-            "Accepted new TCP connection.",
+            "First TCP connection for stopped server. Starting...",
             timeout=10,
-        ), "Proxy did not log the new TCP connection."
+        ), "Proxy did not log that it was starting the Java server."
+        # --- FIX ENDS HERE ---
 
         handshake_packet, status_request_packet = (
             get_java_handshake_and_status_request_packets(proxy_host, java_proxy_port)
