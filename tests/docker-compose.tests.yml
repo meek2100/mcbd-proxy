@@ -50,6 +50,9 @@ services:
       context: .
       dockerfile: Dockerfile.mc-bedrock
       network: host
+      args:
+        BEDROCK_VERSION: ${BEDROCK_VERSION}
+        BEDROCK_DOWNLOAD_URL: ${BEDROCK_DOWNLOAD_URL}
     # Give the built image a local name
     image: minecraft-bedrock-server:local
     restart: "no"
@@ -61,8 +64,8 @@ services:
     # The runtime environment is now much simpler
     environment:
       - EULA=TRUE
-      - VERSION=1.20.81.01
-      - DIRECT_DOWNLOAD_URL=https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.20.81.01.zip
+      - VERSION=${BEDROCK_VERSION}
+      - DIRECT_DOWNLOAD_URL=${BEDROCK_DOWNLOAD_URL}
       - IDLE_TIMEOUT=-1
 
   mc-java:
@@ -71,6 +74,9 @@ services:
       context: . # The context is the tests/ directory
       dockerfile: Dockerfile.mc-java
       network: host
+      args:
+        JAVA_TYPE: ${JAVA_TYPE}
+        JAVA_VERSION: ${JAVA_VERSION}
     # Give the built image a local name
     image: minecraft-server:local
     restart: "no"
@@ -82,8 +88,8 @@ services:
     # The environment for the test run remains simple
     environment:
       - EULA=TRUE
-      - TYPE=PAPER
-      - VERSION=1.20.1
+      - TYPE=${JAVA_TYPE}
+      - VERSION=${JAVA_VERSION}
       - LEVEL_TYPE=FLAT
       - MEMORY=512M
       - IDLE_TIMEOUT=-1

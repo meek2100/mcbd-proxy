@@ -1,16 +1,18 @@
 # Start from the official Minecraft server image
 FROM itzg/minecraft-server:latest
 
-# Set environment variables that are needed to pre-install the server
-ENV EULA="TRUE"
-ENV TYPE="PAPER"
-ENV VERSION="1.20.1"
+# Declare the version as a build argument with a default value
+ARG JAVA_TYPE=PAPER
+ARG JAVA_VERSION=1.20.1
 
-# Run the image's main startup script with the '--install-only' flag.
-# This will download and prepare the specified server JAR and then exit,
-# which is exactly what's needed for a pre-built image.
+# Set environment variables for the installer script
+ENV EULA="TRUE"
+ENV TYPE=${JAVA_TYPE}
+ENV VERSION=${JAVA_VERSION}
+
+# Run the installer script
 RUN /start --install-only
 
-# Unset the installer variables so they don't conflict with runtime.
+# Unset the installer variables
 ENV TYPE=""
 ENV VERSION=""
