@@ -529,8 +529,6 @@ class NetherBridgeProxy:
                     self.inputs.remove(sock)
                 sock.close()
 
-            # --- Start of new logic ---
-            # Terminate any active sessions for the removed server
             container_name = old_server_config.container_name
             sessions_to_terminate = [
                 (key, info)
@@ -555,9 +553,6 @@ class NetherBridgeProxy:
                     self.socket_to_session_map.pop(
                         session_info.get("server_socket"), None
                     )
-            # --- End of new logic ---
-
-            self.servers_config_map.pop(port, None)
 
             self.servers_config_map.pop(port, None)
 
@@ -704,7 +699,6 @@ class NetherBridgeProxy:
         Dispatches handling for a new connection based on socket type.
         This is called when `select` finds a listening socket is readable.
         """
-
         if sock.type == socket.SOCK_STREAM:  # New TCP connection
             self._handle_new_tcp_connection(sock)
         elif sock.type == socket.SOCK_DGRAM:
