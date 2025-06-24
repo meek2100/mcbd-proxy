@@ -1,14 +1,16 @@
 # Start from the official Bedrock server image
 FROM itzg/minecraft-bedrock-server:latest
 
-# Set environment variables needed to pre-install a specific version
-ENV EULA="TRUE"
-ENV VERSION="1.20.81.01"
-ENV DIRECT_DOWNLOAD_URL="https://minecraft.azure.com/em/download/server/bedrock/1.20.81.01"
+# The server files are expected to be in the /data directory
+WORKDIR /data
 
-# Run the installer script during the image build process
-RUN /usr/local/bin/install-bedrock
+# Temporarily install curl and unzip, download the specific server version,
+# extract it, and then clean up to keep the image small.
+RUN apt-get update && apt-get install -y curl unzip && \
+    curl -o bedrock.zip "https://minecraft.azure.com/em/download/server/bedrock/1.20.81.01" && \
+    unzip bedrock.zip && \
+    rm bedrock.zip && \
+    apt-get purge -y --auto-remove curl unzip && \
+    rm -rf /var/lib/apt/lists/*
 
-# Unset installer variables to avoid conflicts with runtime environment
-ENV VERSION=""
-ENV DIRECT_DOWNLOAD_URL=""
+# The original entrypoint will handle permissions and launching the server
