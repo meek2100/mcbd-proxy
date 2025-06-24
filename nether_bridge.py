@@ -609,16 +609,26 @@ class NetherBridgeProxy:
             self._start_minecraft_server(container_name)
 
         server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_sock.setblocking(False)
+        # Note: The socket is blocking by default.
+
         try:
-            server_sock.connect_ex((container_name, server_config.internal_port))
-        except socket.gaierror:
+            # Use a short, blocking timeout for the backend connection.
+            server_sock.settimeout(5.0)
+            server_sock.connect((container_name, server_config.internal_port))
+            # The connection is now established.
+            # Make it non-blocking for the select loop.
+            server_sock.setblocking(False)
+        except (socket.error, socket.gaierror) as e:
             self.logger.error(
-                "DNS resolution failed for container.",
+                "Failed to connect to backend server.",
                 container_name=container_name,
+                internal_port=server_config.internal_port,
+                error=str(e),
             )
             self.inputs.remove(conn)
             conn.close()
+            # Decrement the session count since we are aborting.
+            ACTIVE_SESSIONS.labels(server_name=server_config.name).dec()
             return
 
         self.inputs.append(server_sock)
