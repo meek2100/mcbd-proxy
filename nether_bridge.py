@@ -33,6 +33,8 @@ DEFAULT_SETTINGS = {
     "proxy_heartbeat_interval_seconds": 15,
     "tcp_listen_backlog": 128,
     "max_concurrent_sessions": -1,  # -1 for unlimited
+    "prometheus_enabled": True,
+    "prometheus_port": 8000,
 }
 
 # --- Prometheus Metrics Definitions ---
@@ -86,6 +88,8 @@ class ProxySettings:
     proxy_heartbeat_interval_seconds: int
     tcp_listen_backlog: int
     max_concurrent_sessions: int
+    prometheus_enabled: bool
+    prometheus_port: int
 
 
 class NetherBridgeProxy:
@@ -479,7 +483,6 @@ class NetherBridgeProxy:
 
     def _reload_configuration(self):
         """
-
         Reloads proxy settings and server definitions from source.
         """
         self.logger.warning("SIGHUP received. Reloading configuration...")
@@ -511,9 +514,9 @@ class NetherBridgeProxy:
             # removed servers. Those sessions will remain active until they disconnect
             # or are cleaned up by the idle activity monitor. This ensures a
             # graceful shutdown for in-progress games.
-            old_server_config = self.servers_config_map.get(
-                port, ServerConfig("Unknown", "", port, "", port)
-            )
+            old_server_config = self.servers_config_map.get(port)
+            if not old_server_config:
+                continue
 
             self.logger.info(
                 "Removing listener for old server.",
@@ -919,18 +922,21 @@ class NetherBridgeProxy:
         """
         self.logger.info("--- Starting Nether-bridge On-Demand Proxy ---")
 
-        try:
-            metrics_port = 8000
-            start_http_server(metrics_port)
-            self.logger.info(
-                "Prometheus metrics server started.",
-                port=metrics_port,
-            )
-        except Exception as e:
-            self.logger.error(
-                "Could not start Prometheus metrics server.",
-                error=str(e),
-            )
+        if self.settings.prometheus_enabled:
+            try:
+                metrics_port = self.settings.prometheus_port
+                start_http_server(metrics_port)
+                self.logger.info(
+                    "Prometheus metrics server started.",
+                    port=metrics_port,
+                )
+            except Exception as e:
+                self.logger.error(
+                    "Could not start Prometheus metrics server.",
+                    error=str(e),
+                )
+        else:
+            self.logger.info("Prometheus metrics server is disabled by configuration.")
 
         app_metadata = os.environ.get("APP_IMAGE_METADATA")
         if app_metadata:
@@ -1150,6 +1156,8 @@ def load_application_config() -> tuple[ProxySettings, list[ServerConfig]]:
             "proxy_heartbeat_interval_seconds": "NB_HEARTBEAT_INTERVAL",
             "tcp_listen_backlog": "NB_TCP_LISTEN_BACKLOG",
             "max_concurrent_sessions": "NB_MAX_SESSIONS",
+            "prometheus_enabled": "NB_PROMETHEUS_ENABLED",
+            "prometheus_port": "NB_PROMETHEUS_PORT",
         }
         env_var_name = env_map.get(key, key.upper())
         env_val = os.environ.get(env_var_name)
