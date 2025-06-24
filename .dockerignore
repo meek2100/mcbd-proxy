@@ -23,6 +23,11 @@ data/
 logs/
 *.log
 
+# Optional Additions for Future-Proofing a Python project
+*.egg-info/
+build/
+dist/
+
 # Local test environment files
 tests/server_files/
 tests/.env
