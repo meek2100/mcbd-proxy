@@ -627,7 +627,6 @@ class NetherBridgeProxy:
             )
             self.inputs.remove(conn)
             conn.close()
-            # Decrement the session count since we are aborting.
             ACTIVE_SESSIONS.labels(server_name=server_config.name).dec()
             return
 
