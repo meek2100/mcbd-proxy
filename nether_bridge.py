@@ -397,14 +397,18 @@ class NetherBridgeProxy:
             if self._shutdown_requested:
                 break
 
+            # --- DEBUG LOGGING ---
+            self.logger.info(
+                "[DEBUG] Monitor thread running.",
+                active_sessions=len(self.active_sessions),
+            )
+
             current_time = time.time()
 
-            # Use a copy of the items to avoid runtime errors if the dict changes
-            # during iteration by the main thread.
             for session_key, session_info in list(self.active_sessions.items()):
                 server_config = self.servers_config_map.get(session_info["listen_port"])
                 if not server_config:
-                    continue  # Should not happen, but a safeguard
+                    continue
 
                 idle_timeout = (
                     server_config.idle_timeout_seconds
@@ -439,6 +443,13 @@ class NetherBridgeProxy:
                     for info in self.active_sessions.values()
                 )
 
+                # --- DEBUG LOGGING ---
+                if not has_active_sessions:
+                    self.logger.info(
+                        "[DEBUG] Server has no active sessions.",
+                        container_name=container_name,
+                    )
+
                 if not has_active_sessions:
                     idle_timeout = (
                         server_conf.idle_timeout_seconds
@@ -463,9 +474,8 @@ class NetherBridgeProxy:
         """
         client_socket = session_info.get("client_socket")
         server_socket = session_info.get("server_socket")
-        protocol = session_info.get("protocol")
 
-        if protocol == "tcp" and client_socket:
+        if client_socket:
             if client_socket in self.inputs:
                 self.inputs.remove(client_socket)
             try:
@@ -592,7 +602,7 @@ class NetherBridgeProxy:
             return
 
         conn, client_addr = sock.accept()
-        conn.setblocking(False)
+        # DEFER setting non-blocking until after backend connection is made
         self.inputs.append(conn)
 
         server_port = sock.getsockname()[1]
@@ -605,18 +615,15 @@ class NetherBridgeProxy:
             server_name=server_config.name,
         )
 
+        ACTIVE_SESSIONS.labels(server_name=server_config.name).inc()
+
         if not self._is_container_running(container_name):
             self._start_minecraft_server(container_name)
 
         server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # Note: The socket is blocking by default.
-
         try:
-            # Use a short, blocking timeout for the backend connection.
             server_sock.settimeout(5.0)
             server_sock.connect((container_name, server_config.internal_port))
-            # The connection is now established.
-            # Make it non-blocking for the select loop.
             server_sock.setblocking(False)
         except (socket.error, socket.gaierror) as e:
             self.logger.error(
@@ -632,6 +639,9 @@ class NetherBridgeProxy:
 
         self.inputs.append(server_sock)
 
+        # NOW set the client socket to non-blocking
+        conn.setblocking(False)
+
         session_key = (client_addr, server_port, "tcp")
         session_info = {
             "client_socket": conn,
@@ -644,7 +654,6 @@ class NetherBridgeProxy:
         self.active_sessions[session_key] = session_info
         self.socket_to_session_map[conn] = (session_key, "client_socket")
         self.socket_to_session_map[server_sock] = (session_key, "server_socket")
-        ACTIVE_SESSIONS.labels(server_name=server_config.name).inc()
 
     def _handle_new_udp_packet(self, sock: socket.socket):
         """Handles the first UDP packet from a client, establishing a session."""
@@ -657,7 +666,6 @@ class NetherBridgeProxy:
                 max_sessions=self.settings.max_concurrent_sessions,
                 current_sessions=len(self.active_sessions),
             )
-            # For UDP, we just drop the packet by not processing it
             return
 
         data, client_addr = sock.recvfrom(4096)
@@ -706,9 +714,8 @@ class NetherBridgeProxy:
     def _handle_new_connection(self, sock: socket.socket):
         """
         Dispatches handling for a new connection based on socket type.
-        This is called when `select` finds a listening socket is readable.
         """
-        if sock.type == socket.SOCK_STREAM:  # New TCP connection
+        if sock.type == socket.SOCK_STREAM:
             self._handle_new_tcp_connection(sock)
         elif sock.type == socket.SOCK_DGRAM:
             self._handle_new_udp_packet(sock)
@@ -716,7 +723,6 @@ class NetherBridgeProxy:
     def _forward_packet(self, sock: socket.socket):
         """
         Forwards a packet from an established session (TCP or UDP).
-        This is called when `select` finds a non-listening socket is readable.
         """
         session_info_tuple = self.socket_to_session_map.get(sock)
         if not session_info_tuple:
@@ -739,11 +745,17 @@ class NetherBridgeProxy:
         protocol = session_info["protocol"]
 
         if protocol == "tcp":
-            # 4096 bytes is a standard buffer size, large enough to hold
-            # several typical Minecraft packets without excessive memory use.
-            data = sock.recv(4096)
-            if not data:
-                raise ConnectionResetError("Connection closed by peer")
+            try:
+                data = sock.recv(4096)
+                if not data:
+                    raise ConnectionResetError("Connection closed by peer")
+            except ConnectionResetError as e:
+                # --- DEBUG LOGGING ---
+                self.logger.info(
+                    "[DEBUG] ConnectionResetError caught in _forward_packet.",
+                    session_key=session_key,
+                )
+                raise e
         else:
             data, _ = sock.recvfrom(4096)
 
@@ -758,11 +770,11 @@ class NetherBridgeProxy:
                 container_name,
                 server_config.internal_port,
             )
-            direction = "c2s"  # client-to-server
+            direction = "c2s"
         else:
             destination_socket = session_info["client_socket"]
             destination_address = session_key[0]
-            direction = "s2c"  # server-to-client
+            direction = "s2c"
 
         if protocol == "tcp":
             destination_socket.sendall(data)
@@ -813,7 +825,6 @@ class NetherBridgeProxy:
                 try:
                     HEARTBEAT_FILE.write_text(str(int(current_time)))
                     self.last_heartbeat_time = current_time
-                    self.logger.debug("Proxy heartbeat updated.")
                 except Exception:
                     self.logger.warning(
                         "Could not update heartbeat file.",
@@ -833,8 +844,9 @@ class NetherBridgeProxy:
                         self._forward_packet(sock)
 
                 except (ConnectionResetError, socket.error, OSError) as e:
-                    self.logger.warning(
-                        "Session disconnected. Cleaning up.",
+                    # --- DEBUG LOGGING ---
+                    self.logger.info(
+                        "[DEBUG] Session cleanup block triggered.",
                         session_key=session_key_for_error,
                         error=str(e),
                     )
@@ -856,12 +868,10 @@ class NetherBridgeProxy:
 
                 except Exception:
                     self.logger.error(
-                        "Unhandled exception in proxy loop for socket. "
-                        "Cleaning up session.",
+                        "Unhandled exception in proxy loop. Cleaning up session.",
                         socket_fileno=sock.fileno(),
                         exc_info=True,
                     )
-                    # Attempt to find the full session info to clean up everything.
                     session_info_tuple = self.socket_to_session_map.get(sock)
                     session_key_for_error = (
                         session_info_tuple[0] if session_info_tuple else None
@@ -882,7 +892,6 @@ class NetherBridgeProxy:
                         self.socket_to_session_map.pop(
                             session_info.get("server_socket"), None
                         )
-                    # Fallback for sockets not in a session (should be rare)
                     else:
                         if sock in self.inputs:
                             self.inputs.remove(sock)
@@ -912,7 +921,6 @@ class NetherBridgeProxy:
         try:
             sock.bind(("0.0.0.0", listen_port))
             if sock_type == socket.SOCK_STREAM:
-                # Use the configurable backlog to handle concurrent connection spikes.
                 sock.listen(self.settings.tcp_listen_backlog)
             sock.setblocking(False)
             self.listen_sockets[listen_port] = sock
