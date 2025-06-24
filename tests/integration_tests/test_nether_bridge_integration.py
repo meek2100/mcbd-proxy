@@ -394,6 +394,65 @@ def test_java_server_starts_on_connection(docker_compose_up, docker_client_fixtu
 
 
 @pytest.mark.integration
+def test_java_server_handles_single_connection_correctly(
+    docker_compose_up, docker_client_fixture
+):
+    """
+    A focused test to ensure a single TCP connection for a Java server is
+    handled correctly from end-to-end, without timing out or dropping.
+    This test directly replicates the scenario from the manual test script.
+    """
+    proxy_host = get_proxy_host()
+    java_proxy_port = JAVA_PROXY_PORT
+
+    # 1. Ensure the proxy is ready before we begin
+    assert wait_for_proxy_to_be_ready(docker_client_fixture), (
+        "Proxy did not become ready."
+    )
+
+    # 2. Create a client socket and attempt a full handshake/status check
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client_socket.settimeout(20)  # A generous timeout for the entire operation
+
+    try:
+        print(f"\n[Single-Conn-Test] Connecting to {proxy_host}:{java_proxy_port}...")
+        client_socket.connect((proxy_host, java_proxy_port))
+        print("[Single-Conn-Test] Connection successful.")
+
+        # 3. Send the standard Java status request packets
+        handshake, status_request = get_java_handshake_and_status_request_packets(
+            proxy_host, java_proxy_port
+        )
+        client_socket.sendall(handshake)
+        client_socket.sendall(status_request)
+        print("[Single-Conn-Test] Handshake and status packets sent.")
+
+        # 4. Assert that we receive a valid response from the server via the proxy
+        response = client_socket.recv(4096)
+        print(f"[Single-Conn-Test] Received {len(response)} bytes.")
+        assert len(response) > 0, "Did not receive any data from the proxy."
+
+        # A simple but effective check for a valid Minecraft status JSON
+        assert response.strip().startswith(b"{"), (
+            f"Response does not appear to be valid JSON. Received: {response!r}"
+        )
+
+        print("[Single-Conn-Test] Received a valid-looking JSON response. Test passed.")
+
+    except socket.timeout:
+        pytest.fail(
+            (
+                "The connection timed out waiting for a response. "
+                "The proxy may have dropped the session."
+            )
+        )
+    except Exception as e:
+        pytest.fail(f"An unexpected error occurred during the connection test: {e}")
+    finally:
+        client_socket.close()
+
+
+@pytest.mark.integration
 def test_server_shuts_down_on_idle(docker_compose_up, docker_client_fixture):
     """
     Tests that a running server is automatically stopped by the proxy after a
