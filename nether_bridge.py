@@ -675,6 +675,8 @@ class NetherBridgeProxy:
         protocol = session_info["protocol"]
 
         if protocol == "tcp":
+            # 4096 bytes is a standard buffer size, large enough to hold
+            # several typical Minecraft packets without excessive memory use.
             data = sock.recv(4096)
             if not data:
                 raise ConnectionResetError("Connection closed by peer")
