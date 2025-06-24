@@ -30,6 +30,7 @@ DEFAULT_SETTINGS = {
     "log_formatter": "json",
     "healthcheck_stale_threshold_seconds": 60,
     "proxy_heartbeat_interval_seconds": 15,
+    "tcp_listen_backlog": 128,
 }
 
 # --- Prometheus Metrics Definitions ---
@@ -75,6 +76,7 @@ class ProxySettings:
     log_formatter: str
     healthcheck_stale_threshold_seconds: int
     proxy_heartbeat_interval_seconds: int
+    tcp_listen_backlog: int
 
 
 class NetherBridgeProxy:
@@ -842,7 +844,8 @@ class NetherBridgeProxy:
         try:
             sock.bind(("0.0.0.0", listen_port))
             if sock_type == socket.SOCK_STREAM:
-                sock.listen(5)
+                # Use the configurable backlog to handle concurrent connection spikes.
+                sock.listen(self.settings.tcp_listen_backlog)
             sock.setblocking(False)
             self.listen_sockets[listen_port] = sock
             self.inputs.append(sock)
@@ -1097,6 +1100,7 @@ def load_application_config() -> tuple[ProxySettings, list[ServerConfig]]:
             "log_formatter": "NB_LOG_FORMATTER",
             "healthcheck_stale_threshold_seconds": "NB_HEALTHCHECK_STALE_THRESHOLD",
             "proxy_heartbeat_interval_seconds": "NB_HEARTBEAT_INTERVAL",
+            "tcp_listen_backlog": "NB_TCP_LISTEN_BACKLOG",
         }
         env_var_name = env_map.get(key, key.upper())
         env_val = os.environ.get(env_var_name)

@@ -202,7 +202,7 @@ These settings control the proxy's behavior, such as idle timeouts and query int
 | `NB_INITIAL_SERVER_QUERY_DELAY` | `initial_server_query_delay_seconds` | `10` | Delay (in seconds) before the proxy attempts to query a server that was found running on proxy startup. This allows time for the server to stabilize if it was previously mid-startup or in a crashed state. |
 | `NB_HEALTHCHECK_STALE_THRESHOLD` | `healthcheck_stale_threshold_seconds` | `60`    | Time in seconds before the main process heartbeat is considered stale by the health check. |
 | `NB_HEARTBEAT_INTERVAL`          | `proxy_heartbeat_interval_seconds`  | `15`    | How often (in seconds) the main proxy loop updates its heartbeat file.                |
-
+| `NB_TCP_LISTEN_BACKLOG` | `tcp_listen_backlog` | `128` | (Advanced) The maximum number of queued TCP connections for Java servers. Higher values can help handle sudden connection spikes. |
 **Example `settings.json`:**
 
 ```json
