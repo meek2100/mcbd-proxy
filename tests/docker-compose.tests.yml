@@ -62,7 +62,7 @@ services:
     environment:
       - EULA=TRUE
       - VERSION=1.20.81.01
-      - DIRECT_DOWNLOAD_URL=https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.20.81.01.zip # Pin download URL
+      - DIRECT_DOWNLOAD_URL=https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.20.81.01.zip
       - IDLE_TIMEOUT=-1
 
   mc-java:
