@@ -7,8 +7,7 @@ ENV TYPE="PAPER"
 ENV VERSION="1.20.1"
 
 # Force DNS to Google's public DNS and run the installer script.
-RUN echo "nameserver 8.8.8.8" > /etc/resolv.conf && \
-    /usr/local/bin/install-paper
+RUN /usr/local/bin/install-paper
 
 # Unset the installer variables so they don't conflict with runtime.
 ENV TYPE=""
