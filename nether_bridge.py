@@ -587,7 +587,6 @@ class NetherBridgeProxy:
         self._reload_requested = False
 
     def _handle_new_tcp_connection(self, sock: socket.socket):
-        """Accepts a new TCP connection and sets up the session."""
         if (
             self.settings.max_concurrent_sessions > 0
             and len(self.active_sessions) >= self.settings.max_concurrent_sessions
@@ -609,17 +608,10 @@ class NetherBridgeProxy:
         server_config = self.servers_config_map[server_port]
         container_name = server_config.container_name
 
-        self.logger.info(
-            "Accepted new TCP connection.",
-            client_addr=client_addr,
-            server_name=server_config.name,
-        )
-
-        ACTIVE_SESSIONS.labels(server_name=server_config.name).inc()
-
-        # Synchronize internal state with actual Docker container status
-        actual_docker_running_status = self._is_container_running(container_name)
-        self.server_states[container_name]["running"] = actual_docker_running_status
+        # === CRITICAL CHANGE STARTS HERE ===
+        # Always update the internal server state based on current Docker status
+        is_actually_running = self._is_container_running(container_name)
+        self.server_states[container_name]["running"] = is_actually_running
 
         if not self.server_states[container_name]["running"]:
             self.logger.info(
@@ -627,23 +619,38 @@ class NetherBridgeProxy:
                 container_name=container_name,
                 client_addr=client_addr,
             )
+            # This call will set self.server_states[container_name]["running"] to True
+            # upon success
             self._start_minecraft_server(container_name)
+            # If startup fails, server_states[container_name]["running"] will remain
+            # False, and the backend connection won't be made.
         else:
-            # This log will now only appear if the server IS already considered running
             self.logger.info(
                 "Establishing new TCP session for running server.",
                 client_addr=client_addr,
                 server_name=server_config.name,
             )
+        # === CRITICAL CHANGE ENDS HERE ===
+
+        ACTIVE_SESSIONS.labels(server_name=server_config.name).inc()
 
         server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
+            # Only attempt connection if the server is now supposed to be running
+            # (either it was already running, or _start_minecraft_server just
+            # successfully started it). This prevents trying to connect to a server
+            # that failed to start.
+            if not self.server_states[container_name]["running"]:
+                raise ConnectionRefusedError(
+                    "Server not running to establish connection."
+                )
+
             server_sock.settimeout(5.0)
             server_sock.connect((container_name, server_config.internal_port))
             server_sock.setblocking(False)
-        except (socket.error, socket.gaierror) as e:
+        except (socket.error, socket.gaierror, ConnectionRefusedError) as e:
             self.logger.error(
-                "Failed to connect to backend server.",
+                "Failed to connect to backend server or server not running.",
                 container_name=container_name,
                 internal_port=server_config.internal_port,
                 error=str(e),
@@ -689,9 +696,10 @@ class NetherBridgeProxy:
         server_config = self.servers_config_map[server_port]
         container_name = server_config.container_name
 
-        # Synchronize internal state with actual Docker container status
-        actual_docker_running_status = self._is_container_running(container_name)
-        self.server_states[container_name]["running"] = actual_docker_running_status
+        # === CRITICAL CHANGE STARTS HERE ===
+        # Always update the internal server state based on current Docker status
+        is_actually_running = self._is_container_running(container_name)
+        self.server_states[container_name]["running"] = is_actually_running
 
         if not self.server_states[container_name]["running"]:
             self.logger.info(
@@ -699,22 +707,21 @@ class NetherBridgeProxy:
                 container_name=container_name,
                 client_addr=client_addr,
             )
+            # This call will set self.server_states[container_name]["running"] to True
+            # upon success
             self._start_minecraft_server(container_name)
+            # If startup fails, server_states[container_name]["running"] will remain
+            # False, and the session won't be established later.
         else:
-            # This log will now only appear if the server IS already considered running
             self.logger.info(
                 "Establishing new UDP session for running server.",
                 client_addr=client_addr,
                 server_name=server_config.name,
             )
+        # === CRITICAL CHANGE ENDS HERE ===
 
         session_key = (client_addr, server_port, "udp")
         if session_key not in self.active_sessions:
-            self.logger.info(
-                "Establishing new UDP session for running server.",
-                client_addr=client_addr,
-                server_name=server_config.name,
-            )
             server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             server_sock.setblocking(False)
             self.inputs.append(server_sock)
@@ -733,7 +740,9 @@ class NetherBridgeProxy:
 
         session_info = self.active_sessions[session_key]
         session_info["last_packet_time"] = time.time()
-        self.server_states[container_name]["last_activity"] = time.time()
+        self.server_states[container_name]["last_activity"] = (
+            time.time()
+        )  # This updates activity, not running status
 
         destination_address = (container_name, server_config.internal_port)
         session_info["server_socket"].sendto(data, destination_address)
