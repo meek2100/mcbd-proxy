@@ -1,6 +1,3 @@
-# Use the buildkit syntax to pass build arguments
-#syntax=docker/dockerfile:1
-
 # Start from the official Minecraft server image
 FROM itzg/minecraft-server:latest
 
@@ -9,11 +6,8 @@ ENV EULA="TRUE"
 ENV TYPE="PAPER"
 ENV VERSION="1.20.1"
 
-# Use the --dns flag within the RUN command, which is enabled by BuildKit.
-# This forces the use of Google's DNS for this specific command.
-RUN --mount=type=cache,target=/var/cache/apt \
-    --network=default \
-    --dns=8.8.8.8 \
+# Force DNS to Google's public DNS and run the installer script.
+RUN echo "nameserver 8.8.8.8" > /etc/resolv.conf && \
     /usr/local/bin/install-paper
 
 # Unset the installer variables so they don't conflict with runtime.
