@@ -9,11 +9,12 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 import docker
 import structlog
 from mcstatus import BedrockServer, JavaServer
-from prometheus_client import Gauge, Histogram, start_http_server
+from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
 # --- Constants ---
 HEARTBEAT_FILE = Path("proxy_heartbeat.tmp")
@@ -31,6 +32,7 @@ DEFAULT_SETTINGS = {
     "healthcheck_stale_threshold_seconds": 60,
     "proxy_heartbeat_interval_seconds": 15,
     "tcp_listen_backlog": 128,
+    "max_concurrent_sessions": -1,  # -1 for unlimited
 }
 
 # --- Prometheus Metrics Definitions ---
@@ -48,6 +50,11 @@ SERVER_STARTUP_DURATION = Histogram(
     "Time taken for a server to start and become ready",
     ["server_name"],
 )
+BYTES_TRANSFERRED = Counter(
+    "netherbridge_bytes_transferred_total",
+    "Total bytes transferred through the proxy",
+    ["server_name", "direction"],
+)
 
 
 @dataclass
@@ -59,6 +66,7 @@ class ServerConfig:
     listen_port: int
     container_name: str
     internal_port: int
+    idle_timeout_seconds: Optional[int] = None
 
 
 @dataclass
@@ -77,6 +85,7 @@ class ProxySettings:
     healthcheck_stale_threshold_seconds: int
     proxy_heartbeat_interval_seconds: int
     tcp_listen_backlog: int
+    max_concurrent_sessions: int
 
 
 class NetherBridgeProxy:
@@ -385,27 +394,28 @@ class NetherBridgeProxy:
                 break
 
             current_time = time.time()
-            idle_timeout = self.settings.idle_timeout_seconds
 
-            idle_sessions_to_remove = [
-                key
-                for key, info in self.active_sessions.items()
-                if current_time - info["last_packet_time"] > idle_timeout
-            ]
-            for session_key in idle_sessions_to_remove:
-                session_info = self.active_sessions.pop(session_key, None)
-                if session_info:
-                    server_config = self.servers_config_map.get(
-                        session_info["listen_port"]
-                    )
-                    if server_config:
-                        ACTIVE_SESSIONS.labels(server_name=server_config.name).dec()
+            # Use a copy of the items to avoid runtime errors if the dict changes
+            # during iteration by the main thread.
+            for session_key, session_info in list(self.active_sessions.items()):
+                server_config = self.servers_config_map.get(session_info["listen_port"])
+                if not server_config:
+                    continue  # Should not happen, but a safeguard
+
+                idle_timeout = (
+                    server_config.idle_timeout_seconds
+                    or self.settings.idle_timeout_seconds
+                )
+
+                if current_time - session_info["last_packet_time"] > idle_timeout:
                     self.logger.info(
                         "Cleaning up idle client session.",
                         container_name=session_info["target_container"],
                         client_addr=session_key[0],
                     )
+                    ACTIVE_SESSIONS.labels(server_name=server_config.name).dec()
                     self._close_session_sockets(session_info)
+                    self.active_sessions.pop(session_key, None)
                     self.socket_to_session_map.pop(
                         session_info.get("client_socket"), None
                     )
@@ -426,6 +436,10 @@ class NetherBridgeProxy:
                 )
 
                 if not has_active_sessions:
+                    idle_timeout = (
+                        server_conf.idle_timeout_seconds
+                        or self.settings.idle_timeout_seconds
+                    )
                     if current_time - state.get("last_activity", 0) > idle_timeout:
                         self.logger.info(
                             "Server idle with 0 sessions. Initiating shutdown.",
@@ -465,6 +479,7 @@ class NetherBridgeProxy:
 
     def _reload_configuration(self):
         """
+
         Reloads proxy settings and server definitions from source.
         """
         self.logger.warning("SIGHUP received. Reloading configuration...")
@@ -496,9 +511,9 @@ class NetherBridgeProxy:
             # removed servers. Those sessions will remain active until they disconnect
             # or are cleaned up by the idle activity monitor. This ensures a
             # graceful shutdown for in-progress games.
-            old_server_config = self.servers_config_map.get(port)
-            if not old_server_config:
-                continue
+            old_server_config = self.servers_config_map.get(
+                port, ServerConfig("Unknown", "", port, "", port)
+            )
 
             self.logger.info(
                 "Removing listener for old server.",
@@ -511,7 +526,6 @@ class NetherBridgeProxy:
                     self.inputs.remove(sock)
                 sock.close()
 
-            # --- Start of new logic ---
             # Check for orphaned sessions and warn the operator
             container_name = old_server_config.container_name
             if any(
@@ -523,7 +537,6 @@ class NetherBridgeProxy:
                     "It will shut down after sessions end.",
                     container_name=container_name,
                 )
-            # --- End of new logic ---
 
             self.servers_config_map.pop(port, None)
 
@@ -549,6 +562,19 @@ class NetherBridgeProxy:
 
     def _handle_new_tcp_connection(self, sock: socket.socket):
         """Accepts a new TCP connection and sets up the session."""
+        if (
+            self.settings.max_concurrent_sessions > 0
+            and len(self.active_sessions) >= self.settings.max_concurrent_sessions
+        ):
+            self.logger.warning(
+                "Max concurrent sessions reached. Rejecting new TCP connection.",
+                max_sessions=self.settings.max_concurrent_sessions,
+                current_sessions=len(self.active_sessions),
+            )
+            conn, _ = sock.accept()
+            conn.close()
+            return
+
         conn, client_addr = sock.accept()
         conn.setblocking(False)
         self.inputs.append(conn)
@@ -597,6 +623,18 @@ class NetherBridgeProxy:
 
     def _handle_new_udp_packet(self, sock: socket.socket):
         """Handles the first UDP packet from a client, establishing a session."""
+        if (
+            self.settings.max_concurrent_sessions > 0
+            and len(self.active_sessions) >= self.settings.max_concurrent_sessions
+        ):
+            self.logger.warning(
+                "Max concurrent sessions reached. Dropping new UDP packet.",
+                max_sessions=self.settings.max_concurrent_sessions,
+                current_sessions=len(self.active_sessions),
+            )
+            # For UDP, we just drop the packet by not processing it
+            return
+
         data, client_addr = sock.recvfrom(4096)
         server_port = sock.getsockname()[1]
         server_config = self.servers_config_map[server_port]
@@ -687,21 +725,29 @@ class NetherBridgeProxy:
 
         session_info["last_packet_time"] = time.time()
 
+        server_config = self.servers_config_map[session_info["listen_port"]]
+
         if socket_role == "client_socket":
             self.server_states[container_name]["last_activity"] = time.time()
             destination_socket = session_info["server_socket"]
             destination_address = (
                 container_name,
-                self.servers_config_map[session_info["listen_port"]].internal_port,
+                server_config.internal_port,
             )
+            direction = "c2s"  # client-to-server
         else:
             destination_socket = session_info["client_socket"]
             destination_address = session_key[0]
+            direction = "s2c"  # server-to-client
 
         if protocol == "tcp":
             destination_socket.sendall(data)
         else:
             destination_socket.sendto(data, destination_address)
+
+        BYTES_TRANSFERRED.labels(
+            server_name=server_config.name, direction=direction
+        ).inc(len(data))
 
     def _run_proxy_loop(self):
         """
@@ -791,7 +837,6 @@ class NetherBridgeProxy:
                         socket_fileno=sock.fileno(),
                         exc_info=True,
                     )
-                    # --- Start of new logic ---
                     # Attempt to find the full session info to clean up everything.
                     session_info_tuple = self.socket_to_session_map.get(sock)
                     session_key_for_error = (
@@ -813,7 +858,6 @@ class NetherBridgeProxy:
                         self.socket_to_session_map.pop(
                             session_info.get("server_socket"), None
                         )
-                    # --- End of new logic ---
                     # Fallback for sockets not in a session (should be rare)
                     else:
                         if sock in self.inputs:
@@ -1048,12 +1092,16 @@ def _load_servers_from_env() -> list[dict]:
         if not listen_port_str:
             break
         try:
+            idle_timeout_str = os.environ.get(f"NB_{i}_IDLE_TIMEOUT")
             server_def = {
                 "name": os.environ.get(f"NB_{i}_NAME", f"Server {i}"),
                 "server_type": os.environ.get(f"NB_{i}_SERVER_TYPE", "bedrock").lower(),
                 "listen_port": int(listen_port_str),
                 "container_name": os.environ.get(f"NB_{i}_CONTAINER_NAME"),
                 "internal_port": int(os.environ.get(f"NB_{i}_INTERNAL_PORT")),
+                "idle_timeout_seconds": int(idle_timeout_str)
+                if idle_timeout_str
+                else None,
             }
             if not all(
                 v is not None
@@ -1101,6 +1149,7 @@ def load_application_config() -> tuple[ProxySettings, list[ServerConfig]]:
             "healthcheck_stale_threshold_seconds": "NB_HEALTHCHECK_STALE_THRESHOLD",
             "proxy_heartbeat_interval_seconds": "NB_HEARTBEAT_INTERVAL",
             "tcp_listen_backlog": "NB_TCP_LISTEN_BACKLOG",
+            "max_concurrent_sessions": "NB_MAX_SESSIONS",
         }
         env_var_name = env_map.get(key, key.upper())
         env_val = os.environ.get(env_var_name)
