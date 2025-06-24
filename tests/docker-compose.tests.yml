@@ -68,11 +68,10 @@ services:
       - mc-java-data:/data
     environment:
       - EULA=TRUE
-      - TYPE=FABRIC
-      - MINECRAFT_VERSION=1.20.1
-      - FABRIC_LOADER_VERSION=0.15.11
+      - TYPE=PAPER
+      - VERSION=1.20.1
       - LEVEL_TYPE=FLAT
-      - JVM_ARGS=-Xmx512M -Xms512M
+      - MEMORY=512M
       - IDLE_TIMEOUT=-1
       - ONLINE_MODE=FALSE
       
