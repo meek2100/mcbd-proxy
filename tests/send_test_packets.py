@@ -1,4 +1,5 @@
 import argparse
+import os
 import socket
 import sys
 import time
@@ -28,7 +29,29 @@ BEDROCK_UNCONNECTED_PING = (
     + b"\x00\x00\x00\x00\x00\x00\x00\x00"  # Client GUID (can be anything)
 )
 
-# --- Helper functions for Java Protocol ---
+# --- Helper functions ---
+
+
+def get_proxy_host():
+    """
+    Determines the correct IP address or hostname for tests by checking
+    the environment in a specific order of precedence.
+
+    """
+    # 1. Inside Docker ('CI_MODE'): Uses Docker's internal DNS.
+    if os.environ.get("CI_MODE"):
+        return "nether-bridge"
+
+    # 2. Explicit 'PROXY_IP': An override for specific CI scenarios.
+    if "PROXY_IP" in os.environ:
+        return os.environ["PROXY_IP"]
+
+    # 3. Remote Docker 'DOCKER_HOST_IP': For targeting a remote Docker daemon.
+    if "DOCKER_HOST_IP" in os.environ:
+        return os.environ["DOCKER_HOST_IP"]
+
+    # 4. Fallback: Local Development (e.g., Docker Desktop).
+    return "127.0.0.1"
 
 
 def encode_varint(value):
@@ -90,7 +113,7 @@ def simulate_client(
     try:
         if server_type == ServerType.JAVA:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(15)  # Increased timeout for connection under load
+            sock.settimeout(15)
             sock.connect((host, port))
 
             handshake, status_request = get_java_handshake_and_status_request_packets(
@@ -100,11 +123,11 @@ def simulate_client(
             sock.sendall(status_request)
 
             if mode == TestMode.SPIKE:
-                sock.recv(4096)  # Wait for at least one response
+                sock.recv(4096)
             elif mode == TestMode.SUSTAINED:
                 end_time = time.time() + duration
                 while time.time() < end_time:
-                    sock.sendall(status_request)  # Send keep-alive
+                    sock.sendall(status_request)
                     sock.recv(4096)
                     time.sleep(packet_interval)
 
@@ -116,7 +139,7 @@ def simulate_client(
 
             if mode == TestMode.SPIKE:
                 sock.sendto(BEDROCK_UNCONNECTED_PING, (host, port))
-                sock.recvfrom(4096)  # Wait for a response
+                sock.recvfrom(4096)
             elif mode == TestMode.SUSTAINED:
                 end_time = time.time() + duration
                 while time.time() < end_time:
@@ -158,12 +181,6 @@ if __name__ == "__main__":
         help="Number of concurrent clients to simulate.",
     )
     parser.add_argument(
-        "--host",
-        type=str,
-        default="127.0.0.1",
-        help="The IP address or hostname of the proxy.",
-    )
-    parser.add_argument(
         "--duration",
         type=int,
         default=60,
@@ -178,17 +195,18 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # Determine port based on server type
+    # --- Dynamically determine the target host ---
+    target_host = get_proxy_host()
     port = 25565 if args.server_type == ServerType.JAVA else 19132
 
     print("--- Nether-bridge Load Test ---")
-    print(f"Mode:            {args.mode.value}")
-    print(f"Server Type:     {args.server_type.value}")
-    print(f"Target:          {args.host}:{port}")
+    print(f"Mode:               {args.mode.value}")
+    print(f"Server Type:        {args.server_type.value}")
+    print(f"Target:             {target_host}:{port}")
     print(f"Concurrent Clients: {args.clients}")
     if args.mode == TestMode.SUSTAINED:
-        print(f"Test Duration:   {args.duration}s")
-        print(f"Packet Interval: {args.packet_interval}s")
+        print(f"Test Duration:      {args.duration}s")
+        print(f"Packet Interval:    {args.packet_interval}s")
     print("---------------------------------")
 
     start_time = time.time()
@@ -200,7 +218,7 @@ if __name__ == "__main__":
                 simulate_client,
                 i,
                 args.server_type,
-                args.host,
+                target_host,
                 port,
                 args.mode,
                 args.duration,
