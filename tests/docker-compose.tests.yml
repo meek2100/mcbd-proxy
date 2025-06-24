@@ -13,7 +13,8 @@ services:
     networks:
       - mc-network
     ports:
-      - "19132:19132/udp"
+      # Expose a wider range of ports for the new test
+      - "19132-19134:19132-19134/udp"
       - "25565:25565/udp"
       - "25565:25565/tcp"
     volumes:
@@ -30,19 +31,14 @@ services:
       - NB_INITIAL_SERVER_QUERY_DELAY=2
       - NB_HEALTHCHECK_STALE_THRESHOLD=10
       - NB_HEARTBEAT_INTERVAL=5
-      - NB_1_NAME=Bedrock Survival
-      - NB_1_SERVER_TYPE=bedrock
-      - NB_1_LISTEN_PORT=19132
-      - NB_1_CONTAINER_NAME=mc-bedrock
-      - NB_1_INTERNAL_PORT=19132
-      - NB_2_NAME=Java Creative
-      - NB_2_SERVER_TYPE=java
-      - NB_2_LISTEN_PORT=25565
-      - NB_2_CONTAINER_NAME=mc-java
-      - NB_2_INTERNAL_PORT=25565
     depends_on:
       - mc-bedrock
       - mc-java
+    command: >
+      sh -c 'echo "{\\"servers\\": [
+        {\\"name\\": \\"Bedrock Survival\\", \\"server_type\\": \\"bedrock\\", \\"listen_port\\": 19132, \\"container_name\\": \\"mc-bedrock\\", \\"internal_port\\": 19132},
+        {\\"name\\": \\"Java Creative\\", \\"server_type\\": \\"java\\", \\"listen_port\\": 25565, \\"container_name\\": \\"mc-java\\", \\"internal_port\\": 25565}
+      ]}" > /app/servers.json && exec /app/entrypoint.sh python nether_bridge.py'
 
   mc-bedrock:
     # Build the custom image instead of pulling

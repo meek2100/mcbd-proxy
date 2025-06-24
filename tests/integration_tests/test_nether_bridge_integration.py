@@ -516,3 +516,122 @@ def test_proxy_restarts_crashed_server_on_new_connection(
     ), "Proxy did not log that it was attempting to restart the server."
 
     print("(Crash Test) Proxy correctly logged its intent to restart. Test passed.")
+
+
+@pytest.mark.integration
+def test_configuration_reload_on_sighup(docker_compose_up, docker_client_fixture):
+    """
+    Tests that the proxy correctly reloads its server configuration upon
+    receiving a SIGHUP signal, without requiring a restart.
+    """
+    proxy_host = get_proxy_host()
+    initial_bedrock_port = 19132
+    reloaded_bedrock_port = 19134  # A new port for the reloaded config
+
+    assert wait_for_proxy_to_be_ready(docker_client_fixture), (
+        "Proxy did not become ready."
+    )
+
+    # --- 1. Verify initial configuration is active ---
+    print("\n(SIGHUP Test) Verifying initial server configuration...")
+    try:
+        # Send a packet to the initial port to confirm it's being listened on
+        # A timeout is expected because no server will start, but no connection
+        # refused error should occur.
+        client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        client_socket.settimeout(2)
+        client_socket.sendto(b"initial-ping", (proxy_host, initial_bedrock_port))
+        client_socket.recvfrom(1024)
+    except socket.timeout:
+        print(
+            f"Initial check on port {initial_bedrock_port} is OK (timeout as expected)."
+        )
+    except ConnectionRefusedError:
+        pytest.fail(
+            f"Initial port {initial_bedrock_port} was refused. It should be open."
+        )
+    finally:
+        client_socket.close()
+
+    # --- 2. Create new config and send SIGHUP ---
+    print("(SIGHUP Test) Writing new configuration inside the container...")
+    container = docker_client_fixture.containers.get("nether-bridge")
+
+    # This new config uses a different port for the Bedrock server
+    new_config_json = """
+    {
+      "servers": [
+        {
+          "name": "Bedrock RELOADED",
+          "server_type": "bedrock",
+          "listen_port": 19134,
+          "container_name": "mc-bedrock",
+          "internal_port": 19132
+        }
+      ]
+    }
+    """
+    # Use `sh -c` to handle writing the multi-line string to the file
+    cmd_write_config = f"sh -c 'echo \"{new_config_json}\" > /app/servers.json'"
+    exit_code, output = container.exec_run(cmd_write_config, demux=True)
+    assert exit_code == 0, (
+        "Failed to write new config: "
+        f"{output[1].decode() if output[1] else output[0].decode()}"
+    )
+    print("New servers.json written successfully.")
+
+    print("(SIGHUP Test) Sending SIGHUP signal to process 1...")
+    exit_code, output = container.exec_run("kill -SIGHUP 1", demux=True)
+    assert exit_code == 0, (
+        "Failed to send SIGHUP: "
+        f"{output[1].decode() if output[1] else output[0].decode()}"
+    )
+
+    # --- 3. Verify that the proxy reloaded the configuration ---
+    assert wait_for_log_message(
+        docker_client_fixture,
+        "nether-bridge",
+        "SIGHUP received. Reloading configuration...",
+        timeout=10,
+    ), "Proxy did not log that it was reloading the configuration."
+
+    print("(SIGHUP Test) Proxy logged reload message. Verifying new behavior...")
+    # Give the proxy a moment to close old sockets and open new ones
+    time.sleep(3)
+
+    # --- 4. Verify new configuration is active and old one is not ---
+    # The old port should now be closed and refuse connection
+    try:
+        print(f"(SIGHUP Test) Verifying old port {initial_bedrock_port} is closed...")
+        client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        client_socket.settimeout(2)
+        client_socket.sendto(b"old-port-ping", (proxy_host, initial_bedrock_port))
+        # This should raise an error because nothing is listening anymore
+        data, addr = client_socket.recvfrom(1024)
+        pytest.fail(f"Old port {initial_bedrock_port} is still open unexpectedly.")
+    except (ConnectionRefusedError, OSError):
+        print(
+            f"Old port {initial_bedrock_port} is correctly closed (Connection Refused)."
+        )
+    except socket.timeout:
+        pytest.fail(f"Old port {initial_bedrock_port} is still open (timed out).")
+    finally:
+        client_socket.close()
+
+    # The new port should now be open
+    try:
+        print(f"(SIGHUP Test) Verifying new port {reloaded_bedrock_port} is open...")
+        client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        client_socket.settimeout(2)
+        client_socket.sendto(b"new-port-ping", (proxy_host, reloaded_bedrock_port))
+        client_socket.recvfrom(1024)
+    except socket.timeout:
+        print(
+            f"New port {reloaded_bedrock_port} is correctly open (timeout as expected)."
+        )
+    except ConnectionRefusedError:
+        pytest.fail(f"New port {reloaded_bedrock_port} was refused. It should be open.")
+    finally:
+        client_socket.close()
+
+    print("(SIGHUP Test) Test passed: Proxy correctly reloaded its configuration.")
