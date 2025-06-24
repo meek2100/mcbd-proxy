@@ -6,8 +6,10 @@ ENV EULA="TRUE"
 ENV TYPE="PAPER"
 ENV VERSION="1.20.1"
 
-# Force DNS to Google's public DNS and run the installer script.
-RUN /usr/local/bin/install-paper
+# Run the image's main startup script with the '--install-only' flag.
+# This will download and prepare the specified server JAR and then exit,
+# which is exactly what's needed for a pre-built image.
+RUN /start --install-only
 
 # Unset the installer variables so they don't conflict with runtime.
 ENV TYPE=""
