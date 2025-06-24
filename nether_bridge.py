@@ -766,17 +766,43 @@ class NetherBridgeProxy:
 
                 except Exception:
                     self.logger.error(
-                        "Unhandled exception in proxy loop for socket. Closing socket.",
+                        "Unhandled exception in proxy loop for socket. "
+                        "Cleaning up session.",
                         socket_fileno=sock.fileno(),
                         exc_info=True,
                     )
-                    if sock in self.inputs:
-                        self.inputs.remove(sock)
-                    try:
-                        sock.close()
-                    except OSError:
-                        pass
-                    self.socket_to_session_map.pop(sock, None)
+                    # --- Start of new logic ---
+                    # Attempt to find the full session info to clean up everything.
+                    session_info_tuple = self.socket_to_session_map.get(sock)
+                    session_key_for_error = (
+                        session_info_tuple[0] if session_info_tuple else None
+                    )
+
+                    session_info = self.active_sessions.pop(session_key_for_error, None)
+                    if session_info:
+                        server_config = self.servers_config_map.get(
+                            session_info["listen_port"]
+                        )
+                        if server_config:
+                            ACTIVE_SESSIONS.labels(server_name=server_config.name).dec()
+
+                        self._close_session_sockets(session_info)
+                        self.socket_to_session_map.pop(
+                            session_info.get("client_socket"), None
+                        )
+                        self.socket_to_session_map.pop(
+                            session_info.get("server_socket"), None
+                        )
+                    # --- End of new logic ---
+                    # Fallback for sockets not in a session (should be rare)
+                    else:
+                        if sock in self.inputs:
+                            self.inputs.remove(sock)
+                        try:
+                            sock.close()
+                        except OSError:
+                            pass
+                        self.socket_to_session_map.pop(sock, None)
 
         self.logger.info("Shutdown requested. Closing all listening sockets.")
         for sock in self.listen_sockets.values():
