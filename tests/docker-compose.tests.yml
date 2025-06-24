@@ -49,6 +49,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.mc-bedrock
+      network: host
     # Give the built image a local name
     image: minecraft-bedrock-server:local
     restart: "no"
@@ -69,6 +70,7 @@ services:
     build:
       context: . # The context is the tests/ directory
       dockerfile: Dockerfile.mc-java
+      network: host
     # Give the built image a local name
     image: minecraft-server:local
     restart: "no"
