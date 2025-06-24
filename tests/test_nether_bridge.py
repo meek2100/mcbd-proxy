@@ -53,6 +53,10 @@ def default_proxy_settings():
         log_formatter="console",
         healthcheck_stale_threshold_seconds=0.5,
         proxy_heartbeat_interval_seconds=0.1,
+        tcp_listen_backlog=128,
+        max_concurrent_sessions=-1,
+        prometheus_enabled=False,
+        prometheus_port=8000,
     )
 
 
@@ -66,6 +70,7 @@ def mock_servers_config():
             listen_port=19132,
             container_name="test-mc-bedrock",
             internal_port=19132,
+            idle_timeout_seconds=None,
         ),
         ServerConfig(
             name="Java Test",
@@ -73,6 +78,7 @@ def mock_servers_config():
             listen_port=25565,
             container_name="test-mc-java",
             internal_port=25565,
+            idle_timeout_seconds=None,
         ),
     ]
 

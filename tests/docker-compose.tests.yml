@@ -26,7 +26,7 @@ services:
       - NB_QUERY_TIMEOUT=2
       - NB_SERVER_READY_MAX_WAIT=120
       - NB_INITIAL_BOOT_READY_MAX_WAIT=45
-      - NB_SERVER_STARTUP_DELAY=2
+      - NB_SERVER_STARTUP_DELAY=5
       - NB_INITIAL_SERVER_QUERY_DELAY=2
       - NB_HEALTHCHECK_STALE_THRESHOLD=10
       - NB_HEARTBEAT_INTERVAL=5
@@ -45,34 +45,53 @@ services:
       - mc-java
 
   mc-bedrock:
-    image: itzg/minecraft-bedrock-server:latest
+    # Build the custom image instead of pulling
+    build:
+      context: .
+      dockerfile: Dockerfile.mc-bedrock
+      network: host
+      args:
+        BEDROCK_VERSION: ${BEDROCK_VERSION}
+        BEDROCK_DOWNLOAD_URL: ${BEDROCK_DOWNLOAD_URL}
+    # Give the built image a local name
+    image: minecraft-bedrock-server:local
     restart: "no"
     container_name: mc-bedrock
     networks:
       - mc-network
     volumes:
       - mc-bedrock-data:/data
+    # The runtime environment is now much simpler
     environment:
       - EULA=TRUE
-      - VERSION=1.20.81.01
-      - DIRECT_DOWNLOAD_URL=https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.20.81.01.zip # Pin download URL
+      - VERSION=${BEDROCK_VERSION}
+      - DIRECT_DOWNLOAD_URL=${BEDROCK_DOWNLOAD_URL}
       - IDLE_TIMEOUT=-1
 
   mc-java:
-    image: itzg/minecraft-server:latest
+    # Build the custom image instead of pulling from Docker Hub
+    build:
+      context: . # The context is the tests/ directory
+      dockerfile: Dockerfile.mc-java
+      network: host
+      args:
+        JAVA_TYPE: ${JAVA_TYPE}
+        JAVA_VERSION: ${JAVA_VERSION}
+    # Give the built image a local name
+    image: minecraft-server:local
     restart: "no"
     container_name: mc-java
     networks:
       - mc-network
     volumes:
       - mc-java-data:/data
+    # The environment for the test run remains simple
     environment:
       - EULA=TRUE
-      - TYPE=FABRIC
-      - MINECRAFT_VERSION=1.20.1
-      - FABRIC_LOADER_VERSION=0.15.11
+      - TYPE=${JAVA_TYPE}
+      - VERSION=${JAVA_VERSION}
       - LEVEL_TYPE=FLAT
-      - JVM_ARGS=-Xmx512M -Xms512M
+      - MEMORY=512M
       - IDLE_TIMEOUT=-1
       - ONLINE_MODE=FALSE
       

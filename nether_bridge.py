@@ -9,11 +9,12 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 import docker
 import structlog
 from mcstatus import BedrockServer, JavaServer
-from prometheus_client import Gauge, Histogram, start_http_server
+from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
 # --- Constants ---
 HEARTBEAT_FILE = Path("proxy_heartbeat.tmp")
@@ -30,6 +31,10 @@ DEFAULT_SETTINGS = {
     "log_formatter": "json",
     "healthcheck_stale_threshold_seconds": 60,
     "proxy_heartbeat_interval_seconds": 15,
+    "tcp_listen_backlog": 128,
+    "max_concurrent_sessions": -1,  # -1 for unlimited
+    "prometheus_enabled": True,
+    "prometheus_port": 8000,
 }
 
 # --- Prometheus Metrics Definitions ---
@@ -47,6 +52,11 @@ SERVER_STARTUP_DURATION = Histogram(
     "Time taken for a server to start and become ready",
     ["server_name"],
 )
+BYTES_TRANSFERRED = Counter(
+    "netherbridge_bytes_transferred_total",
+    "Total bytes transferred through the proxy",
+    ["server_name", "direction"],
+)
 
 
 @dataclass
@@ -58,6 +68,7 @@ class ServerConfig:
     listen_port: int
     container_name: str
     internal_port: int
+    idle_timeout_seconds: Optional[int] = None
 
 
 @dataclass
@@ -75,6 +86,10 @@ class ProxySettings:
     log_formatter: str
     healthcheck_stale_threshold_seconds: int
     proxy_heartbeat_interval_seconds: int
+    tcp_listen_backlog: int
+    max_concurrent_sessions: int
+    prometheus_enabled: bool
+    prometheus_port: int
 
 
 class NetherBridgeProxy:
@@ -382,28 +397,33 @@ class NetherBridgeProxy:
             if self._shutdown_requested:
                 break
 
-            current_time = time.time()
-            idle_timeout = self.settings.idle_timeout_seconds
+            # --- DEBUG LOGGING ---
+            self.logger.info(
+                "[DEBUG] Monitor thread running.",
+                active_sessions=len(self.active_sessions),
+            )
 
-            idle_sessions_to_remove = [
-                key
-                for key, info in self.active_sessions.items()
-                if current_time - info["last_packet_time"] > idle_timeout
-            ]
-            for session_key in idle_sessions_to_remove:
-                session_info = self.active_sessions.pop(session_key, None)
-                if session_info:
-                    server_config = self.servers_config_map.get(
-                        session_info["listen_port"]
-                    )
-                    if server_config:
-                        ACTIVE_SESSIONS.labels(server_name=server_config.name).dec()
+            current_time = time.time()
+
+            for session_key, session_info in list(self.active_sessions.items()):
+                server_config = self.servers_config_map.get(session_info["listen_port"])
+                if not server_config:
+                    continue
+
+                idle_timeout = (
+                    server_config.idle_timeout_seconds
+                    or self.settings.idle_timeout_seconds
+                )
+
+                if current_time - session_info["last_packet_time"] > idle_timeout:
                     self.logger.info(
                         "Cleaning up idle client session.",
                         container_name=session_info["target_container"],
                         client_addr=session_key[0],
                     )
+                    ACTIVE_SESSIONS.labels(server_name=server_config.name).dec()
                     self._close_session_sockets(session_info)
+                    self.active_sessions.pop(session_key, None)
                     self.socket_to_session_map.pop(
                         session_info.get("client_socket"), None
                     )
@@ -423,7 +443,18 @@ class NetherBridgeProxy:
                     for info in self.active_sessions.values()
                 )
 
+                # --- DEBUG LOGGING ---
                 if not has_active_sessions:
+                    self.logger.info(
+                        "[DEBUG] Server has no active sessions.",
+                        container_name=container_name,
+                    )
+
+                if not has_active_sessions:
+                    idle_timeout = (
+                        server_conf.idle_timeout_seconds
+                        or self.settings.idle_timeout_seconds
+                    )
                     if current_time - state.get("last_activity", 0) > idle_timeout:
                         self.logger.info(
                             "Server idle with 0 sessions. Initiating shutdown.",
@@ -443,9 +474,8 @@ class NetherBridgeProxy:
         """
         client_socket = session_info.get("client_socket")
         server_socket = session_info.get("server_socket")
-        protocol = session_info.get("protocol")
 
-        if protocol == "tcp" and client_socket:
+        if client_socket:
             if client_socket in self.inputs:
                 self.inputs.remove(client_socket)
             try:
@@ -494,12 +524,13 @@ class NetherBridgeProxy:
             # removed servers. Those sessions will remain active until they disconnect
             # or are cleaned up by the idle activity monitor. This ensures a
             # graceful shutdown for in-progress games.
-            server_name = self.servers_config_map.get(
-                port, ServerConfig("Unknown", "", port, "", port)
-            ).name
+            old_server_config = self.servers_config_map.get(port)
+            if not old_server_config:
+                continue
+
             self.logger.info(
                 "Removing listener for old server.",
-                server_name=server_name,
+                server_name=old_server_config.name,
                 port=port,
             )
             sock = self.listen_sockets.pop(port, None)
@@ -507,6 +538,32 @@ class NetherBridgeProxy:
                 if sock in self.inputs:
                     self.inputs.remove(sock)
                 sock.close()
+
+            container_name = old_server_config.container_name
+            sessions_to_terminate = [
+                (key, info)
+                for key, info in self.active_sessions.items()
+                if info.get("target_container") == container_name
+            ]
+
+            if sessions_to_terminate:
+                self.logger.warning(
+                    "Terminating active sessions for server removed from "
+                    "configuration.",
+                    count=len(sessions_to_terminate),
+                    container_name=container_name,
+                )
+                for session_key, session_info in sessions_to_terminate:
+                    ACTIVE_SESSIONS.labels(server_name=old_server_config.name).dec()
+                    self._close_session_sockets(session_info)
+                    self.active_sessions.pop(session_key, None)
+                    self.socket_to_session_map.pop(
+                        session_info.get("client_socket"), None
+                    )
+                    self.socket_to_session_map.pop(
+                        session_info.get("server_socket"), None
+                    )
+
             self.servers_config_map.pop(port, None)
 
         for port in new_ports - old_ports:
@@ -530,38 +587,83 @@ class NetherBridgeProxy:
         self._reload_requested = False
 
     def _handle_new_tcp_connection(self, sock: socket.socket):
-        """Accepts a new TCP connection and sets up the session."""
+        if (
+            self.settings.max_concurrent_sessions > 0
+            and len(self.active_sessions) >= self.settings.max_concurrent_sessions
+        ):
+            self.logger.warning(
+                "Max concurrent sessions reached. Rejecting new TCP connection.",
+                max_sessions=self.settings.max_concurrent_sessions,
+                current_sessions=len(self.active_sessions),
+            )
+            conn, _ = sock.accept()
+            conn.close()
+            return
+
         conn, client_addr = sock.accept()
-        conn.setblocking(False)
+        # DEFER setting non-blocking until after backend connection is made
         self.inputs.append(conn)
 
         server_port = sock.getsockname()[1]
         server_config = self.servers_config_map[server_port]
         container_name = server_config.container_name
 
-        self.logger.info(
-            "Accepted new TCP connection.",
-            client_addr=client_addr,
-            server_name=server_config.name,
-        )
+        # === CRITICAL CHANGE STARTS HERE ===
+        # Always update the internal server state based on current Docker status
+        is_actually_running = self._is_container_running(container_name)
+        self.server_states[container_name]["running"] = is_actually_running
 
-        if not self._is_container_running(container_name):
+        if not self.server_states[container_name]["running"]:
+            self.logger.info(
+                "First TCP connection for stopped server. Starting...",
+                container_name=container_name,
+                client_addr=client_addr,
+            )
+            # This call will set self.server_states[container_name]["running"] to True
+            # upon success
             self._start_minecraft_server(container_name)
+            # If startup fails, server_states[container_name]["running"] will remain
+            # False, and the backend connection won't be made.
+        else:
+            self.logger.info(
+                "Establishing new TCP session for running server.",
+                client_addr=client_addr,
+                server_name=server_config.name,
+            )
+        # === CRITICAL CHANGE ENDS HERE ===
+
+        ACTIVE_SESSIONS.labels(server_name=server_config.name).inc()
 
         server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_sock.setblocking(False)
         try:
-            server_sock.connect_ex((container_name, server_config.internal_port))
-        except socket.gaierror:
+            # Only attempt connection if the server is now supposed to be running
+            # (either it was already running, or _start_minecraft_server just
+            # successfully started it). This prevents trying to connect to a server
+            # that failed to start.
+            if not self.server_states[container_name]["running"]:
+                raise ConnectionRefusedError(
+                    "Server not running to establish connection."
+                )
+
+            server_sock.settimeout(5.0)
+            server_sock.connect((container_name, server_config.internal_port))
+            server_sock.setblocking(False)
+        except (socket.error, socket.gaierror, ConnectionRefusedError) as e:
             self.logger.error(
-                "DNS resolution failed for container.",
+                "Failed to connect to backend server or server not running.",
                 container_name=container_name,
+                internal_port=server_config.internal_port,
+                error=str(e),
             )
             self.inputs.remove(conn)
             conn.close()
+            ACTIVE_SESSIONS.labels(server_name=server_config.name).dec()
             return
 
         self.inputs.append(server_sock)
+
+        # NOW set the client socket to non-blocking
+        conn.setblocking(False)
 
         session_key = (client_addr, server_port, "tcp")
         session_info = {
@@ -575,30 +677,51 @@ class NetherBridgeProxy:
         self.active_sessions[session_key] = session_info
         self.socket_to_session_map[conn] = (session_key, "client_socket")
         self.socket_to_session_map[server_sock] = (session_key, "server_socket")
-        ACTIVE_SESSIONS.labels(server_name=server_config.name).inc()
 
     def _handle_new_udp_packet(self, sock: socket.socket):
         """Handles the first UDP packet from a client, establishing a session."""
+        if (
+            self.settings.max_concurrent_sessions > 0
+            and len(self.active_sessions) >= self.settings.max_concurrent_sessions
+        ):
+            self.logger.warning(
+                "Max concurrent sessions reached. Dropping new UDP packet.",
+                max_sessions=self.settings.max_concurrent_sessions,
+                current_sessions=len(self.active_sessions),
+            )
+            return
+
         data, client_addr = sock.recvfrom(4096)
         server_port = sock.getsockname()[1]
         server_config = self.servers_config_map[server_port]
         container_name = server_config.container_name
 
-        if not self._is_container_running(container_name):
+        # === CRITICAL CHANGE STARTS HERE ===
+        # Always update the internal server state based on current Docker status
+        is_actually_running = self._is_container_running(container_name)
+        self.server_states[container_name]["running"] = is_actually_running
+
+        if not self.server_states[container_name]["running"]:
             self.logger.info(
                 "First packet received for stopped server. Starting...",
                 container_name=container_name,
                 client_addr=client_addr,
             )
+            # This call will set self.server_states[container_name]["running"] to True
+            # upon success
             self._start_minecraft_server(container_name)
-
-        session_key = (client_addr, server_port, "udp")
-        if session_key not in self.active_sessions:
+            # If startup fails, server_states[container_name]["running"] will remain
+            # False, and the session won't be established later.
+        else:
             self.logger.info(
                 "Establishing new UDP session for running server.",
                 client_addr=client_addr,
                 server_name=server_config.name,
             )
+        # === CRITICAL CHANGE ENDS HERE ===
+
+        session_key = (client_addr, server_port, "udp")
+        if session_key not in self.active_sessions:
             server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             server_sock.setblocking(False)
             self.inputs.append(server_sock)
@@ -617,7 +740,9 @@ class NetherBridgeProxy:
 
         session_info = self.active_sessions[session_key]
         session_info["last_packet_time"] = time.time()
-        self.server_states[container_name]["last_activity"] = time.time()
+        self.server_states[container_name]["last_activity"] = (
+            time.time()
+        )  # This updates activity, not running status
 
         destination_address = (container_name, server_config.internal_port)
         session_info["server_socket"].sendto(data, destination_address)
@@ -625,10 +750,8 @@ class NetherBridgeProxy:
     def _handle_new_connection(self, sock: socket.socket):
         """
         Dispatches handling for a new connection based on socket type.
-        This is called when `select` finds a listening socket is readable.
         """
-
-        if sock.type == socket.SOCK_STREAM:  # New TCP connection
+        if sock.type == socket.SOCK_STREAM:
             self._handle_new_tcp_connection(sock)
         elif sock.type == socket.SOCK_DGRAM:
             self._handle_new_udp_packet(sock)
@@ -636,7 +759,6 @@ class NetherBridgeProxy:
     def _forward_packet(self, sock: socket.socket):
         """
         Forwards a packet from an established session (TCP or UDP).
-        This is called when `select` finds a non-listening socket is readable.
         """
         session_info_tuple = self.socket_to_session_map.get(sock)
         if not session_info_tuple:
@@ -659,29 +781,45 @@ class NetherBridgeProxy:
         protocol = session_info["protocol"]
 
         if protocol == "tcp":
-            data = sock.recv(4096)
-            if not data:
-                raise ConnectionResetError("Connection closed by peer")
+            try:
+                data = sock.recv(4096)
+                if not data:
+                    raise ConnectionResetError("Connection closed by peer")
+            except ConnectionResetError as e:
+                # --- DEBUG LOGGING ---
+                self.logger.info(
+                    "[DEBUG] ConnectionResetError caught in _forward_packet.",
+                    session_key=session_key,
+                )
+                raise e
         else:
             data, _ = sock.recvfrom(4096)
 
         session_info["last_packet_time"] = time.time()
+
+        server_config = self.servers_config_map[session_info["listen_port"]]
 
         if socket_role == "client_socket":
             self.server_states[container_name]["last_activity"] = time.time()
             destination_socket = session_info["server_socket"]
             destination_address = (
                 container_name,
-                self.servers_config_map[session_info["listen_port"]].internal_port,
+                server_config.internal_port,
             )
+            direction = "c2s"
         else:
             destination_socket = session_info["client_socket"]
             destination_address = session_key[0]
+            direction = "s2c"
 
         if protocol == "tcp":
             destination_socket.sendall(data)
         else:
             destination_socket.sendto(data, destination_address)
+
+        BYTES_TRANSFERRED.labels(
+            server_name=server_config.name, direction=direction
+        ).inc(len(data))
 
     def _run_proxy_loop(self):
         """
@@ -723,7 +861,6 @@ class NetherBridgeProxy:
                 try:
                     HEARTBEAT_FILE.write_text(str(int(current_time)))
                     self.last_heartbeat_time = current_time
-                    self.logger.debug("Proxy heartbeat updated.")
                 except Exception:
                     self.logger.warning(
                         "Could not update heartbeat file.",
@@ -743,8 +880,9 @@ class NetherBridgeProxy:
                         self._forward_packet(sock)
 
                 except (ConnectionResetError, socket.error, OSError) as e:
-                    self.logger.warning(
-                        "Session disconnected. Cleaning up.",
+                    # --- DEBUG LOGGING ---
+                    self.logger.info(
+                        "[DEBUG] Session cleanup block triggered.",
                         session_key=session_key_for_error,
                         error=str(e),
                     )
@@ -766,17 +904,38 @@ class NetherBridgeProxy:
 
                 except Exception:
                     self.logger.error(
-                        "Unhandled exception in proxy loop for socket. Closing socket.",
+                        "Unhandled exception in proxy loop. Cleaning up session.",
                         socket_fileno=sock.fileno(),
                         exc_info=True,
                     )
-                    if sock in self.inputs:
-                        self.inputs.remove(sock)
-                    try:
-                        sock.close()
-                    except OSError:
-                        pass
-                    self.socket_to_session_map.pop(sock, None)
+                    session_info_tuple = self.socket_to_session_map.get(sock)
+                    session_key_for_error = (
+                        session_info_tuple[0] if session_info_tuple else None
+                    )
+
+                    session_info = self.active_sessions.pop(session_key_for_error, None)
+                    if session_info:
+                        server_config = self.servers_config_map.get(
+                            session_info["listen_port"]
+                        )
+                        if server_config:
+                            ACTIVE_SESSIONS.labels(server_name=server_config.name).dec()
+
+                        self._close_session_sockets(session_info)
+                        self.socket_to_session_map.pop(
+                            session_info.get("client_socket"), None
+                        )
+                        self.socket_to_session_map.pop(
+                            session_info.get("server_socket"), None
+                        )
+                    else:
+                        if sock in self.inputs:
+                            self.inputs.remove(sock)
+                        try:
+                            sock.close()
+                        except OSError:
+                            pass
+                        self.socket_to_session_map.pop(sock, None)
 
         self.logger.info("Shutdown requested. Closing all listening sockets.")
         for sock in self.listen_sockets.values():
@@ -798,7 +957,7 @@ class NetherBridgeProxy:
         try:
             sock.bind(("0.0.0.0", listen_port))
             if sock_type == socket.SOCK_STREAM:
-                sock.listen(5)
+                sock.listen(self.settings.tcp_listen_backlog)
             sock.setblocking(False)
             self.listen_sockets[listen_port] = sock
             self.inputs.append(sock)
@@ -828,18 +987,21 @@ class NetherBridgeProxy:
         """
         self.logger.info("--- Starting Nether-bridge On-Demand Proxy ---")
 
-        try:
-            metrics_port = 8000
-            start_http_server(metrics_port)
-            self.logger.info(
-                "Prometheus metrics server started.",
-                port=metrics_port,
-            )
-        except Exception as e:
-            self.logger.error(
-                "Could not start Prometheus metrics server.",
-                error=str(e),
-            )
+        if self.settings.prometheus_enabled:
+            try:
+                metrics_port = self.settings.prometheus_port
+                start_http_server(metrics_port)
+                self.logger.info(
+                    "Prometheus metrics server started.",
+                    port=metrics_port,
+                )
+            except Exception as e:
+                self.logger.error(
+                    "Could not start Prometheus metrics server.",
+                    error=str(e),
+                )
+        else:
+            self.logger.info("Prometheus metrics server is disabled by configuration.")
 
         app_metadata = os.environ.get("APP_IMAGE_METADATA")
         if app_metadata:
@@ -1001,12 +1163,16 @@ def _load_servers_from_env() -> list[dict]:
         if not listen_port_str:
             break
         try:
+            idle_timeout_str = os.environ.get(f"NB_{i}_IDLE_TIMEOUT")
             server_def = {
                 "name": os.environ.get(f"NB_{i}_NAME", f"Server {i}"),
                 "server_type": os.environ.get(f"NB_{i}_SERVER_TYPE", "bedrock").lower(),
                 "listen_port": int(listen_port_str),
                 "container_name": os.environ.get(f"NB_{i}_CONTAINER_NAME"),
                 "internal_port": int(os.environ.get(f"NB_{i}_INTERNAL_PORT")),
+                "idle_timeout_seconds": int(idle_timeout_str)
+                if idle_timeout_str
+                else None,
             }
             if not all(
                 v is not None
@@ -1053,6 +1219,10 @@ def load_application_config() -> tuple[ProxySettings, list[ServerConfig]]:
             "log_formatter": "NB_LOG_FORMATTER",
             "healthcheck_stale_threshold_seconds": "NB_HEALTHCHECK_STALE_THRESHOLD",
             "proxy_heartbeat_interval_seconds": "NB_HEARTBEAT_INTERVAL",
+            "tcp_listen_backlog": "NB_TCP_LISTEN_BACKLOG",
+            "max_concurrent_sessions": "NB_MAX_SESSIONS",
+            "prometheus_enabled": "NB_PROMETHEUS_ENABLED",
+            "prometheus_port": "NB_PROMETHEUS_PORT",
         }
         env_var_name = env_map.get(key, key.upper())
         env_val = os.environ.get(env_var_name)
