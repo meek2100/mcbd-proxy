@@ -494,12 +494,13 @@ class NetherBridgeProxy:
             # removed servers. Those sessions will remain active until they disconnect
             # or are cleaned up by the idle activity monitor. This ensures a
             # graceful shutdown for in-progress games.
-            server_name = self.servers_config_map.get(
-                port, ServerConfig("Unknown", "", port, "", port)
-            ).name
+            old_server_config = self.servers_config_map.get(port)
+            if not old_server_config:
+                continue
+
             self.logger.info(
                 "Removing listener for old server.",
-                server_name=server_name,
+                server_name=old_server_config.name,
                 port=port,
             )
             sock = self.listen_sockets.pop(port, None)
@@ -507,6 +508,21 @@ class NetherBridgeProxy:
                 if sock in self.inputs:
                     self.inputs.remove(sock)
                 sock.close()
+
+            # --- Start of new logic ---
+            # Check for orphaned sessions and warn the operator
+            container_name = old_server_config.container_name
+            if any(
+                s["target_container"] == container_name
+                for s in self.active_sessions.values()
+            ):
+                self.logger.warning(
+                    "Server removed from config but has active sessions. "
+                    "It will shut down after sessions end.",
+                    container_name=container_name,
+                )
+            # --- End of new logic ---
+
             self.servers_config_map.pop(port, None)
 
         for port in new_ports - old_ports:
