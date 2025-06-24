@@ -573,7 +573,9 @@ def test_configuration_reload_on_sighup(docker_compose_up, docker_client_fixture
     """
     # Use `sh -c` to handle writing the multi-line string to the file
     cmd_write_config = f"sh -c 'echo \"{new_config_json}\" > /app/servers.json'"
-    exit_code, output = container.exec_run(cmd_write_config, demux=True)
+    # We must execute the command as the 'naeus' user, so the resulting
+    # file has the correct ownership and is readable by the proxy process.
+    exit_code, output = container.exec_run(cmd_write_config, user="naeus", demux=True)
     assert exit_code == 0, (
         "Failed to write new config: "
         f"{output[1].decode() if output[1] else output[0].decode()}"
