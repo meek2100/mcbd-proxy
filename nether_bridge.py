@@ -617,8 +617,24 @@ class NetherBridgeProxy:
 
         ACTIVE_SESSIONS.labels(server_name=server_config.name).inc()
 
-        if not self._is_container_running(container_name):
+        # Synchronize internal state with actual Docker container status
+        actual_docker_running_status = self._is_container_running(container_name)
+        self.server_states[container_name]["running"] = actual_docker_running_status
+
+        if not self.server_states[container_name]["running"]:
+            self.logger.info(
+                "First TCP connection for stopped server. Starting...",
+                container_name=container_name,
+                client_addr=client_addr,
+            )
             self._start_minecraft_server(container_name)
+        else:
+            # This log will now only appear if the server IS already considered running
+            self.logger.info(
+                "Establishing new TCP session for running server.",
+                client_addr=client_addr,
+                server_name=server_config.name,
+            )
 
         server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
@@ -673,13 +689,24 @@ class NetherBridgeProxy:
         server_config = self.servers_config_map[server_port]
         container_name = server_config.container_name
 
-        if not self._is_container_running(container_name):
+        # Synchronize internal state with actual Docker container status
+        actual_docker_running_status = self._is_container_running(container_name)
+        self.server_states[container_name]["running"] = actual_docker_running_status
+
+        if not self.server_states[container_name]["running"]:
             self.logger.info(
                 "First packet received for stopped server. Starting...",
                 container_name=container_name,
                 client_addr=client_addr,
             )
             self._start_minecraft_server(container_name)
+        else:
+            # This log will now only appear if the server IS already considered running
+            self.logger.info(
+                "Establishing new UDP session for running server.",
+                client_addr=client_addr,
+                server_name=server_config.name,
+            )
 
         session_key = (client_addr, server_port, "udp")
         if session_key not in self.active_sessions:
