@@ -529,17 +529,35 @@ class NetherBridgeProxy:
                     self.inputs.remove(sock)
                 sock.close()
 
-            # Check for orphaned sessions and warn the operator
+            # --- Start of new logic ---
+            # Terminate any active sessions for the removed server
             container_name = old_server_config.container_name
-            if any(
-                s["target_container"] == container_name
-                for s in self.active_sessions.values()
-            ):
+            sessions_to_terminate = [
+                (key, info)
+                for key, info in self.active_sessions.items()
+                if info.get("target_container") == container_name
+            ]
+
+            if sessions_to_terminate:
                 self.logger.warning(
-                    "Server removed from config but has active sessions. "
-                    "It will shut down after sessions end.",
+                    "Terminating active sessions for server removed from "
+                    "configuration.",
+                    count=len(sessions_to_terminate),
                     container_name=container_name,
                 )
+                for session_key, session_info in sessions_to_terminate:
+                    ACTIVE_SESSIONS.labels(server_name=old_server_config.name).dec()
+                    self._close_session_sockets(session_info)
+                    self.active_sessions.pop(session_key, None)
+                    self.socket_to_session_map.pop(
+                        session_info.get("client_socket"), None
+                    )
+                    self.socket_to_session_map.pop(
+                        session_info.get("server_socket"), None
+                    )
+            # --- End of new logic ---
+
+            self.servers_config_map.pop(port, None)
 
             self.servers_config_map.pop(port, None)
 
