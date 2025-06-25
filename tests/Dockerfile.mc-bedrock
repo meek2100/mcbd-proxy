@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y curl unzip && \
     curl -L -o bedrock.zip \
     -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/102.0.0.0 Safari/537.36" \
     "${BEDROCK_DOWNLOAD_URL}" && \
-    unzip bedrock.zip && \
+    unzip -q bedrock.zip && \
     rm bedrock.zip && \
     echo "${BEDROCK_VERSION}" > version.txt && \
     rm -rf /var/lib/apt/lists/*
