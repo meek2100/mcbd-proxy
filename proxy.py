@@ -3,36 +3,23 @@ import signal
 import socket
 import time
 from pathlib import Path
+from typing import List
 
 import structlog
-from prometheus_client import Counter, Gauge, Histogram
 
 from config import ProxySettings, ServerConfig, load_application_config
 from docker_manager import DockerManager
 
+# Import the centralized metrics instead of defining them here.
+from metrics import (
+    ACTIVE_SESSIONS,
+    BYTES_TRANSFERRED,
+    RUNNING_SERVERS,
+    SERVER_STARTUP_DURATION,
+)
+
 # --- Constants ---
 HEARTBEAT_FILE = Path("proxy_heartbeat.tmp")
-
-# --- Prometheus Metrics Definitions ---
-ACTIVE_SESSIONS = Gauge(
-    "netherbridge_active_sessions",
-    "Number of active player sessions",
-    ["server_name"],
-)
-RUNNING_SERVERS = Gauge(
-    "netherbridge_running_servers",
-    "Number of Minecraft server containers currently running",
-)
-SERVER_STARTUP_DURATION = Histogram(
-    "netherbridge_server_startup_duration_seconds",
-    "Time taken for a server to start and become ready",
-    ["server_name"],
-)
-BYTES_TRANSFERRED = Counter(
-    "netherbridge_bytes_transferred_total",
-    "Total bytes transferred through the proxy",
-    ["server_name", "direction"],
-)
 
 
 class NetherBridgeProxy:
@@ -41,13 +28,12 @@ class NetherBridgeProxy:
     Orchestrates listening sockets and sessions, and delegates Docker operations.
     """
 
-    def __init__(self, settings: ProxySettings, servers_list: list[ServerConfig]):
+    def __init__(self, settings: ProxySettings, servers_list: List[ServerConfig]):
         self.logger = structlog.get_logger(__name__)
         self.settings = settings
         self.servers_list = servers_list
         self.servers_config_map = {s.listen_port: s for s in self.servers_list}
 
-        # The proxy now has a dedicated manager for Docker tasks.
         self.docker_manager = DockerManager()
 
         self.server_states = {
@@ -66,7 +52,6 @@ class NetherBridgeProxy:
         """Handles signals for graceful shutdown and configuration reloads."""
         if hasattr(signal, "SIGHUP") and sig == signal.SIGHUP:
             self._reload_requested = True
-            # Log the message the test is waiting for immediately upon signal receipt.
             self.logger.warning("SIGHUP received. Reloading configuration...")
         else:  # SIGINT, SIGTERM
             self.logger.warning(
@@ -82,14 +67,12 @@ class NetherBridgeProxy:
                 "Server start requested, but already running.",
                 container_name=container_name,
             )
-            if not self.server_states[container_name]["running"]:
+            if not self.server_states[container_name].get("running", False):
                 self.server_states[container_name]["running"] = True
                 RUNNING_SERVERS.inc()
             return
 
         startup_timer_start = time.time()
-
-        # Delegate the actual start command to the DockerManager
         success = self.docker_manager.start_server(server_config, self.settings)
 
         if success:
@@ -114,7 +97,6 @@ class NetherBridgeProxy:
         """High-level wrapper to stop a server and update proxy state."""
         was_running = self.server_states.get(container_name, {}).get("running", False)
 
-        # Delegate the actual stop command to the DockerManager
         if self.docker_manager.stop_server(container_name):
             if was_running:
                 RUNNING_SERVERS.dec()
@@ -123,10 +105,7 @@ class NetherBridgeProxy:
     def _ensure_all_servers_stopped_on_startup(self):
         """Ensures all managed servers are stopped when the proxy starts."""
         self.logger.info(
-            (
-                "Proxy startup: Ensuring all managed Minecraft servers are "
-                "initially stopped."
-            )
+            "Proxy startup: Ensuring all managed servers are initially stopped."
         )
         for srv_conf in self.servers_list:
             container_name = srv_conf.container_name
@@ -160,7 +139,7 @@ class NetherBridgeProxy:
             )
             current_time = time.time()
 
-            # --- Session Cleanup Logic ---
+            # Session Cleanup Logic
             for session_key, session_info in list(self.active_sessions.items()):
                 server_config = self.servers_config_map.get(session_info["listen_port"])
                 if not server_config:
@@ -186,7 +165,7 @@ class NetherBridgeProxy:
                         session_info.get("server_socket"), None
                     )
 
-            # --- Server Shutdown Logic ---
+            # Server Shutdown Logic
             for server_conf in self.servers_list:
                 container_name = server_conf.container_name
                 state = self.server_states.get(container_name)
@@ -203,11 +182,6 @@ class NetherBridgeProxy:
                         container_name=container_name,
                     )
                     continue
-
-                self.logger.debug(
-                    "[DEBUG] Server has no active sessions.",
-                    container_name=container_name,
-                )
 
                 idle_timeout = (
                     server_conf.idle_timeout_seconds
@@ -651,6 +625,4 @@ class NetherBridgeProxy:
                 port=listen_port,
                 error=str(e),
             )
-            # In a reload, we don't want to exit, but we do on initial start.
-            # This check is now handled in the main startup logic.
             raise
