@@ -1,10 +1,11 @@
 import argparse
-import os
 import socket
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
+
+from helpers import get_java_handshake_and_status_request_packets, get_proxy_host
 
 
 # --- Enums for Configuration ---
@@ -32,28 +33,6 @@ BEDROCK_UNCONNECTED_PING = (
 # --- Helper functions ---
 
 
-def get_proxy_host():
-    """
-    Determines the correct IP address or hostname for tests by checking
-    the environment in a specific order of precedence.
-
-    """
-    # 1. Inside Docker ('CI_MODE'): Uses Docker's internal DNS.
-    if os.environ.get("CI_MODE"):
-        return "nether-bridge"
-
-    # 2. Explicit 'PROXY_IP': An override for specific CI scenarios.
-    if "PROXY_IP" in os.environ:
-        return os.environ["PROXY_IP"]
-
-    # 3. Remote Docker 'DOCKER_HOST_IP': For targeting a remote Docker daemon.
-    if "DOCKER_HOST_IP" in os.environ:
-        return os.environ["DOCKER_HOST_IP"]
-
-    # 4. Fallback: Local Development (e.g., Docker Desktop).
-    return "127.0.0.1"
-
-
 def encode_varint(value):
     """Encodes an integer into the VarInt format used by Minecraft."""
     buf = b""
@@ -66,32 +45,6 @@ def encode_varint(value):
         if value == 0:
             break
     return buf
-
-
-def get_java_handshake_and_status_request_packets(host, port):
-    """Constructs the two packets needed to request a status from a Java server."""
-    # Handshake Packet
-    server_address_bytes = host.encode("utf-8")
-    handshake_payload = (
-        encode_varint(754)
-        + encode_varint(len(server_address_bytes))
-        + server_address_bytes
-        + port.to_bytes(2, byteorder="big")
-        + encode_varint(1)
-    )
-    handshake_packet = (
-        encode_varint(len(handshake_payload) + 1) + b"\x00" + handshake_payload
-    )
-
-    # Status Request Packet
-    status_request_payload = b""
-    status_request_packet = (
-        encode_varint(len(status_request_payload) + 1)
-        + b"\x00"
-        + status_request_payload
-    )
-
-    return handshake_packet, status_request_packet
 
 
 # --- Main Worker Function ---

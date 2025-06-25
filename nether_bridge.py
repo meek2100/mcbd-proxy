@@ -119,7 +119,7 @@ class NetherBridgeProxy:
         """Handles signals for graceful shutdown and configuration reloads."""
         if hasattr(signal, "SIGHUP") and sig == signal.SIGHUP:
             self._reload_requested = True
-            self.logger.warning("SIGHUP signal received, flagging for reload.")
+            self.logger.warning("SIGHUP received. Reloading configuration...")
         else:  # SIGINT, SIGTERM
             self.logger.warning(
                 "Shutdown signal received, initiating shutdown.", sig=sig
@@ -471,18 +471,22 @@ class NetherBridgeProxy:
     def _close_session_sockets(self, session_info):
         """
         Helper to safely close sockets associated with a session and remove from inputs.
+        For UDP, it only closes the server-facing socket, not the shared listener.
         """
-        client_socket = session_info.get("client_socket")
         server_socket = session_info.get("server_socket")
 
-        if client_socket:
-            if client_socket in self.inputs:
-                self.inputs.remove(client_socket)
-            try:
-                client_socket.close()
-            except socket.error:
-                pass
+        # For TCP, we also close the client-facing socket.
+        if session_info.get("protocol") == "tcp":
+            client_socket = session_info.get("client_socket")
+            if client_socket:
+                if client_socket in self.inputs:
+                    self.inputs.remove(client_socket)
+                try:
+                    client_socket.close()
+                except socket.error:
+                    pass
 
+        # For both protocols, we close the unique server-facing socket.
         if server_socket:
             if server_socket in self.inputs:
                 self.inputs.remove(server_socket)
@@ -493,95 +497,65 @@ class NetherBridgeProxy:
 
     def _reload_configuration(self):
         """
-        Reloads proxy settings and server definitions from source.
+        Reloads proxy settings and server definitions from source. This method
+        is designed to be robust by closing all listeners and re-creating them.
         """
-        self.logger.warning("SIGHUP received. Reloading configuration...")
+        # self.logger.warning("SIGHUP received. Reloading configuration...")
 
         try:
             new_settings, new_servers = load_application_config()
             configure_logging(new_settings.log_level, new_settings.log_formatter)
             self.settings = new_settings
-            self.logger.info(
-                "Proxy settings have been reloaded.",
-                new_log_level=self.settings.log_level,
-                new_log_formatter=self.settings.log_formatter,
-            )
+            self.logger.info("Proxy settings have been reloaded.")
         except Exception as e:
             self.logger.error(
-                "Failed to reload settings, aborting reload.",
-                error=str(e),
-                exc_info=True,
+                "Failed to reload settings, aborting reload.", error=str(e)
             )
             self._reload_requested = False
             return
 
-        old_ports = set(self.servers_config_map.keys())
-        new_servers_map = {s.listen_port: s for s in new_servers}
-        new_ports = set(new_servers_map.keys())
+        # --- FIX: A more robust and simpler reload logic ---
 
-        for port in old_ports - new_ports:
-            # Note: This reload does not terminate existing player sessions for
-            # removed servers. Those sessions will remain active until they disconnect
-            # or are cleaned up by the idle activity monitor. This ensures a
-            # graceful shutdown for in-progress games.
-            old_server_config = self.servers_config_map.get(port)
-            if not old_server_config:
-                continue
-
-            self.logger.info(
-                "Removing listener for old server.",
-                server_name=old_server_config.name,
-                port=port,
-            )
-            sock = self.listen_sockets.pop(port, None)
-            if sock:
-                if sock in self.inputs:
-                    self.inputs.remove(sock)
+        # 1. Close ALL existing listening sockets.
+        self.logger.info("Closing all current listeners for reconfiguration.")
+        for port, sock in self.listen_sockets.items():
+            if sock in self.inputs:
+                self.inputs.remove(sock)
+            try:
                 sock.close()
-
-            container_name = old_server_config.container_name
-            sessions_to_terminate = [
-                (key, info)
-                for key, info in self.active_sessions.items()
-                if info.get("target_container") == container_name
-            ]
-
-            if sessions_to_terminate:
+            except socket.error as e:
                 self.logger.warning(
-                    "Terminating active sessions for server removed from "
-                    "configuration.",
-                    count=len(sessions_to_terminate),
-                    container_name=container_name,
+                    "Error closing old socket.", port=port, error=str(e)
                 )
-                for session_key, session_info in sessions_to_terminate:
-                    ACTIVE_SESSIONS.labels(server_name=old_server_config.name).dec()
-                    self._close_session_sockets(session_info)
-                    self.active_sessions.pop(session_key, None)
-                    self.socket_to_session_map.pop(
-                        session_info.get("client_socket"), None
-                    )
-                    self.socket_to_session_map.pop(
-                        session_info.get("server_socket"), None
-                    )
 
-            self.servers_config_map.pop(port, None)
+        # Clear the dictionaries of old listeners and configs.
+        self.listen_sockets.clear()
+        self.servers_config_map.clear()
 
-        for port in new_ports - old_ports:
-            srv_cfg = new_servers_map[port]
-            self.logger.info(
-                "Adding new listener for server.",
-                server_name=srv_cfg.name,
-                port=port,
+        # 2. Terminate all active sessions, as the servers they connect to may no
+        #    longer exist.
+        if self.active_sessions:
+            self.logger.warning(
+                "Terminating all active sessions due to configuration reload.",
+                count=len(self.active_sessions),
             )
+            for session_key, session_info in list(self.active_sessions.items()):
+                self._close_session_sockets(session_info)
+                self.active_sessions.pop(session_key, None)
+                self.socket_to_session_map.pop(session_info.get("client_socket"), None)
+                self.socket_to_session_map.pop(session_info.get("server_socket"), None)
+
+        # 3. Re-create listeners and state based on the new configuration.
+        self.logger.info("Applying new server configuration.")
+        self.servers_list = new_servers
+        for srv_cfg in self.servers_list:
+            self.servers_config_map[srv_cfg.listen_port] = srv_cfg
             self._create_listening_socket(srv_cfg)
             if srv_cfg.container_name not in self.server_states:
                 self.server_states[srv_cfg.container_name] = {
                     "running": False,
                     "last_activity": 0.0,
                 }
-
-        self.servers_config_map = new_servers_map
-        self.servers_list = new_servers
 
         self.logger.info("Configuration reload complete.")
         self._reload_requested = False
@@ -696,8 +670,6 @@ class NetherBridgeProxy:
         server_config = self.servers_config_map[server_port]
         container_name = server_config.container_name
 
-        # === CRITICAL CHANGE STARTS HERE ===
-        # Always update the internal server state based on current Docker status
         is_actually_running = self._is_container_running(container_name)
         self.server_states[container_name]["running"] = is_actually_running
 
@@ -707,27 +679,23 @@ class NetherBridgeProxy:
                 container_name=container_name,
                 client_addr=client_addr,
             )
-            # This call will set self.server_states[container_name]["running"] to True
-            # upon success
             self._start_minecraft_server(container_name)
-            # If startup fails, server_states[container_name]["running"] will remain
-            # False, and the session won't be established later.
         else:
             self.logger.info(
                 "Establishing new UDP session for running server.",
                 client_addr=client_addr,
                 server_name=server_config.name,
             )
-        # === CRITICAL CHANGE ENDS HERE ===
 
         session_key = (client_addr, server_port, "udp")
         if session_key not in self.active_sessions:
+            # Create a new dedicated socket to communicate with the backend server.
             server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             server_sock.setblocking(False)
             self.inputs.append(server_sock)
 
             session_info = {
-                "client_socket": sock,
+                # DO NOT store the main listening socket (`sock`) here.
                 "server_socket": server_sock,
                 "target_container": container_name,
                 "last_packet_time": time.time(),
@@ -740,9 +708,7 @@ class NetherBridgeProxy:
 
         session_info = self.active_sessions[session_key]
         session_info["last_packet_time"] = time.time()
-        self.server_states[container_name]["last_activity"] = (
-            time.time()
-        )  # This updates activity, not running status
+        self.server_states[container_name]["last_activity"] = time.time()
 
         destination_address = (container_name, server_config.internal_port)
         session_info["server_socket"].sendto(data, destination_address)
@@ -786,17 +752,15 @@ class NetherBridgeProxy:
                 if not data:
                     raise ConnectionResetError("Connection closed by peer")
             except ConnectionResetError as e:
-                # --- DEBUG LOGGING ---
                 self.logger.info(
                     "[DEBUG] ConnectionResetError caught in _forward_packet.",
                     session_key=session_key,
                 )
                 raise e
-        else:
+        else:  # UDP
             data, _ = sock.recvfrom(4096)
 
         session_info["last_packet_time"] = time.time()
-
         server_config = self.servers_config_map[session_info["listen_port"]]
 
         if socket_role == "client_socket":
@@ -807,14 +771,29 @@ class NetherBridgeProxy:
                 server_config.internal_port,
             )
             direction = "c2s"
-        else:
-            destination_socket = session_info["client_socket"]
+        else:  # s2c
             destination_address = session_key[0]
             direction = "s2c"
+            # For TCP, get the specific client socket.
+            # For UDP, get the shared listening socket.
+            if protocol == "tcp":
+                destination_socket = session_info["client_socket"]
+            else:  # UDP
+                destination_socket = self.listen_sockets.get(
+                    session_info["listen_port"]
+                )
+
+        if not destination_socket:
+            self.logger.warning(
+                "Could not find destination socket for packet.",
+                direction=direction,
+                session_key=session_key,
+            )
+            return
 
         if protocol == "tcp":
             destination_socket.sendall(data)
-        else:
+        else:  # UDP
             destination_socket.sendto(data, destination_address)
 
         BYTES_TRANSFERRED.labels(

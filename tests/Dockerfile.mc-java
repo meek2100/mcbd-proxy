@@ -9,10 +9,13 @@ ARG JAVA_VERSION=1.20.1
 ENV EULA="TRUE"
 ENV TYPE=${JAVA_TYPE}
 ENV VERSION=${JAVA_VERSION}
+# Use SETUP_ONLY to tell the script to install and then exit
+ENV SETUP_ONLY=true
 
 # Run the installer script
-RUN /start --install-only
+RUN /start
 
-# Unset the installer variables
+# Unset the installer variables to not affect the final container
 ENV TYPE=""
 ENV VERSION=""
+ENV SETUP_ONLY=""
