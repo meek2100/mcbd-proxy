@@ -4,6 +4,34 @@
 # Exit immediately if a command exits with a non-zero status.
 set -e
 
+# --- ADD THIS BLOCK TO HANDLE TEST CONFIG GENERATION ---
+if [ "$1" = "--generate-test-config" ]; then
+    echo "Found --generate-test-config flag. Generating test servers.json..."
+    # Create the servers.json file
+    echo '{
+      "servers": [
+        {
+          "name": "Bedrock Survival",
+          "server_type": "bedrock",
+          "listen_port": 19132,
+          "container_name": "mc-bedrock",
+          "internal_port": 19132
+        },
+        {
+          "name": "Java Creative",
+          "server_type": "java",
+          "listen_port": 25565,
+          "container_name": "mc-java",
+          "internal_port": 25565
+        }
+      ]
+    }' > /app/servers.json
+    
+    # Remove the flag from the argument list so it's not passed to the Python app
+    shift
+fi
+# --- END OF NEW BLOCK ---
+
 # Check if the Docker socket is mounted.
 if [ -S /var/run/docker.sock ]; then
     DOCKER_SOCKET_GID=$(stat -c '%g' /var/run/docker.sock)
