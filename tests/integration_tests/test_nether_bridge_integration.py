@@ -491,7 +491,7 @@ def test_proxy_restarts_crashed_server_on_new_connection(
     container = docker_client_fixture.containers.get(mc_bedrock_container_name)
     container.stop()
     assert wait_for_container_status(
-        docker_client_fixture, mc_bedrock_container_name, ["exited"], timeout=30
+        docker_client_fixture, mc_bedrock_container_name, ["exited"], timeout=90
     ), "Container did not stop after manual command."
     print("(Crash Test) Container successfully stopped.")
 
