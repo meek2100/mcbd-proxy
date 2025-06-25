@@ -65,14 +65,9 @@ def proxy_instance(default_proxy_settings, mock_servers_config):
     Provides a NetherBridgeProxy instance with a mocked DockerManager.
     This is the primary fixture for testing the proxy's internal logic.
     """
-    # Patch the DockerManager at the point of import within the proxy module.
-    # This ensures that when NetherBridgeProxy initializes its self.docker_manager,
-    # it gets our mock instead of a real one.
     with patch("proxy.DockerManager") as MockDockerManager:
         mock_docker_manager_instance = MockDockerManager.return_value
         proxy = NetherBridgeProxy(default_proxy_settings, mock_servers_config)
-        # We explicitly set the mock on the instance to make it available for
-        # assertions within the tests.
         proxy.docker_manager = mock_docker_manager_instance
         yield proxy
 
@@ -116,28 +111,23 @@ def test_signal_handler_sigint(proxy_instance):
 @pytest.mark.unit
 def test_start_minecraft_server_wrapper_success(proxy_instance, mock_servers_config):
     """
-    Tests the proxy's start method.
-    It should delegate to the DockerManager and update its internal state on success.
+    Tests the proxy's start method. It should delegate to the DockerManager
+    and update its internal state on success.
     """
     server_config = mock_servers_config[0]
     container_name = server_config.container_name
 
-    # Setup the mock DockerManager to report the container as stopped,
-    # then successfully started.
     proxy_instance.docker_manager.is_container_running.return_value = False
     proxy_instance.docker_manager.start_server.return_value = True
 
     proxy_instance._start_minecraft_server(server_config)
 
-    # Verify that the proxy correctly used the manager
     proxy_instance.docker_manager.is_container_running.assert_called_once_with(
         container_name
     )
     proxy_instance.docker_manager.start_server.assert_called_once_with(
         server_config, proxy_instance.settings
     )
-
-    # Verify the proxy's internal state was updated
     assert proxy_instance.server_states[container_name]["running"] is True
 
 
@@ -145,19 +135,13 @@ def test_start_minecraft_server_wrapper_success(proxy_instance, mock_servers_con
 def test_start_minecraft_server_wrapper_already_running(
     proxy_instance, mock_servers_config
 ):
-    """
-    Tests that if the server is already running, the start logic is skipped.
-    """
+    """Tests that if the server is already running, the start logic is skipped."""
     server_config = mock_servers_config[0]
-
-    # Setup the mock DockerManager to report the container as already running.
     proxy_instance.docker_manager.is_container_running.return_value = True
 
     proxy_instance._start_minecraft_server(server_config)
 
-    # Verify the start command was NOT called.
     proxy_instance.docker_manager.start_server.assert_not_called()
-    # State should be updated to reflect it's running.
     assert proxy_instance.server_states[server_config.container_name]["running"] is True
 
 
@@ -178,7 +162,7 @@ def test_stop_minecraft_server_wrapper(proxy_instance):
 
 
 @pytest.mark.unit
-@patch("proxy.time.sleep", side_effect=InterruptedError)  # To break the loop
+@patch("proxy.time.sleep")
 def test_monitor_servers_activity_stops_idle_server(
     mock_sleep, proxy_instance, mock_servers_config
 ):
@@ -186,6 +170,11 @@ def test_monitor_servers_activity_stops_idle_server(
     Tests that the monitor thread correctly identifies an idle server
     and calls the stop method.
     """
+    # --- THIS IS THE FIX ---
+    # The side_effect is now an iterable. The first call to sleep will return None
+    # and allow the loop to run once. The second call will raise the error.
+    mock_sleep.side_effect = [None, InterruptedError("Stop loop")]
+
     idle_server_config = mock_servers_config[0]
     container_name = idle_server_config.container_name
 
