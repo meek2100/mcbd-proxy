@@ -32,8 +32,7 @@ CMD ["/bin/bash"]
 FROM python:3.10-slim-buster AS final
 WORKDIR /app
 
-# Install 'gosu' for dropping privileges. 'procps' is included to provide
-# the 'kill' command, which is useful for manual debugging with signals.
+# Install 'gosu' for dropping privileges and 'procps' for providing `kill` command.
 RUN apt-get update && apt-get install -y --no-install-recommends gosu procps && rm -rf /var/lib/apt/lists/*
 # Create the non-root user for running the application.
 RUN adduser --system --no-create-home naeus
@@ -49,6 +48,7 @@ COPY --from=builder --chown=naeus:nogroup /app/main.py .
 COPY --from=builder --chown=naeus:nogroup /app/proxy.py .
 COPY --from=builder --chown=naeus:nogroup /app/config.py .
 COPY --from=builder --chown=naeus:nogroup /app/docker_manager.py .
+COPY --from=builder --chown=naeus:nogroup /app/metrics.py .
 
 # 4. The example configuration files from the 'builder' stage.
 COPY --from=builder --chown=naeus:nogroup /app/examples/ ./examples/
