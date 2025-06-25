@@ -471,18 +471,22 @@ class NetherBridgeProxy:
     def _close_session_sockets(self, session_info):
         """
         Helper to safely close sockets associated with a session and remove from inputs.
+        For UDP, it only closes the server-facing socket, not the shared listener.
         """
-        client_socket = session_info.get("client_socket")
         server_socket = session_info.get("server_socket")
 
-        if client_socket:
-            if client_socket in self.inputs:
-                self.inputs.remove(client_socket)
-            try:
-                client_socket.close()
-            except socket.error:
-                pass
+        # For TCP, we also close the client-facing socket.
+        if session_info.get("protocol") == "tcp":
+            client_socket = session_info.get("client_socket")
+            if client_socket:
+                if client_socket in self.inputs:
+                    self.inputs.remove(client_socket)
+                try:
+                    client_socket.close()
+                except socket.error:
+                    pass
 
+        # For both protocols, we close the unique server-facing socket.
         if server_socket:
             if server_socket in self.inputs:
                 self.inputs.remove(server_socket)
@@ -666,8 +670,6 @@ class NetherBridgeProxy:
         server_config = self.servers_config_map[server_port]
         container_name = server_config.container_name
 
-        # === CRITICAL CHANGE STARTS HERE ===
-        # Always update the internal server state based on current Docker status
         is_actually_running = self._is_container_running(container_name)
         self.server_states[container_name]["running"] = is_actually_running
 
@@ -677,27 +679,23 @@ class NetherBridgeProxy:
                 container_name=container_name,
                 client_addr=client_addr,
             )
-            # This call will set self.server_states[container_name]["running"] to True
-            # upon success
             self._start_minecraft_server(container_name)
-            # If startup fails, server_states[container_name]["running"] will remain
-            # False, and the session won't be established later.
         else:
             self.logger.info(
                 "Establishing new UDP session for running server.",
                 client_addr=client_addr,
                 server_name=server_config.name,
             )
-        # === CRITICAL CHANGE ENDS HERE ===
 
         session_key = (client_addr, server_port, "udp")
         if session_key not in self.active_sessions:
+            # Create a new dedicated socket to communicate with the backend server.
             server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             server_sock.setblocking(False)
             self.inputs.append(server_sock)
 
             session_info = {
-                "client_socket": sock,
+                # DO NOT store the main listening socket (`sock`) here.
                 "server_socket": server_sock,
                 "target_container": container_name,
                 "last_packet_time": time.time(),
@@ -710,9 +708,7 @@ class NetherBridgeProxy:
 
         session_info = self.active_sessions[session_key]
         session_info["last_packet_time"] = time.time()
-        self.server_states[container_name]["last_activity"] = (
-            time.time()
-        )  # This updates activity, not running status
+        self.server_states[container_name]["last_activity"] = time.time()
 
         destination_address = (container_name, server_config.internal_port)
         session_info["server_socket"].sendto(data, destination_address)
@@ -756,17 +752,15 @@ class NetherBridgeProxy:
                 if not data:
                     raise ConnectionResetError("Connection closed by peer")
             except ConnectionResetError as e:
-                # --- DEBUG LOGGING ---
                 self.logger.info(
                     "[DEBUG] ConnectionResetError caught in _forward_packet.",
                     session_key=session_key,
                 )
                 raise e
-        else:
+        else:  # UDP
             data, _ = sock.recvfrom(4096)
 
         session_info["last_packet_time"] = time.time()
-
         server_config = self.servers_config_map[session_info["listen_port"]]
 
         if socket_role == "client_socket":
@@ -777,14 +771,29 @@ class NetherBridgeProxy:
                 server_config.internal_port,
             )
             direction = "c2s"
-        else:
-            destination_socket = session_info["client_socket"]
+        else:  # s2c
             destination_address = session_key[0]
             direction = "s2c"
+            # For TCP, get the specific client socket.
+            # For UDP, get the shared listening socket.
+            if protocol == "tcp":
+                destination_socket = session_info["client_socket"]
+            else:  # UDP
+                destination_socket = self.listen_sockets.get(
+                    session_info["listen_port"]
+                )
+
+        if not destination_socket:
+            self.logger.warning(
+                "Could not find destination socket for packet.",
+                direction=direction,
+                session_key=session_key,
+            )
+            return
 
         if protocol == "tcp":
             destination_socket.sendall(data)
-        else:
+        else:  # UDP
             destination_socket.sendto(data, destination_address)
 
         BYTES_TRANSFERRED.labels(
