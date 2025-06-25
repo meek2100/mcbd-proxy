@@ -7,53 +7,14 @@ import docker
 import pytest
 from mcstatus import BedrockServer, JavaServer
 
+from tests.helpers import get_java_handshake_and_status_request_packets, get_proxy_host
+
 # Add this to the top of the file to ensure imports work inside the container
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Constants for test server addresses and ports
 BEDROCK_PROXY_PORT = 19132
 JAVA_PROXY_PORT = 25565
-
-
-def get_proxy_host():
-    """
-    Determines the correct IP address or hostname for integration tests
-    by checking the environment in a specific order of precedence.
-
-    This provides redundancy to run tests successfully in various setups:
-    - Inside a Docker container (like in CI).
-    - From a local machine against a local Docker Desktop.
-    - From a local machine against a remote Docker host.
-
-    The order of precedence is:
-    1. Inside Docker ('CI_MODE'): Uses Docker's internal DNS, which is the
-       most performant and reliable method for container-to-container communication.
-    2. Explicit 'PROXY_IP': A direct override for specific CI or testing scenarios.
-    3. Remote Docker 'DOCKER_HOST_IP': For targeting a Docker daemon on another machine.
-    4. Fallback to '127.0.0.1': For standard local development.
-    """
-    # --- 1. Highest Precedence: Running inside a container ---
-    # If tests are running within a Docker container on the same network
-    # (e.g., the 'nb-tester' service), use the service name. Docker's
-    # internal DNS is the fastest and most correct way to resolve it.
-    if os.environ.get("CI_MODE"):
-        return "nether-bridge"
-
-    # --- 2. Second Precedence: Explicit override for GitHub Actions or other CI ---
-    # This allows forcing a specific IP address.
-    if "PROXY_IP" in os.environ:
-        return os.environ["PROXY_IP"]
-
-    # --- 3. Third Precedence: Remote Docker Host ---
-    # Used when running tests from your local machine against a Docker
-    # daemon running on a different IP.
-    if "DOCKER_HOST_IP" in os.environ:
-        return os.environ["DOCKER_HOST_IP"]
-
-    # --- 4. Fallback: Local Development ---
-    # Assumes you are running tests from your host OS (e.g., VS Code, PyCharm)
-    # against a container running in Docker Desktop, with ports mapped to localhost.
-    return "127.0.0.1"
 
 
 def get_container_status(docker_client_fixture, container_name):
@@ -172,30 +133,6 @@ def encode_varint(value):
         if value == 0:
             break
     return buf
-
-
-def get_java_handshake_and_status_request_packets(host, port):
-    """Constructs the two packets needed to request a status from a Java server."""
-    server_address_bytes = host.encode("utf-8")
-    handshake_payload = (
-        encode_varint(754)
-        + encode_varint(len(server_address_bytes))
-        + server_address_bytes
-        + port.to_bytes(2, byteorder="big")
-        + encode_varint(1)
-    )
-    handshake_packet = (
-        encode_varint(len(handshake_payload) + 1) + b"\x00" + handshake_payload
-    )
-
-    status_request_payload = b""
-    status_request_packet = (
-        encode_varint(len(status_request_payload) + 1)
-        + b"\x00"
-        + status_request_payload
-    )
-
-    return handshake_packet, status_request_packet
 
 
 def wait_for_proxy_to_be_ready(docker_client_fixture, timeout=60):
