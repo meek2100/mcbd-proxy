@@ -3,7 +3,7 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
-# No 'import pytest' needed as it's not directly used in this file.
+import pytest
 
 # Adjust sys.path to ensure the config module can be found when tests are run.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -18,6 +18,7 @@ from config import (
 )
 
 
+@pytest.mark.unit
 def test_load_settings_from_json_decode_error():
     """
     Tests that a JSON decoding error in the settings file is handled gracefully
@@ -35,6 +36,7 @@ def test_load_settings_from_json_decode_error():
         mock_json_load.assert_called_once()
 
 
+@pytest.mark.unit
 def test_load_servers_from_json_decode_error():
     """
     Tests that a JSON decoding error in the servers file is handled gracefully
@@ -52,6 +54,7 @@ def test_load_servers_from_json_decode_error():
         mock_json_load.assert_called_once()
 
 
+@pytest.mark.unit
 def test_load_servers_from_env_incomplete_definition():
     """
     Tests that an incomplete server definition (e.g., missing container_name)
@@ -62,6 +65,7 @@ def test_load_servers_from_env_incomplete_definition():
         assert result == []
 
 
+@pytest.mark.unit
 def test_load_servers_from_env_invalid_server_type():
     """
     Tests that a server definition with an invalid server_type
@@ -81,6 +85,7 @@ def test_load_servers_from_env_invalid_server_type():
         assert result == []
 
 
+@pytest.mark.unit
 def test_load_config_invalid_env_var_falls_back_to_default():
     """
     Tests that if an environment variable for a setting has an invalid format
@@ -93,6 +98,7 @@ def test_load_config_invalid_env_var_falls_back_to_default():
         assert settings.idle_timeout_seconds == DEFAULT_SETTINGS["idle_timeout_seconds"]
 
 
+@pytest.mark.unit
 def test_load_servers_from_env_happy_path():
     """
     Tests that a valid and complete server definition from environment
@@ -118,6 +124,7 @@ def test_load_servers_from_env_happy_path():
         assert server_def["idle_timeout_seconds"] == 300
 
 
+@pytest.mark.unit
 def test_load_application_config_uses_env_over_json():
     """
     Tests that environment variables have higher precedence than JSON files

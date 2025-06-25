@@ -9,7 +9,7 @@ import pytest
 # Adjust sys.path to ensure modules can be found when tests are run from the root.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-# Imports from the modules being tested
+# Imports from the new application modules
 from config import ProxySettings, ServerConfig
 from proxy import NetherBridgeProxy
 
@@ -17,7 +17,7 @@ from proxy import NetherBridgeProxy
 @pytest.fixture
 def default_proxy_settings():
     """Provides a default ProxySettings object for testing."""
-    # Re-formatted to be under 88 characters per line
+    # This dictionary is formatted to be under 88 characters per line.
     settings_dict = {
         "idle_timeout_seconds": 0.2,
         "player_check_interval_seconds": 0.1,
@@ -65,11 +65,14 @@ def proxy_instance(default_proxy_settings, mock_servers_config):
     Provides a NetherBridgeProxy instance with a mocked DockerManager.
     This is the primary fixture for testing the proxy's internal logic.
     """
-    # Patch the DockerManager at the point of import within the proxy module
+    # Patch the DockerManager at the point of import within the proxy module.
+    # This ensures that when NetherBridgeProxy initializes its self.docker_manager,
+    # it gets our mock instead of a real one.
     with patch("proxy.DockerManager") as MockDockerManager:
         mock_docker_manager_instance = MockDockerManager.return_value
         proxy = NetherBridgeProxy(default_proxy_settings, mock_servers_config)
-        # Attach the mock manager instance for inspection in tests
+        # We explicitly set the mock on the instance to make it available for
+        # assertions within the tests.
         proxy.docker_manager = mock_docker_manager_instance
         yield proxy
 
@@ -77,6 +80,7 @@ def proxy_instance(default_proxy_settings, mock_servers_config):
 # --- Test Cases for NetherBridgeProxy Logic ---
 
 
+@pytest.mark.unit
 def test_proxy_initialization(
     proxy_instance, default_proxy_settings, mock_servers_config
 ):
@@ -88,6 +92,7 @@ def test_proxy_initialization(
     assert not proxy_instance.server_states["test-mc-bedrock"]["running"]
 
 
+@pytest.mark.unit
 @pytest.mark.skipif(
     sys.platform == "win32", reason="SIGHUP is not available on Windows"
 )
@@ -99,6 +104,7 @@ def test_signal_handler_sighup(proxy_instance):
     assert not proxy_instance._shutdown_requested
 
 
+@pytest.mark.unit
 def test_signal_handler_sigint(proxy_instance):
     """Tests that a SIGINT signal correctly flags the proxy for shutdown."""
     assert not proxy_instance._shutdown_requested
@@ -107,6 +113,7 @@ def test_signal_handler_sigint(proxy_instance):
     assert not proxy_instance._reload_requested
 
 
+@pytest.mark.unit
 def test_start_minecraft_server_wrapper_success(proxy_instance, mock_servers_config):
     """
     Tests the proxy's start method.
@@ -134,6 +141,7 @@ def test_start_minecraft_server_wrapper_success(proxy_instance, mock_servers_con
     assert proxy_instance.server_states[container_name]["running"] is True
 
 
+@pytest.mark.unit
 def test_start_minecraft_server_wrapper_already_running(
     proxy_instance, mock_servers_config
 ):
@@ -153,6 +161,7 @@ def test_start_minecraft_server_wrapper_already_running(
     assert proxy_instance.server_states[server_config.container_name]["running"] is True
 
 
+@pytest.mark.unit
 def test_stop_minecraft_server_wrapper(proxy_instance):
     """
     Tests that the proxy's stop method correctly calls the docker_manager
@@ -168,6 +177,7 @@ def test_stop_minecraft_server_wrapper(proxy_instance):
     assert not proxy_instance.server_states[container_name]["running"]
 
 
+@pytest.mark.unit
 @patch("proxy.time.sleep", side_effect=InterruptedError)  # To break the loop
 def test_monitor_servers_activity_stops_idle_server(
     mock_sleep, proxy_instance, mock_servers_config
@@ -179,16 +189,16 @@ def test_monitor_servers_activity_stops_idle_server(
     idle_server_config = mock_servers_config[0]
     container_name = idle_server_config.container_name
 
-    # Set up the state for an idle server
+    # Set up the state for an idle server that is currently running
     proxy_instance.server_states[container_name]["running"] = True
     proxy_instance.server_states[container_name]["last_activity"] = time.time() - 1000
 
-    # Mock the stop method to verify it gets called
+    # Mock the stop method on the instance to verify it gets called
     with patch.object(proxy_instance, "_stop_minecraft_server") as mock_stop_method:
         try:
             proxy_instance._monitor_servers_activity()
         except InterruptedError:
-            pass  # Expected way to exit the test loop
+            pass  # Expected way to exit the while loop for testing purposes
 
     # Assert that the logic correctly identified and tried to stop the idle server.
     mock_stop_method.assert_called_once_with(container_name)

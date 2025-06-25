@@ -30,13 +30,13 @@ jobs:
         run: ruff format --check .
 
       - name: Run Unit Tests
-        # This command runs all unit tests and checks their coverage
-        # against the application modules.
+        # This command now uses markers to run only the fast unit tests.
+        # It also measures coverage against all the new application modules.
         run: >
-          pytest tests/test_config.py tests/test_proxy.py
-          --cov=config
-          --cov=proxy
+          pytest -m unit
           --cov=main
+          --cov=proxy
+          --cov=config
           --cov=docker_manager
           --cov=metrics
           --cov-report=term-missing
