@@ -13,7 +13,6 @@ services:
     networks:
       - mc-network
     ports:
-      # Expose a wider range of ports for the new test
       - "19132-19134:19132-19134/udp"
       - "25565:25565/udp"
       - "25565:25565/tcp"
@@ -41,7 +40,6 @@ services:
       ]}" > /app/servers.json && exec /app/entrypoint.sh python nether_bridge.py'
 
   mc-bedrock:
-    # Build the custom image instead of pulling
     build:
       context: .
       dockerfile: Dockerfile.mc-bedrock
@@ -49,7 +47,6 @@ services:
       args:
         BEDROCK_VERSION: ${BEDROCK_VERSION}
         BEDROCK_DOWNLOAD_URL: ${BEDROCK_DOWNLOAD_URL}
-    # Give the built image a local name
     image: minecraft-bedrock-server:local
     restart: "no"
     container_name: mc-bedrock
@@ -57,7 +54,6 @@ services:
       - mc-network
     volumes:
       - mc-bedrock-data:/data
-    # The runtime environment is now much simpler
     environment:
       - EULA=TRUE
       - VERSION=${BEDROCK_VERSION}
@@ -65,15 +61,13 @@ services:
       - IDLE_TIMEOUT=-1
 
   mc-java:
-    # Build the custom image instead of pulling from Docker Hub
     build:
-      context: . # The context is the tests/ directory
+      context: .
       dockerfile: Dockerfile.mc-java
       network: host
       args:
         JAVA_TYPE: ${JAVA_TYPE}
         JAVA_VERSION: ${JAVA_VERSION}
-    # Give the built image a local name
     image: minecraft-server:local
     restart: "no"
     container_name: mc-java
@@ -81,7 +75,6 @@ services:
       - mc-network
     volumes:
       - mc-java-data:/data
-    # The environment for the test run remains simple
     environment:
       - EULA=TRUE
       - TYPE=${JAVA_TYPE}
