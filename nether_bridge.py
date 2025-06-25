@@ -493,7 +493,8 @@ class NetherBridgeProxy:
 
     def _reload_configuration(self):
         """
-        Reloads proxy settings and server definitions from source.
+        Reloads proxy settings and server definitions from source. This method
+        is designed to be robust by closing all listeners and re-creating them.
         """
         self.logger.warning("SIGHUP received. Reloading configuration...")
 
@@ -501,87 +502,56 @@ class NetherBridgeProxy:
             new_settings, new_servers = load_application_config()
             configure_logging(new_settings.log_level, new_settings.log_formatter)
             self.settings = new_settings
-            self.logger.info(
-                "Proxy settings have been reloaded.",
-                new_log_level=self.settings.log_level,
-                new_log_formatter=self.settings.log_formatter,
-            )
+            self.logger.info("Proxy settings have been reloaded.")
         except Exception as e:
             self.logger.error(
-                "Failed to reload settings, aborting reload.",
-                error=str(e),
-                exc_info=True,
+                "Failed to reload settings, aborting reload.", error=str(e)
             )
             self._reload_requested = False
             return
 
-        old_ports = set(self.servers_config_map.keys())
-        new_servers_map = {s.listen_port: s for s in new_servers}
-        new_ports = set(new_servers_map.keys())
+        # --- FIX: A more robust and simpler reload logic ---
 
-        for port in old_ports - new_ports:
-            # --- FIX STARTS HERE ---
-            # Correctly terminate active sessions associated with the specific port
-            # that is being removed from the configuration.
-            old_server_config = self.servers_config_map.get(port)
-            if not old_server_config:
-                continue
-
-            self.logger.info(
-                "Removing listener for old server.",
-                server_name=old_server_config.name,
-                port=port,
-            )
-            sock = self.listen_sockets.pop(port, None)
-            if sock:
-                if sock in self.inputs:
-                    self.inputs.remove(sock)
+        # 1. Close ALL existing listening sockets.
+        self.logger.info("Closing all current listeners for reconfiguration.")
+        for port, sock in self.listen_sockets.items():
+            if sock in self.inputs:
+                self.inputs.remove(sock)
+            try:
                 sock.close()
-
-            # Find and terminate sessions by the port they connected to.
-            sessions_to_terminate = [
-                (key, info)
-                for key, info in self.active_sessions.items()
-                if info.get("listen_port") == port
-            ]
-
-            if sessions_to_terminate:
+            except socket.error as e:
                 self.logger.warning(
-                    "Terminating active sessions for server port removed from "
-                    "configuration.",
-                    count=len(sessions_to_terminate),
-                    port=port,
-                    container_name=old_server_config.container_name,
+                    "Error closing old socket.", port=port, error=str(e)
                 )
-                for session_key, session_info in sessions_to_terminate:
-                    ACTIVE_SESSIONS.labels(server_name=old_server_config.name).dec()
-                    self._close_session_sockets(session_info)
-                    self.active_sessions.pop(session_key, None)
-                    self.socket_to_session_map.pop(
-                        session_info.get("client_socket"), None
-                    )
-                    self.socket_to_session_map.pop(
-                        session_info.get("server_socket"), None
-                    )
-            # --- FIX ENDS HERE ---
-            self.servers_config_map.pop(port, None)
 
-        for port in new_ports - old_ports:
-            srv_cfg = new_servers_map[port]
-            self.logger.info(
-                "Adding new listener for server.",
-                server_name=srv_cfg.name,
-                port=port,
+        # Clear the dictionaries of old listeners and configs.
+        self.listen_sockets.clear()
+        self.servers_config_map.clear()
+
+        # 2. Terminate all active sessions, as the servers they connect to may no
+        #    longer exist.
+        if self.active_sessions:
+            self.logger.warning(
+                "Terminating all active sessions due to configuration reload.",
+                count=len(self.active_sessions),
             )
+            for session_key, session_info in list(self.active_sessions.items()):
+                self._close_session_sockets(session_info)
+                self.active_sessions.pop(session_key, None)
+                self.socket_to_session_map.pop(session_info.get("client_socket"), None)
+                self.socket_to_session_map.pop(session_info.get("server_socket"), None)
+
+        # 3. Re-create listeners and state based on the new configuration.
+        self.logger.info("Applying new server configuration.")
+        self.servers_list = new_servers
+        for srv_cfg in self.servers_list:
+            self.servers_config_map[srv_cfg.listen_port] = srv_cfg
             self._create_listening_socket(srv_cfg)
             if srv_cfg.container_name not in self.server_states:
                 self.server_states[srv_cfg.container_name] = {
                     "running": False,
                     "last_activity": 0.0,
                 }
-
-        self.servers_config_map = new_servers_map
-        self.servers_list = new_servers
 
         self.logger.info("Configuration reload complete.")
         self._reload_requested = False
