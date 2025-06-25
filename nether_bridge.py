@@ -520,10 +520,9 @@ class NetherBridgeProxy:
         new_ports = set(new_servers_map.keys())
 
         for port in old_ports - new_ports:
-            # Note: This reload does not terminate existing player sessions for
-            # removed servers. Those sessions will remain active until they disconnect
-            # or are cleaned up by the idle activity monitor. This ensures a
-            # graceful shutdown for in-progress games.
+            # --- FIX STARTS HERE ---
+            # Correctly terminate active sessions associated with the specific port
+            # that is being removed from the configuration.
             old_server_config = self.servers_config_map.get(port)
             if not old_server_config:
                 continue
@@ -539,19 +538,20 @@ class NetherBridgeProxy:
                     self.inputs.remove(sock)
                 sock.close()
 
-            container_name = old_server_config.container_name
+            # Find and terminate sessions by the port they connected to.
             sessions_to_terminate = [
                 (key, info)
                 for key, info in self.active_sessions.items()
-                if info.get("target_container") == container_name
+                if info.get("listen_port") == port
             ]
 
             if sessions_to_terminate:
                 self.logger.warning(
-                    "Terminating active sessions for server removed from "
+                    "Terminating active sessions for server port removed from "
                     "configuration.",
                     count=len(sessions_to_terminate),
-                    container_name=container_name,
+                    port=port,
+                    container_name=old_server_config.container_name,
                 )
                 for session_key, session_info in sessions_to_terminate:
                     ACTIVE_SESSIONS.labels(server_name=old_server_config.name).dec()
@@ -563,7 +563,7 @@ class NetherBridgeProxy:
                     self.socket_to_session_map.pop(
                         session_info.get("server_socket"), None
                     )
-
+            # --- FIX ENDS HERE ---
             self.servers_config_map.pop(port, None)
 
         for port in new_ports - old_ports:
