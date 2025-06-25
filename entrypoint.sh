@@ -26,6 +26,10 @@ if [ "$1" = "--generate-test-config" ]; then
         }
       ]
     }' > /app/servers.json
+
+    # --- FIX: ADD THIS LINE ---
+    # Change ownership of the generated file to the application user.
+    chown naeus:nogroup /app/servers.json
     
     # Remove the flag from the argument list so it's not passed to the Python app
     shift
