@@ -1,6 +1,4 @@
-import os
 import socket
-import sys
 import time
 
 import docker
@@ -10,7 +8,7 @@ from mcstatus import BedrockServer, JavaServer
 from tests.helpers import get_java_handshake_and_status_request_packets, get_proxy_host
 
 # Add this to the top of the file to ensure imports work inside the container
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+# sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Constants for test server addresses and ports
 BEDROCK_PROXY_PORT = 19132

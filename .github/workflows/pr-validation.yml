@@ -87,7 +87,13 @@ jobs:
         run: |
           PROXY_IP=$(docker inspect nether-bridge | jq -r '.[0].NetworkSettings.Networks."tests_mc-network".IPAddress')
           echo "Found nether-bridge IP: ${PROXY_IP}"
-          docker compose -f tests/docker-compose.tests.yml exec -T --user naeus nb-tester env CI_MODE=true PROXY_IP=${PROXY_IP} python -m pytest --cov=nether_bridge --cov-report term-missing
+          docker compose -f tests/docker-compose.tests.yml exec -T --user naeus nb-tester env CI_MODE=true PROXY_IP=${PROXY_IP} python -m pytest \
+            --cov=main \
+            --cov=proxy \
+            --cov=config \
+            --cov=docker_manager \
+            --cov=metrics \
+            --cov-report term-missing
 
       - name: Dump All Container Logs on Failure
         if: ${{ failure() }}

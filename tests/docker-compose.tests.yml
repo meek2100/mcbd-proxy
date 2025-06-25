@@ -33,7 +33,7 @@ services:
     depends_on:
       - mc-bedrock
       - mc-java
-    command: --generate-test-config python nether_bridge.py
+    command: --generate-test-config python main.py
 
   mc-bedrock:
     build:
