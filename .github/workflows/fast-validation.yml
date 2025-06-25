@@ -30,6 +30,13 @@ jobs:
         run: ruff format --check .
 
       - name: Run Unit Tests
-        # This command specifically targets the unit tests which do not
-        # require a Docker environment, ensuring a very fast test run.
-        run: pytest tests/test_nether_bridge.py --cov=nether_bridge
+        # This command runs all unit tests and checks their coverage
+        # against the application modules.
+        run: >
+          pytest tests/test_config.py tests/test_proxy.py
+          --cov=config
+          --cov=proxy
+          --cov=main
+          --cov=docker_manager
+          --cov=metrics
+          --cov-report=term-missing
