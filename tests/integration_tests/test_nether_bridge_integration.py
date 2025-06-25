@@ -582,12 +582,10 @@ def test_configuration_reload_on_sighup(docker_compose_up, docker_client_fixture
     )
     print("New servers.json written successfully.")
 
-    print("(SIGHUP Test) Sending SIGHUP signal to process 1...")
-    exit_code, output = container.exec_run("kill -SIGHUP 1", demux=True)
-    assert exit_code == 0, (
-        "Failed to send SIGHUP: "
-        f"{output[1].decode() if output[1] else output[0].decode()}"
-    )
+    print("(SIGHUP Test) Sending SIGHUP signal...")
+    # Use the Docker SDK to send the signal directly. This is more robust
+    # and doesn't depend on the 'kill' command being in the container.
+    container.kill(signal="SIGHUP")
 
     # --- 3. Verify that the proxy reloaded the configuration ---
     assert wait_for_log_message(
