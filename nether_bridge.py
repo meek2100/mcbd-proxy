@@ -119,7 +119,7 @@ class NetherBridgeProxy:
         """Handles signals for graceful shutdown and configuration reloads."""
         if hasattr(signal, "SIGHUP") and sig == signal.SIGHUP:
             self._reload_requested = True
-            self.logger.warning("SIGHUP signal received, flagging for reload.")
+            self.logger.warning("SIGHUP received. Reloading configuration...")
         else:  # SIGINT, SIGTERM
             self.logger.warning(
                 "Shutdown signal received, initiating shutdown.", sig=sig
@@ -500,7 +500,7 @@ class NetherBridgeProxy:
         Reloads proxy settings and server definitions from source. This method
         is designed to be robust by closing all listeners and re-creating them.
         """
-        self.logger.warning("SIGHUP received. Reloading configuration...")
+        # self.logger.warning("SIGHUP received. Reloading configuration...")
 
         try:
             new_settings, new_servers = load_application_config()
