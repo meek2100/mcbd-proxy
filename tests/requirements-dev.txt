@@ -49,7 +49,7 @@ python-dotenv==1.1.0
     # via -r tests/requirements-dev.in
 requests==2.32.4
     # via docker
-ruff==0.12.0
+ruff==0.12.1
     # via -r tests/requirements-dev.in
 structlog==25.4.0
     # via -r tests/../requirements.in
