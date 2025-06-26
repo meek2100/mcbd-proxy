@@ -3,7 +3,7 @@ import signal
 import socket
 import time
 from pathlib import Path
-from threading import RLock
+from threading import Event, RLock
 from typing import List
 
 import structlog
@@ -48,6 +48,7 @@ class NetherBridgeProxy:
         self.last_heartbeat_time = time.time()
         self._shutdown_requested = False
         self._reload_requested = False
+        self._shutdown_event = Event()
 
     def signal_handler(self, sig, frame):
         """Handles signals for graceful shutdown and configuration reloads."""
@@ -59,6 +60,7 @@ class NetherBridgeProxy:
                 "Shutdown signal received, initiating shutdown.", sig=sig
             )
             self._shutdown_requested = True
+            self._shutdown_event.set()
 
     def _start_minecraft_server(self, server_config: ServerConfig):
         """High-level wrapper to start a server and update proxy state."""
@@ -130,7 +132,8 @@ class NetherBridgeProxy:
     def _monitor_servers_activity(self):
         """Monitors server and session activity in a dedicated thread."""
         while not self._shutdown_requested:
-            time.sleep(self.settings.player_check_interval_seconds)
+            # This will wait for the interval OR until the shutdown event is set
+            self._shutdown_event.wait(self.settings.player_check_interval_seconds)
             if self._shutdown_requested:
                 break
 
@@ -216,6 +219,23 @@ class NetherBridgeProxy:
                 server_socket.close()
             except socket.error:
                 pass
+
+    def _shutdown_all_sessions(self):
+        """Closes all active client and server sockets to terminate sessions."""
+        if not self.active_sessions:
+            return
+
+        self.logger.info(
+            "Closing all active sessions...",
+            count=len(self.active_sessions),
+        )
+        # Iterate over a copy as the dictionary will be modified
+        for session_key, session_info in list(self.active_sessions.items()):
+            self._close_session_sockets(session_info)
+
+        self.active_sessions.clear()
+        self.socket_to_session_map.clear()
+        self.logger.info("All active sessions have been closed.")
 
     def _reload_configuration(self, main_module):
         """Reloads configuration and re-initializes proxy state."""

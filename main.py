@@ -147,6 +147,24 @@ def run_app(proxy: NetherBridgeProxy):
     # Pass the main module to the loop for access to configure_logging on reload
     proxy._run_proxy_loop(sys.modules[__name__])
 
+    # --- SHUTDOWN SEQUENCE STARTS HERE ---
+    # The _run_proxy_loop has exited, which means a shutdown was requested.
+
+    logger.info("Graceful shutdown initiated.")
+
+    # 1. Terminate all active player sessions immediately.
+    proxy._shutdown_all_sessions()
+
+    # 2. Wait for the background monitor thread to finish its last loop.
+    logger.info("Waiting for monitor thread to terminate...")
+    monitor_thread.join(timeout=5.0)  # Add a timeout for safety
+    if monitor_thread.is_alive():
+        logger.warning("Monitor thread did not terminate in time.")
+    else:
+        logger.info("Monitor thread has terminated.")
+
+    logger.info("Shutdown complete. Exiting.")
+
 
 def main():
     """The main entrypoint for the Nether-bridge application."""
