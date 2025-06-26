@@ -346,6 +346,13 @@ class NetherBridgeProxy:
                     conn.close()
                     return
 
+                # --- THIS IS THE FIX ---
+                # Add a small, hardcoded delay AFTER a successful startup.
+                # This gives the Java server a moment to fully initialize its
+                # connection manager after responding to the first ping.
+                self.logger.debug("Post-startup delay initiated.", seconds=2)
+                time.sleep(2)
+
         if self.server_states[container_name]["running"]:
             self.logger.info(
                 "Establishing new TCP session for running server.",
