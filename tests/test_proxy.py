@@ -1,8 +1,9 @@
 import os
+import select
 import signal
 import sys
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -148,6 +149,7 @@ def test_start_minecraft_server_wrapper_already_running(
 @pytest.mark.unit
 def test_stop_minecraft_server_wrapper(proxy_instance):
     """
+
     Tests that the proxy's stop method correctly calls the docker_manager
     and updates its state.
     """
@@ -162,18 +164,18 @@ def test_stop_minecraft_server_wrapper(proxy_instance):
 
 
 @pytest.mark.unit
-@patch("proxy.time.sleep")
+# Correct the patch target to look for the Event class inside the proxy module
+@patch("proxy.Event.wait")
 def test_monitor_servers_activity_stops_idle_server(
-    mock_sleep, proxy_instance, mock_servers_config
+    mock_event_wait, proxy_instance, mock_servers_config
 ):
     """
     Tests that the monitor thread correctly identifies an idle server
     and calls the stop method.
     """
-    # --- THIS IS THE FIX ---
-    # The side_effect is now an iterable. The first call to sleep will return None
-    # and allow the loop to run once. The second call will raise the error.
-    mock_sleep.side_effect = [None, InterruptedError("Stop loop")]
+    # This side effect will allow the loop to run once, then raise an
+    # error on the second call to Event.wait() to exit the test.
+    mock_event_wait.side_effect = [None, InterruptedError("Stop loop")]
 
     idle_server_config = mock_servers_config[0]
     container_name = idle_server_config.container_name
@@ -191,3 +193,32 @@ def test_monitor_servers_activity_stops_idle_server(
 
     # Assert that the logic correctly identified and tried to stop the idle server.
     mock_stop_method.assert_called_once_with(container_name)
+
+
+@pytest.mark.unit
+@patch("proxy.select.select")
+@patch("proxy.time.sleep")
+def test_run_proxy_loop_handles_select_error(mock_sleep, mock_select, proxy_instance):
+    """
+    Tests that the main proxy loop gracefully handles a select.error,
+    logs it, and continues, preventing a crash.
+    """
+
+    # We define a side effect function for the select mock.
+    def select_side_effect(*args, **kwargs):
+        # The FIRST time this is called, we set the flag to stop the loop
+        # on the NEXT iteration. Then we raise the error to be tested.
+        proxy_instance._shutdown_requested = True
+        raise select.error
+
+    mock_select.side_effect = select_side_effect
+
+    # The _run_proxy_loop method requires the main module for reloads, so we mock it.
+    mock_main_module = MagicMock()
+
+    # The loop will run once, hit the error, call sleep, continue,
+    # and then exit because the shutdown flag is now set.
+    proxy_instance._run_proxy_loop(mock_main_module)
+
+    # Assert that the loop caught the error and slept for 1 second.
+    mock_sleep.assert_called_once_with(1)

@@ -57,10 +57,9 @@ def perform_health_check():
     """Performs a self-sufficient two-stage health check."""
     logger = structlog.get_logger(__name__)
     try:
-        settings, servers_list = load_application_config()
-        if not servers_list:
-            logger.error("Health Check FAIL: No server configuration found.")
-            sys.exit(1)
+        # We still need to load settings to get the threshold.
+        # It's okay if the healthcheck process itself doesn't find servers.
+        settings, _ = load_application_config()
         logger.debug("Health Check Stage 1 (Configuration) OK.")
     except Exception as e:
         logger.error(
@@ -146,6 +145,24 @@ def run_app(proxy: NetherBridgeProxy):
 
     # Pass the main module to the loop for access to configure_logging on reload
     proxy._run_proxy_loop(sys.modules[__name__])
+
+    # --- SHUTDOWN SEQUENCE STARTS HERE ---
+    # The _run_proxy_loop has exited, which means a shutdown was requested.
+
+    logger.info("Graceful shutdown initiated.")
+
+    # 1. Terminate all active player sessions immediately.
+    proxy._shutdown_all_sessions()
+
+    # 2. Wait for the background monitor thread to finish its last loop.
+    logger.info("Waiting for monitor thread to terminate...")
+    monitor_thread.join(timeout=5.0)  # Add a timeout for safety
+    if monitor_thread.is_alive():
+        logger.warning("Monitor thread did not terminate in time.")
+    else:
+        logger.info("Monitor thread has terminated.")
+
+    logger.info("Shutdown complete. Exiting.")
 
 
 def main():

@@ -32,6 +32,17 @@ def mock_container():
     return MagicMock(spec=docker.models.containers.Container)
 
 
+@pytest.fixture
+def mock_server_config():
+    """Provides a mock server config object for testing isolated methods."""
+    # This mock simulates the ServerConfig object that the method expects.
+    config = MagicMock()
+    config.container_name = "test-mc-bedrock"
+    config.internal_port = 19132
+    config.server_type = "bedrock"
+    return config
+
+
 # --- Test Cases for DockerManager Logic ---
 
 
@@ -94,3 +105,21 @@ def test_stop_server_api_error(
 
     result = docker_manager_instance.stop_server("any-container")
     assert result is False
+
+
+@pytest.mark.unit
+@patch("docker_manager.time.sleep")
+@patch("docker_manager.BedrockServer.lookup", side_effect=Exception("Query failed"))
+def test_wait_for_server_query_ready_timeout(
+    mock_lookup, mock_sleep, docker_manager_instance, mock_server_config
+):
+    """
+    Tests that the readiness probe correctly times out and returns False
+    if the target server never responds.
+    """
+    result = docker_manager_instance.wait_for_server_query_ready(
+        mock_server_config, max_wait_seconds=0.2, query_timeout_seconds=0.1
+    )
+    assert result is False
+    # Verify that the logic attempted to query the server at least once.
+    mock_lookup.assert_called()
