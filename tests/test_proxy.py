@@ -164,17 +164,18 @@ def test_stop_minecraft_server_wrapper(proxy_instance):
 
 
 @pytest.mark.unit
-@patch("proxy.time.sleep")
+# Patch the Event.wait method which is now used for sleeping
+@patch("proxy.threading.Event.wait")
 def test_monitor_servers_activity_stops_idle_server(
-    mock_sleep, proxy_instance, mock_servers_config
+    mock_event_wait, proxy_instance, mock_servers_config
 ):
     """
     Tests that the monitor thread correctly identifies an idle server
     and calls the stop method.
     """
-    # The side_effect is now an iterable. The first call to sleep will return None
-    # and allow the loop to run once. The second call will raise the error.
-    mock_sleep.side_effect = [None, InterruptedError("Stop loop")]
+    # This side effect will allow the loop to run once, then raise an
+    # error on the second call to Event.wait() to exit the test.
+    mock_event_wait.side_effect = [None, InterruptedError("Stop loop")]
 
     idle_server_config = mock_servers_config[0]
     container_name = idle_server_config.container_name
@@ -202,18 +203,18 @@ def test_run_proxy_loop_handles_select_error(mock_sleep, mock_select, proxy_inst
     Tests that the main proxy loop gracefully handles a select.error,
     logs it, and continues, preventing a crash.
     """
-
-    # This side effect simulates a select.error and then sets the shutdown flag
-    # to ensure the loop terminates cleanly for the test.
-    def select_side_effect(*args, **kwargs):
-        proxy_instance._shutdown_requested = True
-        raise select.error
-
-    mock_select.side_effect = select_side_effect
+    # This side effect will:
+    # 1. Raise select.error on the first call to trigger the 'except' block.
+    # 2. Raise an InterruptedError on the second call to exit the test's while loop.
+    mock_select.side_effect = [select.error, InterruptedError("Stop loop")]
 
     # The _run_proxy_loop method requires the main module for reloads, so we mock it.
     mock_main_module = MagicMock()
-    proxy_instance._run_proxy_loop(mock_main_module)
 
-    # Assert that the loop caught the error and slept for 1 second before exiting.
+    try:
+        proxy_instance._run_proxy_loop(mock_main_module)
+    except InterruptedError:
+        pass  # Expected way to exit the while loop for testing purposes
+
+    # Assert that the loop caught the error and slept for 1 second.
     mock_sleep.assert_called_once_with(1)
