@@ -570,3 +570,66 @@ def test_configuration_reload_on_sighup(docker_compose_up, docker_client_fixture
         client_socket.close()
 
     print("(SIGHUP Test) Test passed: Proxy correctly reloaded its configuration.")
+
+
+@pytest.mark.integration
+def test_proxy_cleans_up_session_on_container_crash(
+    docker_compose_up, docker_client_fixture
+):
+    """
+    Tests that if a server container crashes during an active session,
+    the proxy detects the resulting connection error and cleans up the session.
+    """
+    proxy_host = get_proxy_host()
+    java_proxy_port = JAVA_PROXY_PORT
+    mc_java_container_name = "mc-java"
+
+    # 1. Start the server by establishing a persistent connection.
+    # We must keep this socket open to simulate an active session.
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client_socket.connect((proxy_host, java_proxy_port))
+    print("\n(Chaos Test) Client connected, session established.")
+
+    # 2. Verify the session is active in the proxy's logs.
+    assert wait_for_log_message(
+        docker_client_fixture,
+        "nether-bridge",
+        "Establishing new TCP session for running server",
+        timeout=30,
+    ), "Proxy did not log the establishment of the TCP session."
+
+    # Also ensure the Java server container is fully running.
+    assert wait_for_container_status(
+        docker_client_fixture, mc_java_container_name, ["running"]
+    ), "Java server did not enter 'running' state."
+    print("(Chaos Test) Proxy session and Java container are active.")
+
+    # 3. Forcibly kill the server container to simulate a crash.
+    print(f"(Chaos Test) Forcibly killing container: {mc_java_container_name}")
+    container = docker_client_fixture.containers.get(mc_java_container_name)
+    container.kill()
+    assert wait_for_container_status(
+        docker_client_fixture, mc_java_container_name, ["exited", "dead"]
+    ), "Container did not stop after being killed."
+    print("(Chaos Test) Container successfully killed.")
+
+    # 4. Attempt to send data on the now-broken session to trigger error handling.
+    try:
+        print("(Chaos Test) Sending data to trigger proxy's error handling...")
+        client_socket.sendall(b"data_after_crash")
+    except socket.error as e:
+        # It's expected that this send might fail on the client side.
+        print(f"(Chaos Test) Client socket error as expected: {e}")
+        pass
+    finally:
+        client_socket.close()
+
+    # 5. Assert that the proxy detected the error and logged the cleanup.
+    assert wait_for_log_message(
+        docker_client_fixture,
+        "nether-bridge",
+        "[DEBUG] Session cleanup block triggered.",
+        timeout=10,
+    ), "Proxy did not log the session cleanup after the container crash."
+
+    print("(Chaos Test) Test passed: Proxy correctly handled the crashed session.")
