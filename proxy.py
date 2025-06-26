@@ -78,10 +78,10 @@ class NetherBridgeProxy:
             if not self.server_states[container_name].get("running", False):
                 self.server_states[container_name]["running"] = True
                 RUNNING_SERVERS.inc()
+            # This ensures we report success if the server is already running.
             return True
 
         startup_timer_start = time.time()
-        # This now correctly returns True or False
         success = self.docker_manager.start_server(server_config, self.settings)
 
         if success:
@@ -102,7 +102,7 @@ class NetherBridgeProxy:
             )
             self.server_states[container_name]["running"] = False
 
-        # This is the crucial fix: return the actual success status.
+        # This ensures we return the actual outcome (True or False) to the caller.
         return success
 
     def _stop_minecraft_server(self, container_name: str):
@@ -345,6 +345,13 @@ class NetherBridgeProxy:
                     self.inputs.remove(conn)
                     conn.close()
                     return
+
+                # --- THIS IS THE FIX ---
+                # Add a small, hardcoded delay AFTER a successful startup.
+                # This gives the Java server a moment to fully initialize its
+                # connection manager after responding to the first ping.
+                self.logger.debug("Post-startup delay initiated.", seconds=2)
+                time.sleep(2)
 
         if self.server_states[container_name]["running"]:
             self.logger.info(
