@@ -1,9 +1,14 @@
 import argparse
+import os
 import socket
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
+
+# --- FIX: Add project root to the path ---
+# This allows the script to be run from the root directory and still find modules.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from mcstatus import JavaServer
 
