@@ -21,13 +21,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # This should be the same setup as your main CI workflow
-      # to build and start the docker-compose environment.
       - name: Set up and run test environment
         run: |
           echo "--- Building and starting services ---"
           docker compose -f tests/docker-compose.tests.yml up --build -d
-
+          
           echo "--- Waiting for nether-bridge to be healthy ---"
           timeout=120
           start_time=$(date +%s)
@@ -47,7 +45,17 @@ jobs:
       - name: Run Load Test Script
         run: |
           echo "--- Running load test against ${{ github.event.inputs.server_type }} server ---"
+          # We now run this inside the nb-tester container, which is on the same Docker network
+          # and can resolve the service name 'nether-bridge' directly.
           docker compose -f tests/docker-compose.tests.yml exec -T nb-tester \
             python tests/load_tester.py \
               --server-type ${{ github.event.inputs.server_type }} \
               --clients ${{ github.event.inputs.clients }}
+
+      # --- ADD THIS STEP ---
+      # This step will only run if one of the previous steps has failed.
+      - name: Dump container logs on failure
+        if: failure()
+        run: |
+          echo "--- A step failed. Dumping all container logs. ---"
+          docker compose -f tests/docker-compose.tests.yml logs --no-color
