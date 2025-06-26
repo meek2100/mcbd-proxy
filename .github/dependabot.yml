@@ -1,0 +1,17 @@
+# .github/dependabot.yml
+# Basic Dependabot configuration for Python projects
+
+version: 2
+updates:
+  # Maintain dependencies for Python (pip)
+  - package-ecosystem: "pip"
+    # Look for requirements files in the root directory
+    directory: "/"
+    # Check for updates on a weekly schedule
+    schedule:
+      interval: "weekly"
+    # Target pull requests to your 'develop' branch
+    target-branch: "develop"
+    # Add a prefix to commit messages for clarity
+    commit-messages:
+      prefix: "chore(deps)"
