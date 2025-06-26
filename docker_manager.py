@@ -80,13 +80,12 @@ class DockerManager:
             # Wait a few seconds for the server process to initialize
             time.sleep(settings.server_startup_delay_seconds)
 
-            # Wait for the server to respond to status pings
-            self.wait_for_server_query_ready(
+            # Wait for the server to respond to status pings and return its result
+            return self.wait_for_server_query_ready(
                 server_config,
                 settings.server_ready_max_wait_time_seconds,
                 settings.query_timeout_seconds,
             )
-            return True
         except docker.errors.NotFound:
             self.logger.error(
                 "Docker container not found. Cannot start.",
