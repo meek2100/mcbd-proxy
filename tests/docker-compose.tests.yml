@@ -48,8 +48,8 @@ services:
     container_name: mc-bedrock
     networks:
       - mc-network
-    volumes:
-      - mc-bedrock-data:/data
+    # volumes:
+    #   - mc-bedrock-data:/data
     environment:
       - EULA=TRUE
       - VERSION=${BEDROCK_VERSION}
@@ -69,8 +69,8 @@ services:
     container_name: mc-java
     networks:
       - mc-network
-    volumes:
-      - mc-java-data:/data
+    # volumes:
+    #   - mc-java-data:/data
     environment:
       - EULA=TRUE
       - TYPE=${JAVA_TYPE}
