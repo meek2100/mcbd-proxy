@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   lint-and-unit-test:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -30,6 +30,13 @@ jobs:
         run: ruff format --check .
 
       - name: Run Unit Tests
-        # This command specifically targets the unit tests which do not
-        # require a Docker environment, ensuring a very fast test run.
-        run: pytest tests/test_nether_bridge.py --cov=nether_bridge
+        # This command now uses markers to run only the fast unit tests.
+        # It also measures coverage against all the new application modules.
+        run: >
+          pytest -m unit
+          --cov=main
+          --cov=proxy
+          --cov=config
+          --cov=docker_manager
+          --cov=metrics
+          --cov-report=term-missing

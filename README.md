@@ -192,6 +192,7 @@ These settings control the proxy's behavior, such as idle timeouts and query int
 | Environment Variable | `settings.json` Key | Default Value | Description |
 | :------------------------------- | :----------------------------------- | :------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `LOG_LEVEL` | `log_level` | `INFO` | Sets the logging verbosity. Options: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
+| `NB_LOG_FORMATTER` | `log_formatter` | `json` | Sets the log output format. Options: `json` for machine-readable structured logs (production default), or `console` for human-readable colored logs (development). |
 | `NB_IDLE_TIMEOUT` | `idle_timeout_seconds` | `600` | Time in seconds a server must have 0 players before it's automatically stopped. |
 | `NB_PLAYER_CHECK_INTERVAL` | `player_check_interval_seconds` | `60` | How often (in seconds) the proxy checks for active players on running servers. |
 | `NB_QUERY_TIMEOUT` | `query_timeout_seconds` | `5` | Timeout (in seconds) for `mcstatus` queries when checking server readiness or player counts. |
@@ -201,7 +202,7 @@ These settings control the proxy's behavior, such as idle timeouts and query int
 | `NB_INITIAL_SERVER_QUERY_DELAY` | `initial_server_query_delay_seconds` | `10` | Delay (in seconds) before the proxy attempts to query a server that was found running on proxy startup. This allows time for the server to stabilize if it was previously mid-startup or in a crashed state. |
 | `NB_HEALTHCHECK_STALE_THRESHOLD` | `healthcheck_stale_threshold_seconds` | `60`    | Time in seconds before the main process heartbeat is considered stale by the health check. |
 | `NB_HEARTBEAT_INTERVAL`          | `proxy_heartbeat_interval_seconds`  | `15`    | How often (in seconds) the main proxy loop updates its heartbeat file.                |
-
+| `NB_TCP_LISTEN_BACKLOG` | `tcp_listen_backlog` | `128` | (Advanced) The maximum number of queued TCP connections for Java servers. Higher values can help handle sudden connection spikes. |
 **Example `settings.json`:**
 
 ```json

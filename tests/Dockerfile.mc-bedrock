@@ -1,0 +1,19 @@
+# Start from the official Bedrock server image
+FROM itzg/minecraft-bedrock-server:latest
+
+# Declare build arguments
+ARG BEDROCK_VERSION=1.20.81.01
+ARG BEDROCK_DOWNLOAD_URL=https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.20.81.01.zip
+
+# The server files will be installed in the /data directory
+WORKDIR /data
+
+# Use the build arguments to download the correct version
+RUN apt-get update && apt-get install -y curl unzip && \
+    curl -L -o bedrock.zip \
+    -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/102.0.0.0 Safari/537.36" \
+    "${BEDROCK_DOWNLOAD_URL}" && \
+    unzip -q bedrock.zip && \
+    rm bedrock.zip && \
+    echo "${BEDROCK_VERSION}" > version.txt && \
+    rm -rf /var/lib/apt/lists/*

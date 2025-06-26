@@ -16,7 +16,7 @@ on:
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     permissions:
       contents: read
       packages: write
@@ -34,10 +34,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      
-      - name: Get Docker GID
-        id: docker-gid
-        run: 'echo "DOCKER_GID=$(getent group docker | cut -d: -f3)" >> $GITHUB_ENV'
 
       - name: Extract Docker metadata
         id: meta
@@ -55,8 +51,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            DOCKER_GID=${{ env.DOCKER_GID }}
           # Use the 'main' branch cache for tag builds, otherwise use the branch name.
           cache-from: type=registry,ref=${{ inputs.image_name }}-cache:${{ github.ref_type == 'tag' && 'main' || github.ref_name }}
           cache-to: type=registry,ref=${{ inputs.image_name }}-cache:${{ github.ref_type == 'tag' && 'main' || github.ref_name }},mode=max
