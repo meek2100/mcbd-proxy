@@ -5,7 +5,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 
-from helpers import get_java_handshake_and_status_request_packets, get_proxy_host
+from mcstatus import JavaServer
+
+from tests.helpers import get_java_handshake_and_status_request_packets, get_proxy_host
 
 
 # --- Enums for Configuration ---
@@ -20,34 +22,32 @@ class ServerType(Enum):
 
 
 # --- Packet Definitions ---
-
-# A standard Minecraft Bedrock Edition Unconnected Ping packet
 BEDROCK_UNCONNECTED_PING = (
-    b"\x01"  # Packet ID (Unconnected Ping)
-    + b"\x00\x00\x00\x00\x00\x00\x00\x00"  # Nonce (can be anything)
+    b"\x01"
+    + b"\x00\x00\x00\x00\x00\x00\x00\x00"
     + b"\x00\xff\xff\x00\xfe\xfe\xfe\xfe"
-    + b"\xfd\xfd\xfd\xfd\x12\x34\x56\x78"  # RakNet Magic
-    + b"\x00\x00\x00\x00\x00\x00\x00\x00"  # Client GUID (can be anything)
+    + b"\xfd\xfd\xfd\xfd\x12\x34\x56\x78"
+    + b"\x00\x00\x00\x00\x00\x00\x00\x00"
 )
 
+
 # --- Helper functions ---
-
-
-def encode_varint(value):
-    """Encodes an integer into the VarInt format used by Minecraft."""
-    buf = b""
-    while True:
-        byte = value & 0x7F
-        value >>= 7
-        if value != 0:
-            byte |= 0x80
-        buf += bytes([byte])
-        if value == 0:
-            break
-    return buf
-
-
-# --- Main Worker Function ---
+def wait_for_server_ready(host: str, port: int, timeout: int = 60):
+    """Waits for the server to respond to a status query."""
+    print(f"--- Waiting for server at {host}:{port} to become ready... ---")
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            server = JavaServer.lookup(f"{host}:{port}", timeout=2)
+            status = server.status()
+            if status:
+                print("--- Server is ready. Proceeding with load test. ---")
+                return True
+        except Exception:
+            time.sleep(1)
+            continue
+    print("--- Timeout waiting for server to become ready. ---")
+    return False
 
 
 def simulate_client(
@@ -148,7 +148,6 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # --- Dynamically determine the target host ---
     target_host = get_proxy_host()
     port = 25565 if args.server_type == ServerType.JAVA else 19132
 
@@ -163,6 +162,19 @@ if __name__ == "__main__":
     print("---------------------------------")
 
     start_time = time.time()
+
+    if args.server_type == ServerType.JAVA and args.mode == TestMode.SPIKE:
+        print("--- Sending a pre-warming client to start the server... ---")
+        pre_warm_result = simulate_client(
+            -1, args.server_type, target_host, port, TestMode.SPIKE, 0, 0
+        )
+        if pre_warm_result != "SUCCESS":
+            print(f"Pre-warming client failed: {pre_warm_result}. Aborting test.")
+            sys.exit(1)
+
+        if not wait_for_server_ready(target_host, port):
+            print("Server did not become ready. Aborting test.")
+            sys.exit(1)
 
     tasks = []
     with ThreadPoolExecutor(max_workers=args.clients) as executor:
