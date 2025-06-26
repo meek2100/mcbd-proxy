@@ -1,0 +1,53 @@
+# .github/workflows/load-testing.yml
+name: Manual Load Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      server_type:
+        description: 'Server to test (java or bedrock)'
+        required: true
+        default: 'java'
+      clients:
+        description: 'Number of concurrent clients'
+        required: true
+        default: '50'
+
+jobs:
+  load-test:
+    name: Run Load Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # This should be the same setup as your main CI workflow
+      # to build and start the docker-compose environment.
+      - name: Set up and run test environment
+        run: |
+          echo "--- Building and starting services ---"
+          docker compose -f tests/docker-compose.tests.yml up --build -d
+
+          echo "--- Waiting for nether-bridge to be healthy ---"
+          timeout=120
+          start_time=$(date +%s)
+          while true; do
+            status=$(docker inspect --format '{{.State.Health.Status}}' nether-bridge || echo "error")
+            if [ "$status" = "healthy" ]; then
+              echo "Nether-bridge is healthy."
+              break
+            fi
+            if [ "$(($(date +%s) - start_time))" -ge "$timeout" ]; then
+              echo "Timeout waiting for container."
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Run Load Test Script
+        run: |
+          echo "--- Running load test against ${{ github.event.inputs.server_type }} server ---"
+          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester \
+            python tests/send_test_packets.py \
+              --server-type ${{ github.event.inputs.server_type }} \
+              --clients ${{ github.event.inputs.clients }}
