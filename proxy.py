@@ -62,8 +62,13 @@ class NetherBridgeProxy:
             self._shutdown_requested = True
             self._shutdown_event.set()
 
-    def _start_minecraft_server(self, server_config: ServerConfig):
-        """High-level wrapper to start a server and update proxy state."""
+    def _start_minecraft_server(self, server_config: ServerConfig) -> bool:
+        """
+        High-level wrapper to start a server and update proxy state.
+
+        Returns:
+            bool: True if the server is running and ready, False otherwise.
+        """
         container_name = server_config.container_name
         if self.docker_manager.is_container_running(container_name):
             self.logger.debug(
@@ -76,6 +81,7 @@ class NetherBridgeProxy:
             return True
 
         startup_timer_start = time.time()
+        # This now correctly returns True or False
         success = self.docker_manager.start_server(server_config, self.settings)
 
         if success:
@@ -96,6 +102,7 @@ class NetherBridgeProxy:
             )
             self.server_states[container_name]["running"] = False
 
+        # This is the crucial fix: return the actual success status.
         return success
 
     def _stop_minecraft_server(self, container_name: str):
