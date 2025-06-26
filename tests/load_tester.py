@@ -6,11 +6,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 
-# --- FIX: Add project root to the path ---
-# This allows the script to be run from the root directory and still find modules.
+# Add project root to the path to allow module imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from mcstatus import JavaServer
+from mcstatus import BedrockServer, JavaServer
 
 from tests.helpers import get_java_handshake_and_status_request_packets, get_proxy_host
 
@@ -36,27 +35,10 @@ BEDROCK_UNCONNECTED_PING = (
 )
 
 
-# --- Helper functions ---
-def wait_for_server_ready(host: str, port: int, timeout: int = 60):
-    """Waits for the server to respond to a status query."""
-    print(f"--- Waiting for server at {host}:{port} to become ready... ---")
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        try:
-            server = JavaServer.lookup(f"{host}:{port}", timeout=2)
-            status = server.status()
-            if status:
-                print("--- Server is ready. Proceeding with load test. ---")
-                return True
-        except Exception:
-            time.sleep(1)
-            continue
-    print("--- Timeout waiting for server to become ready. ---")
-    return False
+# --- Helper Functions ---
 
 
-def simulate_client(
-    client_id: int,
+def simulate_single_client(
     server_type: ServerType,
     host: str,
     port: int,
@@ -66,12 +48,13 @@ def simulate_client(
 ):
     """
     Simulates a single client performing a test against the proxy.
+    This is the core logic that will be run in parallel by the thread pool.
     Returns "SUCCESS" or a "FAILURE: reason" string.
     """
     try:
         if server_type == ServerType.JAVA:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(15)
+            sock.settimeout(15)  # Increased timeout for initial connection
             sock.connect((host, port))
 
             handshake, status_request = get_java_handshake_and_status_request_packets(
@@ -81,14 +64,13 @@ def simulate_client(
             sock.sendall(status_request)
 
             if mode == TestMode.SPIKE:
-                sock.recv(4096)
+                sock.recv(4096)  # Wait for the status response
             elif mode == TestMode.SUSTAINED:
                 end_time = time.time() + duration
                 while time.time() < end_time:
                     sock.sendall(status_request)
                     sock.recv(4096)
                     time.sleep(packet_interval)
-
             sock.close()
 
         elif server_type == ServerType.BEDROCK:
@@ -104,12 +86,60 @@ def simulate_client(
                     sock.sendto(BEDROCK_UNCONNECTED_PING, (host, port))
                     sock.recvfrom(4096)
                     time.sleep(packet_interval)
-
             sock.close()
 
         return "SUCCESS"
     except Exception as e:
-        return f"FAILURE ({type(e).__name__})"
+        # Provide more context in failure messages for easier debugging in CI
+        return f"FAILURE: {type(e).__name__} - {e}"
+
+
+def pre_warm_and_wait(
+    server_type: ServerType, host: str, port: int, timeout: int = 120
+):
+    """
+    Handles the critical pre-warming sequence: triggers the server to start
+    and then waits for it to become responsive to status queries. This prevents
+    the main load test from failing due to server startup time.
+    """
+    # --- FIX: Reformatted line to be under 88 characters ---
+    print(
+        "--- Sending a pre-warming client to start the "
+        f"{server_type.value} server... ---"
+    )
+    # We run a single client simulation. We don't care about the result, only that it
+    # sends a packet to the proxy to trigger the server startup logic.
+    simulate_single_client(server_type, host, port, TestMode.SPIKE, 0, 0)
+
+    # --- FIX: Reformatted line to be under 88 characters ---
+    print(
+        f"--- Waiting for server at {host}:{port} to become ready "
+        f"(max {timeout}s)... ---"
+    )
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            status = None
+            if server_type == ServerType.JAVA:
+                server = JavaServer.lookup(f"{host}:{port}", timeout=2)
+                status = server.status()
+            elif server_type == ServerType.BEDROCK:
+                server = BedrockServer.lookup(f"{host}:{port}", timeout=2)
+                status = server.status()
+
+            if status:
+                # --- FIX: Reformatted line to be under 88 characters ---
+                print(
+                    f"--- Server is ready (latency: {status.latency:.2f}ms). "
+                    "Proceeding with load test. ---"
+                )
+                return True
+        except Exception:
+            time.sleep(2)  # Wait a moment before retrying
+            continue
+
+    print("--- Timeout waiting for server to become ready. Aborting. ---")
+    return False
 
 
 # --- Main Execution Block ---
@@ -168,25 +198,19 @@ if __name__ == "__main__":
 
     start_time = time.time()
 
-    if args.server_type == ServerType.JAVA and args.mode == TestMode.SPIKE:
-        print("--- Sending a pre-warming client to start the server... ---")
-        pre_warm_result = simulate_client(
-            -1, args.server_type, target_host, port, TestMode.SPIKE, 0, 0
-        )
-        if pre_warm_result != "SUCCESS":
-            print(f"Pre-warming client failed: {pre_warm_result}. Aborting test.")
-            sys.exit(1)
+    # In spike mode, we must always pre-warm the server first. Otherwise, the test
+    # is measuring server start time, not proxy performance.
+    if args.mode == TestMode.SPIKE:
+        if not pre_warm_and_wait(args.server_type, target_host, port):
+            sys.exit(1)  # Exit if the server fails to become ready.
 
-        if not wait_for_server_ready(target_host, port):
-            print("Server did not become ready. Aborting test.")
-            sys.exit(1)
-
+    # --- Execute Main Load Test ---
+    print(f"--- Starting main load test with {args.clients} clients... ---")
     tasks = []
     with ThreadPoolExecutor(max_workers=args.clients) as executor:
         for i in range(args.clients):
             task = executor.submit(
-                simulate_client,
-                i,
+                simulate_single_client,
                 args.server_type,
                 target_host,
                 port,
@@ -195,7 +219,6 @@ if __name__ == "__main__":
                 args.packet_interval,
             )
             tasks.append(task)
-
         results = [t.result() for t in tasks]
 
     end_time = time.time()
@@ -220,4 +243,5 @@ if __name__ == "__main__":
             print(f"- {reason}: {count} times")
         sys.exit(1)
 
+    print("\n--- Load Test Passed ---")
     sys.exit(0)
