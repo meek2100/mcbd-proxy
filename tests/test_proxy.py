@@ -1,8 +1,9 @@
 import os
+import select
 import signal
 import sys
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -148,6 +149,7 @@ def test_start_minecraft_server_wrapper_already_running(
 @pytest.mark.unit
 def test_stop_minecraft_server_wrapper(proxy_instance):
     """
+
     Tests that the proxy's stop method correctly calls the docker_manager
     and updates its state.
     """
@@ -170,7 +172,6 @@ def test_monitor_servers_activity_stops_idle_server(
     Tests that the monitor thread correctly identifies an idle server
     and calls the stop method.
     """
-    # --- THIS IS THE FIX ---
     # The side_effect is now an iterable. The first call to sleep will return None
     # and allow the loop to run once. The second call will raise the error.
     mock_sleep.side_effect = [None, InterruptedError("Stop loop")]
@@ -191,3 +192,28 @@ def test_monitor_servers_activity_stops_idle_server(
 
     # Assert that the logic correctly identified and tried to stop the idle server.
     mock_stop_method.assert_called_once_with(container_name)
+
+
+@pytest.mark.unit
+@patch("proxy.select.select")
+@patch("proxy.time.sleep")
+def test_run_proxy_loop_handles_select_error(mock_sleep, mock_select, proxy_instance):
+    """
+    Tests that the main proxy loop gracefully handles a select.error,
+    logs it, and continues, preventing a crash.
+    """
+
+    # This side effect simulates a select.error and then sets the shutdown flag
+    # to ensure the loop terminates cleanly for the test.
+    def select_side_effect(*args, **kwargs):
+        proxy_instance._shutdown_requested = True
+        raise select.error
+
+    mock_select.side_effect = select_side_effect
+
+    # The _run_proxy_loop method requires the main module for reloads, so we mock it.
+    mock_main_module = MagicMock()
+    proxy_instance._run_proxy_loop(mock_main_module)
+
+    # Assert that the loop caught the error and slept for 1 second before exiting.
+    mock_sleep.assert_called_once_with(1)
