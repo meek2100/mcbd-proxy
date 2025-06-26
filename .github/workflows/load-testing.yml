@@ -48,6 +48,6 @@ jobs:
         run: |
           echo "--- Running load test against ${{ github.event.inputs.server_type }} server ---"
           docker compose -f tests/docker-compose.tests.yml exec -T nb-tester \
-            python tests/send_test_packets.py \
+            python tests/load_tester.py \
               --server-type ${{ github.event.inputs.server_type }} \
               --clients ${{ github.event.inputs.clients }}
