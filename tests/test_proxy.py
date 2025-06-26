@@ -164,8 +164,8 @@ def test_stop_minecraft_server_wrapper(proxy_instance):
 
 
 @pytest.mark.unit
-# Patch the Event.wait method which is now used for sleeping
-@patch("proxy.threading.Event.wait")
+# Correct the patch target to look for the Event class inside the proxy module
+@patch("proxy.Event.wait")
 def test_monitor_servers_activity_stops_idle_server(
     mock_event_wait, proxy_instance, mock_servers_config
 ):
@@ -203,18 +203,22 @@ def test_run_proxy_loop_handles_select_error(mock_sleep, mock_select, proxy_inst
     Tests that the main proxy loop gracefully handles a select.error,
     logs it, and continues, preventing a crash.
     """
-    # This side effect will:
-    # 1. Raise select.error on the first call to trigger the 'except' block.
-    # 2. Raise an InterruptedError on the second call to exit the test's while loop.
-    mock_select.side_effect = [select.error, InterruptedError("Stop loop")]
+
+    # We define a side effect function for the select mock.
+    def select_side_effect(*args, **kwargs):
+        # The FIRST time this is called, we set the flag to stop the loop
+        # on the NEXT iteration. Then we raise the error to be tested.
+        proxy_instance._shutdown_requested = True
+        raise select.error
+
+    mock_select.side_effect = select_side_effect
 
     # The _run_proxy_loop method requires the main module for reloads, so we mock it.
     mock_main_module = MagicMock()
 
-    try:
-        proxy_instance._run_proxy_loop(mock_main_module)
-    except InterruptedError:
-        pass  # Expected way to exit the while loop for testing purposes
+    # The loop will run once, hit the error, call sleep, continue,
+    # and then exit because the shutdown flag is now set.
+    proxy_instance._run_proxy_loop(mock_main_module)
 
     # Assert that the loop caught the error and slept for 1 second.
     mock_sleep.assert_called_once_with(1)
