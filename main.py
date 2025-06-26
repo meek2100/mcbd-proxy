@@ -57,10 +57,9 @@ def perform_health_check():
     """Performs a self-sufficient two-stage health check."""
     logger = structlog.get_logger(__name__)
     try:
-        settings, servers_list = load_application_config()
-        if not servers_list:
-            logger.error("Health Check FAIL: No server configuration found.")
-            sys.exit(1)
+        # We still need to load settings to get the threshold.
+        # It's okay if the healthcheck process itself doesn't find servers.
+        settings, _ = load_application_config()
         logger.debug("Health Check Stage 1 (Configuration) OK.")
     except Exception as e:
         logger.error(
