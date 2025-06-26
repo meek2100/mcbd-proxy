@@ -3,14 +3,13 @@ import signal
 import socket
 import time
 from pathlib import Path
+from threading import RLock
 from typing import List
 
 import structlog
 
 from config import ProxySettings, ServerConfig, load_application_config
 from docker_manager import DockerManager
-
-# Import the centralized metrics instead of defining them here.
 from metrics import (
     ACTIVE_SESSIONS,
     BYTES_TRANSFERRED,
@@ -40,6 +39,8 @@ class NetherBridgeProxy:
             s.container_name: {"running": False, "last_activity": 0.0}
             for s in self.servers_list
         }
+        # Create a re-entrant lock for each server to serialize start/stop operations.
+        self.server_locks = {s.container_name: RLock() for s in self.servers_list}
         self.socket_to_session_map = {}
         self.active_sessions = {}
         self.listen_sockets = {}
@@ -168,32 +169,33 @@ class NetherBridgeProxy:
             # Server Shutdown Logic
             for server_conf in self.servers_list:
                 container_name = server_conf.container_name
-                state = self.server_states.get(container_name)
-                if not (state and state.get("running")):
-                    continue
+                with self.server_locks[container_name]:
+                    state = self.server_states.get(container_name)
+                    if not (state and state.get("running")):
+                        continue
 
-                has_active_sessions = any(
-                    info["target_container"] == container_name
-                    for info in self.active_sessions.values()
-                )
-                if has_active_sessions:
-                    self.logger.debug(
-                        "Server has active sessions. Not stopping.",
-                        container_name=container_name,
+                    has_active_sessions = any(
+                        info["target_container"] == container_name
+                        for info in self.active_sessions.values()
                     )
-                    continue
+                    if has_active_sessions:
+                        self.logger.debug(
+                            "Server has active sessions. Not stopping.",
+                            container_name=container_name,
+                        )
+                        continue
 
-                idle_timeout = (
-                    server_conf.idle_timeout_seconds
-                    or self.settings.idle_timeout_seconds
-                )
-                if current_time - state.get("last_activity", 0) > idle_timeout:
-                    self.logger.info(
-                        "Server idle with 0 sessions. Initiating shutdown.",
-                        container_name=container_name,
-                        idle_threshold_seconds=idle_timeout,
+                    idle_timeout = (
+                        server_conf.idle_timeout_seconds
+                        or self.settings.idle_timeout_seconds
                     )
-                    self._stop_minecraft_server(container_name)
+                    if current_time - state.get("last_activity", 0) > idle_timeout:
+                        self.logger.info(
+                            "Server idle with 0 sessions. Initiating shutdown.",
+                            container_name=container_name,
+                            idle_threshold_seconds=idle_timeout,
+                        )
+                        self._stop_minecraft_server(container_name)
 
     def _close_session_sockets(self, session_info):
         """Helper to safely close sockets associated with a session."""
@@ -266,6 +268,8 @@ class NetherBridgeProxy:
                     "running": False,
                     "last_activity": 0.0,
                 }
+                # Add a lock for the new server
+                self.server_locks[srv_cfg.container_name] = RLock()
 
         self.logger.info("Configuration reload complete.")
         self._reload_requested = False
@@ -291,17 +295,21 @@ class NetherBridgeProxy:
         server_config = self.servers_config_map[server_port]
         container_name = server_config.container_name
 
-        is_actually_running = self.docker_manager.is_container_running(container_name)
-        self.server_states[container_name]["running"] = is_actually_running
-
-        if not self.server_states[container_name]["running"]:
-            self.logger.info(
-                "First TCP connection for stopped server. Starting...",
-                container_name=container_name,
-                client_addr=client_addr,
+        with self.server_locks[container_name]:
+            is_actually_running = self.docker_manager.is_container_running(
+                container_name
             )
-            self._start_minecraft_server(server_config)
-        else:
+            self.server_states[container_name]["running"] = is_actually_running
+
+            if not self.server_states[container_name]["running"]:
+                self.logger.info(
+                    "First TCP connection for stopped server. Starting...",
+                    container_name=container_name,
+                    client_addr=client_addr,
+                )
+                self._start_minecraft_server(server_config)
+
+        if self.server_states[container_name]["running"]:
             self.logger.info(
                 "Establishing new TCP session for running server.",
                 client_addr=client_addr,
@@ -363,17 +371,21 @@ class NetherBridgeProxy:
         server_config = self.servers_config_map[server_port]
         container_name = server_config.container_name
 
-        is_actually_running = self.docker_manager.is_container_running(container_name)
-        self.server_states[container_name]["running"] = is_actually_running
-
-        if not self.server_states[container_name]["running"]:
-            self.logger.info(
-                "First packet received for stopped server. Starting...",
-                container_name=container_name,
-                client_addr=client_addr,
+        with self.server_locks[container_name]:
+            is_actually_running = self.docker_manager.is_container_running(
+                container_name
             )
-            self._start_minecraft_server(server_config)
-        else:
+            self.server_states[container_name]["running"] = is_actually_running
+
+            if not self.server_states[container_name]["running"]:
+                self.logger.info(
+                    "First packet received for stopped server. Starting...",
+                    container_name=container_name,
+                    client_addr=client_addr,
+                )
+                self._start_minecraft_server(server_config)
+
+        if self.server_states[container_name]["running"]:
             self.logger.info(
                 "Establishing new UDP session for running server.",
                 client_addr=client_addr,
