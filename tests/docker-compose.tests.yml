@@ -79,6 +79,7 @@ services:
       - MEMORY=512M
       - IDLE_TIMEOUT=-1
       - ONLINE_MODE=FALSE
+      - SKIP_PAPER_PATCH_DOWNLOAD=TRUE
       
   nb-tester:
     image: nb-tester:local
