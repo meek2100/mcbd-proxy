@@ -73,7 +73,7 @@ class NetherBridgeProxy:
             if not self.server_states[container_name].get("running", False):
                 self.server_states[container_name]["running"] = True
                 RUNNING_SERVERS.inc()
-            return
+            return True
 
         startup_timer_start = time.time()
         success = self.docker_manager.start_server(server_config, self.settings)
@@ -95,6 +95,8 @@ class NetherBridgeProxy:
                 "Server startup process failed.", container_name=container_name
             )
             self.server_states[container_name]["running"] = False
+
+        return success
 
     def _stop_minecraft_server(self, container_name: str):
         """High-level wrapper to stop a server and update proxy state."""
@@ -327,7 +329,15 @@ class NetherBridgeProxy:
                     container_name=container_name,
                     client_addr=client_addr,
                 )
-                self._start_minecraft_server(server_config)
+                startup_success = self._start_minecraft_server(server_config)
+                if not startup_success:
+                    self.logger.error(
+                        "Server failed to become ready. Closing client connection.",
+                        container_name=container_name,
+                    )
+                    self.inputs.remove(conn)
+                    conn.close()
+                    return
 
         if self.server_states[container_name]["running"]:
             self.logger.info(
@@ -349,7 +359,7 @@ class NetherBridgeProxy:
             server_sock.setblocking(False)
         except (socket.error, socket.gaierror, ConnectionRefusedError) as e:
             self.logger.error(
-                "Failed to connect to backend server or server not running.",
+                "Failed to connect to backend server. It may have crashed post-check.",
                 container_name=container_name,
                 error=str(e),
             )
@@ -403,7 +413,13 @@ class NetherBridgeProxy:
                     container_name=container_name,
                     client_addr=client_addr,
                 )
-                self._start_minecraft_server(server_config)
+                startup_success = self._start_minecraft_server(server_config)
+                if not startup_success:
+                    self.logger.error(
+                        "Server failed to become ready. Dropping client packet.",
+                        container_name=container_name,
+                    )
+                    return
 
         if self.server_states[container_name]["running"]:
             self.logger.info(
