@@ -21,7 +21,7 @@ jobs:
       JAVA_VERSION: "1.20.1"
       JAVA_TYPE: "PAPER"
       BEDROCK_VERSION: "1.20.81.01"
-      BEDROCK_DOWNLOAD_URL: "https://minecraft.net/de-de/download/server/bedrock"
+      BEDROCK_DOWNLOAD_URL: https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.20.81.01.zip
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
