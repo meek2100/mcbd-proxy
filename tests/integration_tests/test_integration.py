@@ -613,12 +613,14 @@ def test_proxy_cleans_up_session_on_container_crash(
         "Backend container for active session is not running. Cleaning up.",
         timeout=check_interval + 5,  # Give a 5s buffer
     ), (
-        "Proxy monitor did not log that it cleaned up the session for the crashed container."
+        "Proxy monitor did not log that it cleaned up the session "
+        "for the crashed container."
     )
 
     # Close the client socket at the end of the test.
     client_socket.close()
 
     print(
-        "(Chaos Test) Proxy correctly detected crash and cleaned up session. Test passed."
+        "(Chaos Test) Proxy correctly detected crash and cleaned up session. "
+        "Test passed."
     )
