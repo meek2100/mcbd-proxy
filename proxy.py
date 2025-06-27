@@ -115,7 +115,10 @@ class NetherBridgeProxy:
             self.server_states[container_name]["running"] = False
 
     def _ensure_all_servers_stopped_on_startup(self):
-        """Ensures all managed servers are stopped when the proxy starts."""
+        """
+        Ensures all managed servers are stopped when the proxy starts.
+        This is a blocking operation to prevent race conditions in tests.
+        """
         self.logger.info(
             "Proxy startup: Ensuring all managed servers are initially stopped."
         )
@@ -133,6 +136,27 @@ class NetherBridgeProxy:
                     self.settings.query_timeout_seconds,
                 )
                 self._stop_minecraft_server(container_name)
+
+                # --- FIX: Block and wait for the container to fully stop ---
+                self.logger.info(
+                    "Waiting for server to fully stop...",
+                    container_name=container_name,
+                )
+                stop_timeout = 60  # seconds
+                stop_start_time = time.time()
+                while self.docker_manager.is_container_running(container_name):
+                    if time.time() - stop_start_time > stop_timeout:
+                        self.logger.error(
+                            "Timeout waiting for container to stop.",
+                            container_name=container_name,
+                        )
+                        break
+                    time.sleep(1)
+                else:  # This 'else' belongs to the 'while' loop
+                    self.logger.info(
+                        "Server confirmed to be stopped.",
+                        container_name=container_name,
+                    )
             else:
                 self.logger.info(
                     "Is confirmed to be stopped.", container_name=container_name
