@@ -141,7 +141,6 @@ class NetherBridgeProxy:
     def _monitor_servers_activity(self):
         """Monitors server and session activity in a dedicated thread."""
         while not self._shutdown_requested:
-            # This will wait for the interval OR until the shutdown event is set
             self._shutdown_event.wait(self.settings.player_check_interval_seconds)
             if self._shutdown_requested:
                 break
@@ -152,8 +151,40 @@ class NetherBridgeProxy:
             )
             current_time = time.time()
 
-            # Session Cleanup Logic
+            # --- NEW: Proactive Crash Detection ---
+            # Iterate over a copy of sessions to check for crashed backends.
             for session_key, session_info in list(self.active_sessions.items()):
+                container_name = session_info["target_container"]
+                if not self.docker_manager.is_container_running(container_name):
+                    self.logger.warning(
+                        (
+                            "Backend container for active session is not running. "
+                            "Cleaning up."
+                        ),
+                        container_name=container_name,
+                        client_addr=session_key[0],
+                    )
+                    # This session is dead. Clean it up now.
+                    self._close_session_sockets(session_info)
+                    self.active_sessions.pop(session_key, None)
+                    self.socket_to_session_map.pop(
+                        session_info.get("client_socket"), None
+                    )
+                    self.socket_to_session_map.pop(
+                        session_info.get("server_socket"), None
+                    )
+
+                    server_config = self.servers_config_map.get(
+                        session_info["listen_port"]
+                    )
+                    if server_config:
+                        ACTIVE_SESSIONS.labels(server_name=server_config.name).dec()
+
+                    # Continue to the next session to avoid race conditions
+                    # with idle cleanup
+                    continue
+
+                # --- Original Session Idle Timeout Logic ---
                 server_config = self.servers_config_map.get(session_info["listen_port"])
                 if not server_config:
                     continue
@@ -178,7 +209,7 @@ class NetherBridgeProxy:
                         session_info.get("server_socket"), None
                     )
 
-            # Server Shutdown Logic
+            # Server Shutdown Logic (unchanged)
             for server_conf in self.servers_list:
                 container_name = server_conf.container_name
                 with self.server_locks[container_name]:
