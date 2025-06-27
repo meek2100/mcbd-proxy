@@ -572,13 +572,13 @@ def test_proxy_cleans_up_session_on_container_crash(
 ):
     """
     Tests that if a server container crashes during an active session,
-    the proxy detects the resulting connection error and cleans up the session.
+    the proxy's monitor thread detects it and cleans up the session.
     """
     proxy_host = get_proxy_host()
     java_proxy_port = JAVA_PROXY_PORT
     mc_java_container_name = "mc-java"
+    check_interval = 5
 
-    # Step 1: Ensure the server is running.
     print("\n(Chaos Test) Pre-warming server to ensure it is running...")
     assert wait_for_mc_server_ready(
         {"host": proxy_host, "port": java_proxy_port, "type": "java"},
@@ -586,39 +586,34 @@ def test_proxy_cleans_up_session_on_container_crash(
     ), "Java server did not become query-ready through proxy."
     print("(Chaos Test) Server is confirmed to be running.")
 
-    # Step 2: Establish a persistent client connection.
     print("(Chaos Test) Establishing persistent client connection...")
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     client_socket.connect((proxy_host, java_proxy_port))
     print("(Chaos Test) Persistent client connected.")
 
-    # Step 3: Manually stop (crash) the Minecraft server container.
     print(f"(Chaos Test) Manually stopping container '{mc_java_container_name}'...")
     container = docker_client_fixture.containers.get(mc_java_container_name)
-    container.stop()
+    container.stop(timeout=10)
     assert wait_for_container_status(
         docker_client_fixture, mc_java_container_name, ["exited"], timeout=90
     ), "Container did not stop after manual command."
     print("(Chaos Test) Container successfully stopped.")
 
-    # Step 4: Verify the proxy's main loop detects the broken connection.
-    # When the container dies, the proxy's recv() on the socket will return 0 bytes,
-    # which triggers the cleanup block. We just need to give the OS a moment to
-    # propagate the TCP FIN/RST packet.
-    print("(Chaos Test) Waiting for proxy to detect broken connection...")
-    time.sleep(2)  # A short, simple wait is sufficient here.
+    print("(Chaos Test) Waiting for monitor thread to detect crashed container...")
 
-    # --- FINAL FIX: Wait for the CORRECT log message ---
-    assert wait_for_log_message(
+    # FIX: Break the long assertion into a function call and the assert statement.
+    log_message_found = wait_for_log_message(
         docker_client_fixture,
         "nether-bridge",
-        "[DEBUG] Session cleanup block triggered.",
-        timeout=10,
-    ), "Proxy did not log that its main loop cleaned up the broken session."
+        "Backend active session container not running. Cleaning up.",
+        timeout=check_interval + 5,  # Give a 5s buffer
+    )
+    assert log_message_found, (
+        "Proxy monitor did not log that it cleaned up the session for the "
+        "crashed container."
+    )
 
     client_socket.close()
 
-    print(
-        "(Chaos Test) Proxy correctly detected broken pipe and cleaned up session. "
-        "Test passed."
-    )
+    print("(Chaos Test) Proxy correctly detected crash and cleaned up session.")
+    print("Test passed.")
