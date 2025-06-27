@@ -74,22 +74,22 @@ def get_active_sessions_metric(proxy_host: str, server_name: str) -> int:
     Queries the proxy's /metrics endpoint and returns the number of active sessions.
     """
     try:
-        # --- FIX: The URL must point to /metrics ---
         metrics_url = f"http://{proxy_host}:8000/metrics"
         response = requests.get(metrics_url, timeout=5)
         response.raise_for_status()
 
-        # Use regex to find the specific metric for the server
-        # Example line: netherbridge_active_sessions{server_name="Java Creative"} 1.0
+        # Use a more robust regex that can find integer or float values.
         pattern = re.compile(
-            rf'netherbridge_active_sessions{{server_name="{server_name}"}}\s+(\d+)'
+            rf'netherbridge_active_sessions{{server_name="{server_name}"}}\s+([0-9\.]+)'
         )
         match = pattern.search(response.text)
 
         if match:
-            return int(match.group(1))
+            # --- FIX: Convert the value to a float first, then to an int ---
+            value_str = match.group(1)
+            return int(float(value_str))
 
-        # If the metric is not found, it means there are 0 sessions for that server
+        # If the metric is not found, it means there are 0 sessions for that server.
         return 0
     except (requests.RequestException, ValueError) as e:
         pytest.fail(f"Could not retrieve or parse active sessions metric: {e}")
