@@ -346,13 +346,6 @@ class NetherBridgeProxy:
                     conn.close()
                     return
 
-                # --- THIS IS THE FIX ---
-                # Add a small, hardcoded delay AFTER a successful startup.
-                # This gives the Java server a moment to fully initialize its
-                # connection manager after responding to the first ping.
-                self.logger.debug("Post-startup delay initiated.", seconds=2)
-                time.sleep(2)
-
         if self.server_states[container_name]["running"]:
             self.logger.info(
                 "Establishing new TCP session for running server.",
@@ -363,24 +356,44 @@ class NetherBridgeProxy:
         ACTIVE_SESSIONS.labels(server_name=server_config.name).inc()
         server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-        try:
-            if not self.server_states[container_name]["running"]:
-                raise ConnectionRefusedError(
-                    "Server not running to establish connection."
+        # --- NEW: Retry loop for backend connection ---
+        # This robustly handles the case where the server is pingable but the
+        # session manager isn't fully ready.
+        connected_to_backend = False
+        connect_start_time = time.time()
+        connect_timeout = 5  # seconds
+
+        while (
+            not connected_to_backend
+            and time.time() - connect_start_time < connect_timeout
+        ):
+            try:
+                if not self.docker_manager.is_container_running(container_name):
+                    raise ConnectionRefusedError(
+                        "Server stopped during backend connection attempt."
+                    )
+                server_sock.settimeout(1.0)  # Use a short timeout for each attempt
+                server_sock.connect((container_name, server_config.internal_port))
+                server_sock.setblocking(False)
+                connected_to_backend = True
+            except (socket.error, ConnectionRefusedError) as e:
+                self.logger.debug(
+                    "Backend connection failed, retrying...",
+                    container_name=container_name,
+                    error=str(e),
                 )
-            server_sock.settimeout(5.0)
-            server_sock.connect((container_name, server_config.internal_port))
-            server_sock.setblocking(False)
-        except (socket.error, socket.gaierror, ConnectionRefusedError) as e:
+                time.sleep(0.25)  # Wait briefly before retrying
+
+        if not connected_to_backend:
             self.logger.error(
-                "Failed to connect to backend server. It may have crashed post-check.",
+                "Failed to connect to backend server after multiple retries.",
                 container_name=container_name,
-                error=str(e),
             )
             self.inputs.remove(conn)
             conn.close()
             ACTIVE_SESSIONS.labels(server_name=server_config.name).dec()
             return
+        # --- End of new logic ---
 
         self.inputs.append(server_sock)
         conn.setblocking(False)
