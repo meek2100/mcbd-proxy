@@ -1,202 +1,21 @@
 import socket
 import time
 
-import docker
 import pytest
-from mcstatus import BedrockServer, JavaServer
 
-from tests.helpers import get_java_handshake_and_status_request_packets, get_proxy_host
-
-# Add this to the top of the file to ensure imports work inside the container
-# sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-# Constants for test server addresses and ports
-BEDROCK_PROXY_PORT = 19132
-JAVA_PROXY_PORT = 25565
-
-
-def get_container_status(docker_client_fixture, container_name):
-    """
-    Retrieves the current status of a Docker container.
-
-    Args:
-        docker_client_fixture: The Docker client fixture.
-        container_name (str): The name of the container to check.
-
-    Returns:
-        str: The container status (e.g., 'running', 'exited') or 'not_found'.
-    """
-    try:
-        container = docker_client_fixture.containers.get(container_name)
-        return container.status
-    except docker.errors.NotFound:
-        return "not_found"
-    except Exception as e:
-        pytest.fail(f"Failed to get status for container {container_name}: {e}")
-
-
-def wait_for_container_status(
-    docker_client_fixture,
-    container_name,
-    target_statuses,
-    timeout=240,
-    interval=5,
-):
-    """
-    Waits for a container to enter one of a list of target statuses.
-
-    Args:
-        docker_client_fixture: The Docker client fixture.
-        container_name (str): The name of the container.
-        target_statuses (list): A list of desired statuses (e.g., ['running']).
-        timeout (int): The maximum time to wait in seconds.
-        interval (int): The interval between checks in seconds.
-
-    Returns:
-        bool: True if the container reached a target status, False otherwise.
-    """
-    start_time = time.time()
-    print(
-        f"Waiting for container '{container_name}' to reach status in "
-        f"{target_statuses} (max {timeout}s)..."
-    )
-    while time.time() - start_time < timeout:
-        current_status = get_container_status(docker_client_fixture, container_name)
-        print(f"  Current status of '{container_name}': {current_status}")
-        if current_status in target_statuses:
-            print(
-                f"  Container '{container_name}' reached desired status: "
-                f"{current_status}"
-            )
-            return True
-        time.sleep(interval)
-    current_status = get_container_status(docker_client_fixture, container_name)
-    print(
-        f"Timeout waiting for container '{container_name}' to reach status in "
-        f"{target_statuses}. Current: {current_status}"
-    )
-    return False
-
-
-def wait_for_mc_server_ready(server_config, timeout=60, interval=1):
-    """
-    Waits for a Minecraft server to become query-ready via mcstatus.
-
-    Args:
-        server_config (dict): A dict with 'host', 'port', and 'type'.
-        timeout (int): Maximum time to wait in seconds.
-        interval (int): Interval between queries in seconds.
-
-    Returns:
-        bool: True if the server responded, False otherwise.
-    """
-    host, port = server_config["host"], server_config["port"]
-    server_type = server_config["type"]
-    start_time = time.time()
-    print(f"\nWaiting for {server_type} server at {host}:{port} to be ready...")
-
-    while time.time() - start_time < timeout:
-        try:
-            status = None
-            if server_type == "bedrock":
-                server = BedrockServer.lookup(f"{host}:{port}", timeout=interval)
-                status = server.status()
-            elif server_type == "java":
-                server = JavaServer.lookup(f"{host}:{port}", timeout=interval)
-                status = server.status()
-
-            if status:
-                print(
-                    f"[{server_type}@{host}:{port}] Server responded! "
-                    f"Latency: {status.latency:.2f}ms. "
-                    f"Online players: {status.players.online}"
-                )
-                return True
-        except Exception:
-            pass
-        time.sleep(interval)
-    print(f"[{server_type}@{host}:{port}] Timeout waiting for server to be ready.")
-    return False
-
-
-def encode_varint(value):
-    """Helper to encode VarInt for Java protocol."""
-    buf = b""
-    while True:
-        byte = value & 0x7F
-        value >>= 7
-        if value != 0:
-            byte |= 0x80
-        buf += bytes([byte])
-        if value == 0:
-            break
-    return buf
-
-
-def wait_for_proxy_to_be_ready(docker_client_fixture, timeout=60):
-    """
-    Waits for the nether-bridge proxy to be fully initialized by watching its logs.
-    """
-    print("\nWaiting for nether-bridge proxy to be ready...")
-    # Use the static container name defined in the compose file
-    container = docker_client_fixture.containers.get("nether-bridge")
-
-    # Check existing logs first in case the message has already been printed
-    if "Starting main proxy packet forwarding loop" in container.logs().decode("utf-8"):
-        print("Proxy is already ready (found message in existing logs).")
-        return True
-
-    # Stream new logs if the message wasn't in the historical logs
-    start_time = time.time()
-    for line in container.logs(stream=True, since=int(start_time)):
-        decoded_line = line.decode("utf-8").strip()
-        print(f"  [proxy log]: {decoded_line}")
-        if "Starting main proxy packet forwarding loop" in decoded_line:
-            print("Proxy is now ready.")
-            return True
-        if time.time() - start_time > timeout:
-            print("Timeout waiting for proxy to become ready.")
-            return False
-    return False
-
-
-def wait_for_log_message(docker_client_fixture, container_name, message, timeout=30):
-    """
-    Waits for a specific message to appear in a container's logs.
-
-    Checks historical logs first, then streams new logs until the message is
-    found or the timeout is reached.
-
-    Args:
-        docker_client_fixture: The Docker client fixture.
-        container_name (str): The name of the container to monitor.
-        message (str): The log message to search for.
-        timeout (int): The maximum time to wait in seconds.
-
-    Returns:
-        bool: True if the message was found, False otherwise.
-    """
-    container = docker_client_fixture.containers.get(container_name)
-    start_time = time.time()
-
-    print(f"\nWaiting for message in '{container_name}' logs: '{message}'...")
-
-    # Check existing logs first
-    if message in container.logs().decode("utf-8"):
-        print("  Found message in existing logs.")
-        return True
-
-    # Stream new logs
-    for line in container.logs(stream=True, since=int(start_time)):
-        decoded_line = line.decode("utf-8").strip()
-        print(f"  [log]: {decoded_line}")
-        if message in decoded_line:
-            print("  Found message.")
-            return True
-        if time.time() - start_time > timeout:
-            print("  Timeout waiting for message.")
-            return False
-    return False
+# The mcstatus import is no longer needed here since the helpers handle it.
+from tests.helpers import (
+    BEDROCK_PROXY_PORT,
+    JAVA_PROXY_PORT,
+    get_active_sessions_metric,
+    get_container_status,
+    get_java_handshake_and_status_request_packets,
+    get_proxy_host,
+    wait_for_container_status,
+    wait_for_log_message,
+    wait_for_mc_server_ready,
+    wait_for_proxy_to_be_ready,
+)
 
 
 # --- Integration Test Cases ---
@@ -572,25 +391,40 @@ def test_proxy_cleans_up_session_on_container_crash(
 ):
     """
     Tests that if a server container crashes during an active session,
-    the proxy's monitor thread detects it and cleans up the session.
+    the proxy correctly cleans up the session, reflected by the active_sessions metric.
     """
     proxy_host = get_proxy_host()
     java_proxy_port = JAVA_PROXY_PORT
     mc_java_container_name = "mc-java"
-    check_interval = 5
+    java_server_name = "Java Creative"  # Must match the name in servers.json
 
+    # Step 1: Ensure the server is running.
     print("\n(Chaos Test) Pre-warming server to ensure it is running...")
     assert wait_for_mc_server_ready(
-        {"host": proxy_host, "port": java_proxy_port, "type": "java"},
-        timeout=180,
+        {"host": proxy_host, "port": java_proxy_port, "type": "java"}, timeout=180
     ), "Java server did not become query-ready through proxy."
     print("(Chaos Test) Server is confirmed to be running.")
 
+    # Step 2: Assert that there are initially 0 active sessions.
+    assert get_active_sessions_metric(proxy_host, java_server_name) == 0, (
+        "Initial active session count should be 0."
+    )
+
+    # Step 3: Establish a persistent client connection to create a session.
     print("(Chaos Test) Establishing persistent client connection...")
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     client_socket.connect((proxy_host, java_proxy_port))
     print("(Chaos Test) Persistent client connected.")
 
+    # Give the proxy a moment to register the session.
+    time.sleep(1)
+
+    # Step 4: Assert that the active session count is now 1.
+    assert get_active_sessions_metric(proxy_host, java_server_name) == 1, (
+        "Active session count should be 1 after connection."
+    )
+
+    # Step 5: Manually stop (crash) the Minecraft server container.
     print(f"(Chaos Test) Manually stopping container '{mc_java_container_name}'...")
     container = docker_client_fixture.containers.get(mc_java_container_name)
     container.stop(timeout=10)
@@ -599,21 +433,19 @@ def test_proxy_cleans_up_session_on_container_crash(
     ), "Container did not stop after manual command."
     print("(Chaos Test) Container successfully stopped.")
 
-    print("(Chaos Test) Waiting for monitor thread to detect crashed container...")
+    # Step 6: Wait for the proxy to clean up the session.
+    # We poll the metric endpoint until the session count returns to 0.
+    cleanup_success = False
+    for _ in range(10):  # Poll for up to 10 seconds
+        if get_active_sessions_metric(proxy_host, java_server_name) == 0:
+            cleanup_success = True
+            break
+        time.sleep(1)
 
-    # FIX: Break the long assertion into a function call and the assert statement.
-    log_message_found = wait_for_log_message(
-        docker_client_fixture,
-        "nether-bridge",
-        "Backend active session container not running. Cleaning up.",
-        timeout=check_interval + 5,  # Give a 5s buffer
-    )
-    assert log_message_found, (
-        "Proxy monitor did not log that it cleaned up the session for the "
-        "crashed container."
+    # Step 7: Assert that the session was cleaned up.
+    assert cleanup_success, (
+        "Proxy did not clean up the session (metric did not return to 0)."
     )
 
     client_socket.close()
-
-    print("(Chaos Test) Proxy correctly detected crash and cleaned up session.")
-    print("Test passed.")
+    print("(Chaos Test) Proxy correctly cleaned up session. Test passed.")
