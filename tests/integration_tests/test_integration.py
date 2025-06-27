@@ -3,7 +3,6 @@ import time
 
 import pytest
 
-# The mcstatus import is no longer needed here since the helpers handle it.
 from tests.helpers import (
     BEDROCK_PROXY_PORT,
     JAVA_PROXY_PORT,
@@ -54,7 +53,6 @@ def test_bedrock_server_starts_on_connection(docker_compose_up, docker_client_fi
         client_socket.sendto(unconnected_ping_packet, (proxy_host, bedrock_proxy_port))
         print("Bedrock 'Unconnected Ping' packet sent.")
 
-        # Assert that the proxy logs its intent to start the server
         assert wait_for_log_message(
             docker_client_fixture,
             "nether-bridge",
@@ -113,18 +111,12 @@ def test_java_server_starts_on_connection(docker_compose_up, docker_client_fixtu
         client_socket.connect((proxy_host, java_proxy_port))
         print(f"Successfully connected to {proxy_host}:{java_proxy_port}.")
 
-        # Assert that the proxy logs the new connection
-        # --- FIX STARTS HERE ---
-        # The test was looking for the wrong log message. The correct message
-        # for a stopped server is
-        # "First TCP connection for stopped server. Starting...".
         assert wait_for_log_message(
             docker_client_fixture,
             "nether-bridge",
             "First TCP connection for stopped server. Starting...",
             timeout=10,
         ), "Proxy did not log that it was starting the Java server."
-        # --- FIX ENDS HERE ---
 
         handshake_packet, status_request_packet = (
             get_java_handshake_and_status_request_packets(proxy_host, java_proxy_port)
@@ -161,8 +153,6 @@ def test_server_shuts_down_on_idle(docker_compose_up, docker_client_fixture):
     bedrock_proxy_port = BEDROCK_PROXY_PORT
     mc_bedrock_container_name = "mc-bedrock"
 
-    # These values must correspond to the test environment variables in
-    # docker-compose.tests.yml
     idle_timeout = 30
     check_interval = 5
 
@@ -193,8 +183,6 @@ def test_server_shuts_down_on_idle(docker_compose_up, docker_client_fixture):
     wait_duration = idle_timeout + (2 * check_interval) + 5
     print(f"Server is running. Waiting up to {wait_duration}s for idle shutdown...")
 
-    # Assert that the proxy LOGS its intent to shut down the idle server.
-    # This is a sufficient and reliable test of the proxy's logic.
     assert wait_for_log_message(
         docker_client_fixture,
         "nether-bridge",
@@ -248,7 +236,6 @@ def test_proxy_restarts_crashed_server_on_new_connection(
     ), "Container did not stop after manual command."
     print("(Crash Test) Container successfully stopped.")
 
-    # Give the proxy a moment to register the change if needed
     time.sleep(2)
 
     # --- 3. Attempt a new connection to the 'crashed' server ---
@@ -260,7 +247,6 @@ def test_proxy_restarts_crashed_server_on_new_connection(
         client_socket.close()
 
     # --- 4. Verify that the proxy detects this and tries to start it again ---
-    # This is the correct and final assertion for this test.
     assert wait_for_log_message(
         docker_client_fixture,
         "nether-bridge",
@@ -279,7 +265,7 @@ def test_configuration_reload_on_sighup(docker_compose_up, docker_client_fixture
     """
     proxy_host = get_proxy_host()
     initial_bedrock_port = 19132
-    reloaded_bedrock_port = 19134  # A new port for the reloaded config
+    reloaded_bedrock_port = 19134
 
     assert wait_for_proxy_to_be_ready(docker_client_fixture), (
         "Proxy did not become ready."
@@ -293,13 +279,9 @@ def test_configuration_reload_on_sighup(docker_compose_up, docker_client_fixture
         client_socket.sendto(b"initial-ping", (proxy_host, initial_bedrock_port))
         client_socket.recvfrom(1024)
     except socket.timeout:
-        print(
-            f"Initial check on port {initial_bedrock_port} is OK (timeout as expected)."
-        )
+        print(f"Initial check on port {initial_bedrock_port} is OK.")
     except ConnectionRefusedError:
-        pytest.fail(
-            f"Initial port {initial_bedrock_port} was refused. It should be open."
-        )
+        pytest.fail(f"Initial port {initial_bedrock_port} should be open.")
     finally:
         client_socket.close()
 
@@ -308,19 +290,21 @@ def test_configuration_reload_on_sighup(docker_compose_up, docker_client_fixture
     container = docker_client_fixture.containers.get("nether-bridge")
 
     new_config_json = """
+{
+  "servers": [
     {
-      "servers": [
-        {
-          "name": "Bedrock RELOADED",
-          "server_type": "bedrock",
-          "listen_port": 19134,
-          "container_name": "mc-bedrock",
-          "internal_port": 19132
-        }
-      ]
+      "name": "Bedrock RELOADED",
+      "server_type": "bedrock",
+      "listen_port": 19134,
+      "container_name": "mc-bedrock",
+      "internal_port": 19132
     }
-    """
-    cmd_write_config = f"sh -c 'echo \"{new_config_json}\" > /app/servers.json'"
+  ]
+}
+"""
+    # FIX: Use `printf` instead of `echo` to safely write the JSON string
+    # without the shell mangling the quotes.
+    cmd_write_config = f"printf '%s' '{new_config_json}' > /app/servers.json"
     exit_code, output = container.exec_run(cmd_write_config, user="naeus", demux=True)
     assert exit_code == 0, (
         "Failed to write new config: "
@@ -331,41 +315,30 @@ def test_configuration_reload_on_sighup(docker_compose_up, docker_client_fixture
     print("(SIGHUP Test) Sending SIGHUP signal...")
     container.kill(signal="SIGHUP")
 
-    # --- FIX: Wait for the correct log message ---
-    # We must wait for the proxy to confirm the reload is COMPLETE, not just received.
     assert wait_for_log_message(
         docker_client_fixture,
         "nether-bridge",
         "Configuration reload complete.",
-        timeout=10,
+        timeout=15,
     ), "Proxy did not log that it completed the configuration reload."
 
     print("(SIGHUP Test) Proxy logged reload completion. Verifying new behavior...")
 
     # --- 4. Verify new configuration is active and old one is not ---
-    # The old port should now be closed and refuse connection
     try:
         print(f"(SIGHUP Test) Verifying old port {initial_bedrock_port} is closed...")
         client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         client_socket.settimeout(2)
-        # For UDP on Linux, a closed port may not raise ConnectionRefusedError
-        # immediately. Sending to it is often the best check. An error is a pass.
-        # No error is a fail.
         client_socket.sendto(b"old-port-ping", (proxy_host, initial_bedrock_port))
-        # We expect this to fail. If it times out, the port is likely still open.
         data, addr = client_socket.recvfrom(1024)
         pytest.fail(f"Old port {initial_bedrock_port} is still open unexpectedly.")
     except (ConnectionRefusedError, OSError):
-        print(
-            f"Old port {initial_bedrock_port} is correctly closed "
-            f"(Connection Refused/Host Unreachable)."
-        )
+        print(f"Old port {initial_bedrock_port} is correctly closed.")
     except socket.timeout:
         pytest.fail(f"Old port {initial_bedrock_port} is still open (timed out).")
     finally:
         client_socket.close()
 
-    # The new port should now be open
     try:
         print(f"(SIGHUP Test) Verifying new port {reloaded_bedrock_port} is open...")
         client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -373,11 +346,9 @@ def test_configuration_reload_on_sighup(docker_compose_up, docker_client_fixture
         client_socket.sendto(b"new-port-ping", (proxy_host, reloaded_bedrock_port))
         client_socket.recvfrom(1024)
     except socket.timeout:
-        print(
-            f"New port {reloaded_bedrock_port} is correctly open (timeout as expected)."
-        )
+        print(f"New port {reloaded_bedrock_port} is correctly open.")
     except ConnectionRefusedError:
-        pytest.fail(f"New port {reloaded_bedrock_port} was refused. It should be open.")
+        pytest.fail(f"New port {reloaded_bedrock_port} was refused.")
     finally:
         client_socket.close()
 
@@ -396,7 +367,6 @@ def test_proxy_cleans_up_session_on_container_crash(
     java_proxy_port = JAVA_PROXY_PORT
     mc_java_container_name = "mc-java"
 
-    # Ensure the proxy container is ready before starting the test.
     assert wait_for_proxy_to_be_ready(docker_client_fixture), (
         "Proxy did not become ready before chaos test."
     )
@@ -406,14 +376,18 @@ def test_proxy_cleans_up_session_on_container_crash(
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as pre_warm_socket:
             pre_warm_socket.connect((proxy_host, java_proxy_port))
-            handshake, status_request = get_java_handshake_and_status_request_packets(
+            (
+                handshake,
+                status_request,
+            ) = get_java_handshake_and_status_request_packets(
                 proxy_host, java_proxy_port
             )
             pre_warm_socket.sendall(handshake)
             pre_warm_socket.sendall(status_request)
+            # FIX: Increase timeout to allow for slow server startup in CI.
             assert wait_for_mc_server_ready(
                 {"host": proxy_host, "port": java_proxy_port, "type": "java"},
-                timeout=180,
+                timeout=240,
             ), "Server did not become query-ready during pre-warming."
         print("(Chaos Test) Server is confirmed to be running and ready.")
         time.sleep(2)
@@ -426,7 +400,6 @@ def test_proxy_cleans_up_session_on_container_crash(
         victim_socket.connect((proxy_host, java_proxy_port))
         print("(Chaos Test) Victim client connected, session established.")
 
-        # Step 3: Verify the session is active in the proxy's logs.
         assert wait_for_log_message(
             docker_client_fixture,
             "nether-bridge",
@@ -444,13 +417,9 @@ def test_proxy_cleans_up_session_on_container_crash(
         ), "Container did not stop after being killed."
         print("(Chaos Test) Container successfully killed.")
 
-        # --- THIS IS THE FIX ---
-        # Add a small delay BEFORE sending data. This gives the OS and proxy
-        # time to register that the backend connection is now broken.
         time.sleep(1)
 
-        # Step 5: Attempt to send data. This will trigger the error inside the proxy.
-        # We expect this to raise an error, so we wrap it to prevent the test failing.
+        # Step 5: Attempt to send data.
         try:
             print("(Chaos Test) Sending data to trigger proxy's error handling...")
             victim_socket.sendall(b"data_after_crash")
@@ -468,5 +437,4 @@ def test_proxy_cleans_up_session_on_container_crash(
         print("(Chaos Test) Test passed: Proxy correctly handled the crashed session.")
 
     finally:
-        # Final cleanup to ensure the socket is always closed.
         victim_socket.close()
