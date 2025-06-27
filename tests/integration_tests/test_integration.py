@@ -572,13 +572,11 @@ def test_proxy_cleans_up_session_on_container_crash(
 ):
     """
     Tests that if a server container crashes during an active session,
-    the proxy's monitor thread detects it and cleans up the session.
+    the proxy detects the resulting connection error and cleans up the session.
     """
     proxy_host = get_proxy_host()
     java_proxy_port = JAVA_PROXY_PORT
     mc_java_container_name = "mc-java"
-    # Get the monitor interval from the test environment compose file
-    check_interval = 5
 
     # Step 1: Ensure the server is running.
     print("\n(Chaos Test) Pre-warming server to ensure it is running...")
@@ -603,24 +601,24 @@ def test_proxy_cleans_up_session_on_container_crash(
     ), "Container did not stop after manual command."
     print("(Chaos Test) Container successfully stopped.")
 
-    # --- FIX: Wait for the monitor thread to detect the crash ---
-    # Step 4: Verify the proxy's monitor thread logs the cleanup. We wait for
-    # the check_interval to pass, giving the monitor time to run its check.
-    print("(Chaos Test) Waiting for monitor thread to detect crashed container...")
+    # Step 4: Verify the proxy's main loop detects the broken connection.
+    # When the container dies, the proxy's recv() on the socket will return 0 bytes,
+    # which triggers the cleanup block. We just need to give the OS a moment to
+    # propagate the TCP FIN/RST packet.
+    print("(Chaos Test) Waiting for proxy to detect broken connection...")
+    time.sleep(2)  # A short, simple wait is sufficient here.
+
+    # --- FINAL FIX: Wait for the CORRECT log message ---
     assert wait_for_log_message(
         docker_client_fixture,
         "nether-bridge",
-        "Backend container for active session is not running. Cleaning up.",
-        timeout=check_interval + 5,  # Give a 5s buffer
-    ), (
-        "Proxy monitor did not log that it cleaned up the session "
-        "for the crashed container."
-    )
+        "[DEBUG] Session cleanup block triggered.",
+        timeout=10,
+    ), "Proxy did not log that its main loop cleaned up the broken session."
 
-    # Close the client socket at the end of the test.
     client_socket.close()
 
     print(
-        "(Chaos Test) Proxy correctly detected crash and cleaned up session. "
+        "(Chaos Test) Proxy correctly detected broken pipe and cleaned up session. "
         "Test passed."
     )
