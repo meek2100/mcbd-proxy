@@ -444,9 +444,13 @@ def test_proxy_cleans_up_session_on_container_crash(
         ), "Container did not stop after being killed."
         print("(Chaos Test) Container successfully killed.")
 
+        # --- THIS IS THE FIX ---
+        # Add a small delay BEFORE sending data. This gives the OS and proxy
+        # time to register that the backend connection is now broken.
+        time.sleep(1)
+
         # Step 5: Attempt to send data. This will trigger the error inside the proxy.
-        # We expect this to raise an error, so we wrap it in a try/except block
-        # to prevent the test itself from failing.
+        # We expect this to raise an error, so we wrap it to prevent the test failing.
         try:
             print("(Chaos Test) Sending data to trigger proxy's error handling...")
             victim_socket.sendall(b"data_after_crash")
