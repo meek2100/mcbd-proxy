@@ -16,7 +16,7 @@ on:
 
 jobs:
   build-and-push:
-    runs-on: self-hosted
+    runs-on: [self-hosted, ubuntu-latest]
     permissions:
       contents: read
       packages: write
