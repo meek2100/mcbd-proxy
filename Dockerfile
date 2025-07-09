@@ -3,7 +3,7 @@
 FROM python:3.10-slim-buster AS base
 WORKDIR /app
 COPY pyproject.toml .
-RUN python -m pip install --upgrade pip && pip install --no-cache-dir
+RUN python -m pip install --upgrade pip && pip install --no-cache-dir .
 
 # Stage 2: Builder - A complete copy of the source code for use by other stages.
 FROM python:3.10-slim-buster AS builder
