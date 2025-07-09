@@ -92,7 +92,7 @@ services:
     build:
       context: ../
       dockerfile: Dockerfile
-      target: testing
+      target: builder
       cache_from:
         - ghcr.io/meek2100/mcbd-proxy-cache:main
     networks:
