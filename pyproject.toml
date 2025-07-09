@@ -5,7 +5,6 @@ version = "1.0.0"
 description = "An intelligent, on-demand proxy for Minecraft servers running in Docker."
 readme = "README.md"
 requires-python = ">=3.10"
-# Use the SPDX identifier for the license
 license = { text = "MIT" }
 authors = [
     { name = "meek2100" },
@@ -20,28 +19,30 @@ classifiers = [
 ]
 
 dependencies = [
-    "docker",
-    "mcstatus",
-    "prometheus-client",
-    "structlog",
-    "colorama",
+    # Pinned to match original requirements.txt for production stability
+    "docker==7.1.0",
+    "mcstatus==12.0.2",
+    "prometheus-client==0.22.1",
+    "structlog==25.4.0",
+    "colorama==0.4.6",
 ]
 
 [project.urls]
-Homepage = "https://github.com/meek2100/nether-bridge"
-"Bug Tracker" = "https://github.com/meek2100/nether-bridge/issues"
+Homepage = "https://github.com/meek2100/mcbd-proxy"
+"Bug Tracker" = "https://github.com/meek2100/mcbd-proxy/issues"
 
 [project.optional-dependencies]
 dev = [
-    "pytest",
-    "pytest-mock",
-    "pytest-cov",
-    "ruff",
-    "python-dotenv",
-    "requests",
+    # Pinned to match original requirements-dev.txt
+    "pytest==8.4.1",
+    "pytest-mock==3.14.1",
+    "pytest-cov==6.2.1",
+    "ruff==0.12.2",
+    "python-dotenv==1.1.1",
+    "requests==2.32.4",
 ]
 
-# Explicitly list your modules for setuptools
+# Explicitly list your modules for setuptools to handle the "flat-layout"
 [tool.setuptools]
 py-modules = [
     "config",
