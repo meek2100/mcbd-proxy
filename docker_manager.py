@@ -36,12 +36,14 @@ class DockerManager:
             container = self.client.containers.get(container_name)
             return container.status == "running"
         except docker.errors.NotFound:
+            # This is an expected condition, so debug level is appropriate
             self.logger.debug(
                 "Container not found, assuming not running.",
                 container_name=container_name,
             )
             return False
         except docker.errors.APIError as e:
+            # An API error is unexpected and should be logged as an error
             self.logger.error(
                 "API error checking container status.",
                 container_name=container_name,
@@ -49,10 +51,12 @@ class DockerManager:
             )
             return False
         except Exception as e:
+            # Catch any other unexpected exceptions
             self.logger.error(
                 "Unexpected error checking container status.",
                 container_name=container_name,
                 error=str(e),
+                exc_info=True,  # Add full stack trace for unexpected errors
             )
             return False
 

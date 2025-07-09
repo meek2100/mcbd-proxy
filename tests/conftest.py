@@ -137,6 +137,10 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request, env_co
     print(f"\nStarting Docker Compose project '{docker_compose_project_name}'...")
     print(f"Using compose files: {[str(f) for f in compose_files_to_use]}")
 
+    # Preemptively find and remove any containers from previous, failed test runs.
+    # We use a unique project name (`netherbridge_test_...`) and filter by it
+    # to ensure we don't accidentally remove containers from other projects.
+    # The hardcoded names are a secondary safeguard.
     print("Performing aggressive pre-cleanup of any stale test containers...")
     try:
         hardcoded_names_to_remove = [

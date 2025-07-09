@@ -68,6 +68,8 @@ else
 fi
 
 # This is the final step. 'exec' replaces the shell process with the application.
-# 'gosu' drops from root to the specified user ('naeus').
+# 'gosu' is used to drop from root to the specified user ('naeus'). It's a
+# lighter, more secure alternative to 'su' as it avoids leaving a TTY
+# and handles signal passing correctly.
 # '"$@"' passes along the command from the Dockerfile CMD (e.g., "python", "main.py").
 exec gosu naeus "$@"
