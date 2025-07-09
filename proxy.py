@@ -227,15 +227,19 @@ class NetherBridgeProxy:
             # Server Shutdown Logic (for idle servers with no sessions)
             for server_conf in self.servers_list:
                 container_name = server_conf.container_name
+                # This lock prevents a race condition where the monitor tries to stop
+                # a server while the main thread is creating a new session for it.
                 with self.server_locks[container_name]:
                     state = self.server_states.get(container_name)
                     if not (state and state.get("running")):
                         continue
 
-                    # Add a check to see if the container is *actually* running
                     if not self.docker_manager.is_container_running(container_name):
+                        log_msg = (
+                            "Monitor found server stopped unexpectedly. Updating state."
+                        )
                         self.logger.info(
-                            "Monitor found server stopped unexpectedly. Updating state",
+                            log_msg,
                             container_name=container_name,
                         )
                         if state.get("running"):
@@ -259,7 +263,6 @@ class NetherBridgeProxy:
                         or self.settings.idle_timeout_seconds
                     )
                     if current_time - state.get("last_activity", 0) > idle_timeout:
-                        # Assign long message to a variable to meet line limit
                         log_msg = "Server idle with 0 sessions. Initiating shutdown."
                         self.logger.info(
                             log_msg,

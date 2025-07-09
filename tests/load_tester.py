@@ -96,7 +96,7 @@ def dump_debug_info(container_names_to_log):
     Connects to the Docker daemon to retrieve and print status and logs for
     specified containers, providing a complete snapshot of the environment.
     """
-    print("\n" + "=" * 25 + " DEBUG INFO ON FAILURE " + "=" * 25)
+    print("\n" + "=" * 25 + " FINAL DIAGNOSTIC INFO " + "=" * 25)
     client = None
     try:
         client = docker.from_env()
