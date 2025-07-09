@@ -1,34 +1,27 @@
-# Stage 1: Base - Installs production dependencies into a clean layer.
-# This layer is cached and only rebuilt when requirements.txt changes.
-FROM python:3.10-slim-buster AS base
-WORKDIR /app
-COPY requirements.txt .
-RUN python -m pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
-
-# Stage 2: Builder - A complete copy of the source code for use by other stages.
+# Stage 1: Builder - Installs all dependencies and has the full source code.
+# This stage is used for building and for running tests in CI.
 FROM python:3.10-slim-buster AS builder
 WORKDIR /app
+
+# Install system packages needed by the entrypoint and for testing.
+RUN apt-get update && apt-get install -y --no-install-recommends gosu passwd procps && rm -rf /var/lib/apt/lists/*
+
+# Copy the entire project context.
 COPY . .
 
-# Stage 3: Testing - A self-contained environment for running tests in CI.
-# This stage includes development dependencies and the full source code.
-FROM base AS testing
-WORKDIR /app
-# Install system packages needed by the entrypoint and for testing.
-RUN apt-get update && apt-get install -y --no-install-recommends gosu passwd && rm -rf /var/lib/apt/lists/*
-# Copy the entire project context from the builder stage.
-COPY --from=builder /app /app
-# Install development dependencies.
-RUN pip install --no-cache-dir -r tests/requirements-dev.txt
-# Create user and set permissions for the test environment.
+# Install all dependencies, including development/testing tools.
+# This single command replaces the separate requirements.txt installs.
+RUN python -m pip install --upgrade pip && \
+  pip install --no-cache-dir ".[dev]"
+
+# Create user and set permissions.
 RUN adduser --system --no-create-home naeus && \
   chown -R naeus:nogroup /app && \
   chmod +x /app/entrypoint.sh
-# Set the entrypoint for the test container. The CMD is for interactive use.
-ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["/bin/bash"]
 
-# Stage 4: Final Production Image - Assembled from previous stages for a lean and secure image.
+# ---
+
+# Stage 2: Final Production Image - Assembled for a lean and secure image.
 FROM python:3.10-slim-buster AS final
 WORKDIR /app
 
@@ -37,20 +30,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends gosu procps && 
 # Create the non-root user for running the application.
 RUN adduser --system --no-create-home naeus
 
-# Copy artifacts from previous stages, not the local context.
-# 1. Production python packages from the 'base' stage.
-COPY --from=base /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
-# 2. The entrypoint script from the 'builder' stage.
+# Copy artifacts from the builder stage.
+# 1. The entire installed python environment, which now includes our app's code and its dependencies.
+COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+# 2. The entrypoint script.
 COPY --from=builder /app/entrypoint.sh /usr/local/bin/
-
-# 3. The new, refactored application code modules from the 'builder' stage.
-COPY --from=builder --chown=naeus:nogroup /app/main.py .
-COPY --from=builder --chown=naeus:nogroup /app/proxy.py .
-COPY --from=builder --chown=naeus:nogroup /app/config.py .
-COPY --from=builder --chown=naeus:nogroup /app/docker_manager.py .
-COPY --from=builder --chown=naeus:nogroup /app/metrics.py .
-
-# 4. The example configuration files from the 'builder' stage.
+# 3. The example configuration files.
 COPY --from=builder --chown=naeus:nogroup /app/examples/ ./examples/
 
 # Make entrypoint executable and ensure final application directory permissions are correct.
@@ -59,12 +44,12 @@ RUN chmod +x /usr/local/bin/entrypoint.sh && chown -R naeus:nogroup /app
 # Expose the ports the proxy will listen on.
 EXPOSE 19132/udp 25565/udp 25565/tcp 8000/tcp
 
-# Update HEALTHCHECK to call the new main.py entrypoint.
+# Update HEALTHCHECK to call the main.py entrypoint.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
   CMD ["gosu", "naeus", "python", "main.py", "--healthcheck"]
 
 # Set the container's entrypoint script.
 ENTRYPOINT ["entrypoint.sh"]
 
-# Update the default command to run the new main.py application.
+# Update the default command to run the main.py application.
 CMD ["python", "main.py"]
