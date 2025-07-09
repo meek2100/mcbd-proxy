@@ -1,25 +1,32 @@
-# Stage 1: Builder - Installs all dependencies and has the full source code.
-# This stage is used for building and for running tests in CI.
-FROM python:3.10-slim-buster AS builder
+# Stage 1: Base - A clean stage with only production dependencies.
+FROM python:3.10-slim-buster AS base
 WORKDIR /app
 
-# Install system packages needed by the entrypoint.
-RUN apt-get update && apt-get install -y --no-install-recommends gosu procps && rm -rf /var/lib/apt/lists/*
+# Copy only the files needed to install dependencies.
+COPY pyproject.toml .
 
-# Copy the entire project context.
-COPY . .
-
-# Install all dependencies, including development/testing tools.
+# Install ONLY production dependencies.
 RUN python -m pip install --upgrade pip && \
-  pip install --no-cache-dir ".[dev]"
-
-# Create a non-root user for security.
-RUN adduser --system --no-create-home naeus && \
-  chmod +x /app/entrypoint.sh
+  pip install --no-cache-dir .
 
 # ---
 
-# Stage 2: Final Production Image - Assembled for a lean and secure image.
+# Stage 2: Builder - Based on the production image, but with development tools added.
+# This stage is used for running tests in CI.
+FROM base AS builder
+WORKDIR /app
+
+# Install development dependencies.
+# Note: It will use the cached production dependencies from the 'base' stage.
+RUN pip install --no-cache-dir ".[dev]"
+
+# Copy the rest of the source code for testing.
+COPY . .
+RUN chmod +x /app/entrypoint.sh
+
+# ---
+
+# Stage 3: Final Production Image - Assembled for a lean and secure image.
 FROM python:3.10-slim-buster AS final
 WORKDIR /app
 
@@ -27,24 +34,24 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends gosu procps && rm -rf /var/lib/apt/lists/*
 RUN adduser --system --no-create-home naeus
 
-# Copy installed Python packages from the builder stage.
-COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+# Copy the clean, production-only python packages from the 'base' stage.
+COPY --from=base /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
 
-# Copy the entire application directory from the builder.
-COPY --from=builder /app /app
+# Copy the application code.
+COPY . /app
 
-# Change ownership of the app directory to the non-root user.
-RUN chown -R naeus:nogroup /app
+# Set permissions and the user.
+RUN chown -R naeus:nogroup /app && \
+  chmod +x /app/entrypoint.sh
 
-# Set the entrypoint. The script will run as root, then use gosu to drop privileges.
+# The entrypoint will run as root to set up permissions,
+# then use gosu to drop to the 'naeus' user for the application.
 ENTRYPOINT ["/app/entrypoint.sh"]
-
-# Set the default command to run the application.
 CMD ["python", "main.py"]
 
-# Expose the ports the proxy will listen on.
+# Expose ports.
 EXPOSE 19132/udp 25565/udp 25565/tcp 8000/tcp
 
-# Healthcheck to ensure the proxy is running correctly.
+# Healthcheck.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
   CMD ["gosu", "naeus", "python", "main.py", "--healthcheck"]
