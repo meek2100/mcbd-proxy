@@ -169,17 +169,25 @@ class NetherBridgeProxy:
             if self._shutdown_requested:
                 break
 
+            # --- OPTIMIZATION: Take a single snapshot of all container statuses ---
+            # This avoids repeated API calls within the loops below.
+            container_statuses = {
+                s.container_name: self.docker_manager.is_container_running(
+                    s.container_name
+                )
+                for s in self.servers_list
+            }
+
             current_time = time.time()
 
-            # Create a copy of sessions to check for thread safety
             with self.session_lock:
                 sessions_to_check = list(self.active_sessions.items())
 
             for session_key, session_info in sessions_to_check:
                 container_name = session_info["target_container"]
-                server_config = self.servers_config_map.get(session_info["listen_port"])
 
-                if not self.docker_manager.is_container_running(container_name):
+                # Use the snapshot instead of a new API call
+                if not container_statuses.get(container_name):
                     self.logger.warning(
                         "Backend active session container not running. Cleaning up.",
                         container_name=container_name,
@@ -188,6 +196,7 @@ class NetherBridgeProxy:
                     self._cleanup_session_by_key(session_key)
                     continue
 
+                server_config = self.servers_config_map.get(session_info["listen_port"])
                 if not server_config:
                     continue
 
@@ -210,21 +219,21 @@ class NetherBridgeProxy:
                     if not (state and state.get("running")):
                         continue
 
-                    if not self.docker_manager.is_container_running(container_name):
+                    # Use the snapshot instead of a new API call
+                    if not container_statuses.get(container_name):
                         log_msg = "Monitor found server stopped. Updating state."
-                        self.logger.info(
-                            log_msg,
-                            container_name=container_name,
-                        )
+                        self.logger.info(log_msg, container_name=container_name)
                         if state.get("running"):
                             RUNNING_SERVERS.dec()
                         state["running"] = False
                         continue
 
-                    has_active_sessions = any(
-                        info["target_container"] == container_name
-                        for info in self.active_sessions.values()
-                    )
+                    with self.session_lock:
+                        has_active_sessions = any(
+                            info["target_container"] == container_name
+                            for info in self.active_sessions.values()
+                        )
+
                     if has_active_sessions:
                         continue
 
