@@ -1,145 +1,131 @@
+# tests/load_tester.py
+
 import argparse
 import os
 import socket
 import sys
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
+
+import docker
 
 # Add project root to the path to allow module imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from mcstatus import BedrockServer, JavaServer
-
-from tests.helpers import get_java_handshake_and_status_request_packets, get_proxy_host
-
-
-# --- Enums for Configuration ---
-class TestMode(Enum):
-    SPIKE = "spike"
-    SUSTAINED = "sustained"
-
-
-class ServerType(Enum):
-    JAVA = "java"
-    BEDROCK = "bedrock"
-
-
-# --- Packet Definitions ---
-BEDROCK_UNCONNECTED_PING = (
-    b"\x01"
-    + b"\x00\x00\x00\x00\x00\x00\x00\x00"
-    + b"\x00\xff\xff\x00\xfe\xfe\xfe\xfe"
-    + b"\xfd\xfd\xfd\xfd\x12\x34\x56\x78"
-    + b"\x00\x00\x00\x00\x00\x00\x00\x00"
+from tests.docker_utils import ensure_container_stopped
+from tests.helpers import (
+    BEDROCK_UNCONNECTED_PING,
+    get_java_handshake_and_status_request_packets,
+    get_proxy_host,
 )
 
 
-# --- Helper Functions ---
+# --- Enums for Configuration ---
+class ServerType(Enum):
+    JAVA = "java"
+    BEDROCK = "bedrock"
 
 
 def simulate_single_client(
     server_type: ServerType,
     host: str,
     port: int,
-    mode: TestMode,
-    duration: int,
-    packet_interval: int,
+    test_timeout: int,
 ):
     """
-    Simulates a single client performing a test against the proxy.
-    This is the core logic that will be run in parallel by the thread pool.
-    Returns "SUCCESS" or a "FAILURE: reason" string.
+    Simulates a single, patient client. It will repeatedly try to get a
+    status from the server until the overall test_timeout is reached.
+    This simulates a player waiting at the "Connecting to server..." screen.
     """
-    try:
-        if server_type == ServerType.JAVA:
+    start_time = time.time()
+
+    if server_type == ServerType.JAVA:
+        # For Java, we create one long-lived TCP connection per client
+        try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(15)  # Increased timeout for initial connection
+            # A generous timeout for the initial connection itself
+            sock.settimeout(test_timeout)
             sock.connect((host, port))
+            # Once connected, set a shorter timeout for status pings
+            sock.settimeout(5)
 
-            handshake, status_request = get_java_handshake_and_status_request_packets(
-                host, port
-            )
-            sock.sendall(handshake)
-            sock.sendall(status_request)
-
-            if mode == TestMode.SPIKE:
-                sock.recv(4096)  # Wait for the status response
-            elif mode == TestMode.SUSTAINED:
-                end_time = time.time() + duration
-                while time.time() < end_time:
-                    sock.sendall(status_request)
+            while time.time() - start_time < test_timeout:
+                try:
+                    # Create packets inside the loop for resilience
+                    (
+                        handshake,
+                        status_req,
+                    ) = get_java_handshake_and_status_request_packets(host, port)
+                    sock.sendall(handshake)
+                    sock.sendall(status_req)
                     sock.recv(4096)
-                    time.sleep(packet_interval)
-            sock.close()
+                    return "SUCCESS"  # Got a response
+                except (socket.timeout, ConnectionResetError):
+                    # Server might be starting up; wait and retry
+                    time.sleep(2)
+                    continue
+        except Exception as e:
+            return f"FAILURE: Could not connect or stay connected - {type(e).__name__}"
+        finally:
+            if "sock" in locals():
+                sock.close()
 
-        elif server_type == ServerType.BEDROCK:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.settimeout(10)
-
-            if mode == TestMode.SPIKE:
+    elif server_type == ServerType.BEDROCK:
+        # For Bedrock (UDP), we create a new socket for each attempt
+        while time.time() - start_time < test_timeout:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.settimeout(3)  # Short timeout for each UDP ping
                 sock.sendto(BEDROCK_UNCONNECTED_PING, (host, port))
                 sock.recvfrom(4096)
-            elif mode == TestMode.SUSTAINED:
-                end_time = time.time() + duration
-                while time.time() < end_time:
-                    sock.sendto(BEDROCK_UNCONNECTED_PING, (host, port))
-                    sock.recvfrom(4096)
-                    time.sleep(packet_interval)
-            sock.close()
+                sock.close()
+                return "SUCCESS"  # Got a response
+            except socket.timeout:
+                sock.close()
+                time.sleep(2)  # Wait and retry
+            except Exception as e:
+                return f"FAILURE: Bedrock client error - {type(e).__name__}"
 
-        return "SUCCESS"
+    return "FAILURE: Client timed out after " + f"{test_timeout} seconds."
+
+
+def dump_debug_info(container_names_to_log):
+    """
+    Connects to the Docker daemon to retrieve and print status and logs for
+    specified containers, providing a complete snapshot of the environment.
+    """
+    print("\n" + "=" * 25 + " FINAL DIAGNOSTIC INFO " + "=" * 25)
+    client = None
+    try:
+        client = docker.from_env()
+        all_test_containers = ["nether-bridge", "mc-bedrock", "mc-java", "nb-tester"]
+
+        print("\n--- STATUS OF ALL TEST CONTAINERS ---")
+        for container in client.containers.list(all=True):
+            # Only show containers relevant to this project
+            if any(name in container.name for name in all_test_containers):
+                status = f"Status: {container.status}"
+                print(f"  - {container.name:<20} | {status}")
+
+        for name in container_names_to_log:
+            print(f"\n--- LOGS FOR CONTAINER: {name} ---")
+            try:
+                container = client.containers.get(name)
+                logs = container.logs().decode("utf-8", errors="ignore").strip()
+                print(logs if logs else "[No logs found for this container]")
+            except docker.errors.NotFound:
+                print(f"[Container '{name}' was not found]")
+            except Exception as e:
+                print(f"[Could not retrieve logs for '{name}': {e}]")
+
     except Exception as e:
-        # Provide more context in failure messages for easier debugging in CI
-        return f"FAILURE: {type(e).__name__} - {e}"
-
-
-def pre_warm_and_wait(
-    server_type: ServerType, host: str, port: int, timeout: int = 120
-):
-    """
-    Handles the critical pre-warming sequence: triggers the server to start
-    and then waits for it to become responsive to status queries. This prevents
-    the main load test from failing due to server startup time.
-    """
-    # --- FIX: Reformatted line to be under 88 characters ---
-    print(
-        "--- Sending a pre-warming client to start the "
-        f"{server_type.value} server... ---"
-    )
-    # We run a single client simulation. We don't care about the result, only that it
-    # sends a packet to the proxy to trigger the server startup logic.
-    simulate_single_client(server_type, host, port, TestMode.SPIKE, 0, 0)
-
-    # --- FIX: Reformatted line to be under 88 characters ---
-    print(
-        f"--- Waiting for server at {host}:{port} to become ready "
-        f"(max {timeout}s)... ---"
-    )
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        try:
-            status = None
-            if server_type == ServerType.JAVA:
-                server = JavaServer.lookup(f"{host}:{port}", timeout=2)
-                status = server.status()
-            elif server_type == ServerType.BEDROCK:
-                server = BedrockServer.lookup(f"{host}:{port}", timeout=2)
-                status = server.status()
-
-            if status:
-                # --- FIX: Reformatted line to be under 88 characters ---
-                print(
-                    f"--- Server is ready (latency: {status.latency:.2f}ms). "
-                    "Proceeding with load test. ---"
-                )
-                return True
-        except Exception:
-            time.sleep(2)  # Wait a moment before retrying
-            continue
-
-    print("--- Timeout waiting for server to become ready. Aborting. ---")
-    return False
+        print(f"\nCRITICAL: Could not gather debug info. Docker client failed: {e}")
+    finally:
+        if client:
+            client.close()
+        print("\n" + "=" * 27 + " END OF DEBUG INFO " + "=" * 27)
 
 
 # --- Main Execution Block ---
@@ -148,13 +134,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Load testing tool for Nether-bridge proxy."
     )
-    parser.add_argument(
-        "--mode",
-        type=TestMode,
-        choices=list(TestMode),
-        default=TestMode.SPIKE,
-        help="Test mode: 'spike' (connections) or 'sustained' (active sessions).",
-    )
+    # --- (Argument parsing remains the same) ---
     parser.add_argument(
         "--server-type",
         type=ServerType,
@@ -165,83 +145,85 @@ if __name__ == "__main__":
     parser.add_argument(
         "--clients",
         type=int,
-        default=50,
+        default=25,
         help="Number of concurrent clients to simulate.",
     )
     parser.add_argument(
-        "--duration",
+        "--timeout",
         type=int,
-        default=60,
-        help="For sustained mode, the duration of the test in seconds.",
-    )
-    parser.add_argument(
-        "--packet-interval",
-        type=int,
-        default=5,
-        help="For sustained mode, the interval between sending keep-alive packets.",
+        default=240,
+        help="Max time (seconds) for the entire test, including server boot.",
     )
 
     args = parser.parse_args()
 
     target_host = get_proxy_host()
     port = 25565 if args.server_type == ServerType.JAVA else 19132
+    target_container = (
+        "mc-java" if args.server_type == ServerType.JAVA else "mc-bedrock"
+    )
+    containers_to_log = ["nether-bridge", target_container]
+    exit_code = 1  # Default to failure
 
-    print("--- Nether-bridge Load Test ---")
-    print(f"Mode:               {args.mode.value}")
-    print(f"Server Type:        {args.server_type.value}")
-    print(f"Target:             {target_host}:{port}")
-    print(f"Concurrent Clients: {args.clients}")
-    if args.mode == TestMode.SUSTAINED:
-        print(f"Test Duration:      {args.duration}s")
-        print(f"Packet Interval:    {args.packet_interval}s")
-    print("---------------------------------")
+    try:
+        print("--- Nether-bridge True Cold-Start Load Test ---")
+        print(f"Server Type:        {args.server_type.value}")
+        print(f"Target Container:   {target_container}")
+        print(f"Target Endpoint:    {target_host}:{port}")
+        print(f"Concurrent Clients: {args.clients}")
+        print(f"Client Timeout:     {args.timeout}s")
+        print("---------------------------------------------")
 
-    start_time = time.time()
+        ensure_container_stopped(target_container)
 
-    # In spike mode, we must always pre-warm the server first. Otherwise, the test
-    # is measuring server start time, not proxy performance.
-    if args.mode == TestMode.SPIKE:
-        if not pre_warm_and_wait(args.server_type, target_host, port):
-            sys.exit(1)  # Exit if the server fails to become ready.
+        print(f"\n--- Starting test with {args.clients} clients... ---")
+        start_time = time.time()
 
-    # --- Execute Main Load Test ---
-    print(f"--- Starting main load test with {args.clients} clients... ---")
-    tasks = []
-    with ThreadPoolExecutor(max_workers=args.clients) as executor:
-        for i in range(args.clients):
-            task = executor.submit(
-                simulate_single_client,
-                args.server_type,
-                target_host,
-                port,
-                args.mode,
-                args.duration,
-                args.packet_interval,
-            )
-            tasks.append(task)
-        results = [t.result() for t in tasks]
+        tasks = []
+        with ThreadPoolExecutor(max_workers=args.clients) as executor:
+            for i in range(args.clients):
+                task = executor.submit(
+                    simulate_single_client,
+                    args.server_type,
+                    target_host,
+                    port,
+                    args.timeout,
+                )
+                tasks.append(task)
+            results = [t.result() for t in tasks]
 
-    end_time = time.time()
+        end_time = time.time()
 
-    success_count = len([r for r in results if r == "SUCCESS"])
-    failure_count = len(results) - success_count
+        success_count = len([r for r in results if r == "SUCCESS"])
+        failure_count = len(results) - success_count
 
-    print("\n--- Load Test Summary ---")
-    print(f"Total Time Elapsed: {end_time - start_time:.2f} seconds")
-    print(f"Successful Clients: {success_count} / {args.clients}")
-    print(f"Failed Clients:     {failure_count} / {args.clients}")
-    print("-------------------------")
+        print("\n--- Load Test Summary ---")
+        print(f"Total Time Elapsed: {end_time - start_time:.2f} seconds")
+        print(f"Successful Clients: {success_count} / {args.clients}")
+        print(f"Failed Clients:     {failure_count} / {args.clients}")
+        print("-------------------------")
 
-    if failure_count > 0:
-        print("\nFailure Details:")
-        failure_reasons = {}
-        for r in results:
-            if r != "SUCCESS":
-                reason = r
-                failure_reasons[reason] = failure_reasons.get(reason, 0) + 1
-        for reason, count in failure_reasons.items():
-            print(f"- {reason}: {count} times")
-        sys.exit(1)
+        if failure_count > 0:
+            print("\nFailure Details:")
+            failure_reasons = {}
+            for r in results:
+                if r != "SUCCESS":
+                    failure_reasons[r] = failure_reasons.get(r, 0) + 1
+            for reason, count in failure_reasons.items():
+                print(f"- {reason}: {count} occurrences")
+            exit_code = 1
+        else:
+            print("\n--- Load Test Passed ---")
+            exit_code = 0
 
-    print("\n--- Load Test Passed ---")
-    sys.exit(0)
+    except Exception as e:
+        print("\n" + "=" * 20 + " UNHANDLED EXCEPTION DURING TEST " + "=" * 20)
+        print(f"An unexpected error occurred: {type(e).__name__} - {e}")
+        traceback.print_exc()
+        exit_code = 1
+
+    finally:
+        # This block will now run on both success and failure
+        print("\n--- DUMPING DIAGNOSTIC INFO ---")
+        dump_debug_info(containers_to_log)
+        sys.exit(exit_code)

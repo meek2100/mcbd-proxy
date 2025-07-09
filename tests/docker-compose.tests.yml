@@ -37,7 +37,7 @@ services:
 
   mc-bedrock:
     build:
-      context: .
+      context: ./images/mc-bedrock
       dockerfile: Dockerfile.mc-bedrock
       network: host
       args:
@@ -58,7 +58,7 @@ services:
 
   mc-java:
     build:
-      context: .
+      context: ./images/mc-java
       dockerfile: Dockerfile.mc-java
       network: host
       args:
@@ -94,12 +94,14 @@ services:
       - mc-network
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - NB_TEST_MODE=container
     command: /bin/bash -c "while true; do sleep 1; done"
 
 networks:
   mc-network:
     driver: bridge
 
-volumes:
-  mc-bedrock-data:
-  mc-java-data:
+#volumes:
+#  mc-bedrock-data:
+#  mc-java-data:

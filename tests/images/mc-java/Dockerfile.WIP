@@ -1,0 +1,19 @@
+# Use the 'latest' tag which is consistently maintained.
+FROM itzg/minecraft-server:latest
+
+# Argument to make the server jar filename configurable at build time if needed.
+ARG SERVER_JAR=paper-1.20.1.jar
+
+# Copy the pre-downloaded server jar from the build context
+# directly into the image's /data directory. This "bakes" the dependency
+# into a new image layer, ensuring it's always present.
+COPY ./artifacts/${SERVER_JAR} /data/${SERVER_JAR}
+
+# Add this line to fix ownership
+RUN chown 1000:1000 /data/${SERVER_JAR}
+
+# Pre-configure the environment variables within the image itself.
+# When a container starts from this image, it will automatically use the
+# custom jar we just copied, completely skipping any download process.
+ENV TYPE="CUSTOM"
+ENV CUSTOM_SERVER="/data/${SERVER_JAR}"

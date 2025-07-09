@@ -9,25 +9,40 @@ import time
 import docker
 import pytest
 import requests
-from mcstatus import BedrockServer, JavaServer  # <-- ADD THIS IMPORT
+from mcstatus import BedrockServer, JavaServer
 
-# --- ADD THESE CONSTANTS ---
-# Constants for test server addresses and ports, now centralized.
+# --- Constants ---
 BEDROCK_PROXY_PORT = 19132
 JAVA_PROXY_PORT = 25565
+
+# The raw packet for a Bedrock Edition "Unconnected Ping".
+BEDROCK_UNCONNECTED_PING = (
+    b"\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\x00\xfe\xfe\xfe\xfe"
+    b"\xfd\xfd\xfd\xfd\x12\x34\x56\x78\x00\x00\x00\x00\x00\x00\x00\x00"
+)
 
 
 def get_proxy_host():
     """
-    Determines the correct IP address or hostname for integration tests
-    by checking the environment in a specific order of precedence.
+    Determines the correct IP address or hostname for the proxy.
+    It checks the environment in a specific order of precedence to support
+    different testing scenarios (in-container, remote host, CI).
     """
+    # 1. Check if running inside the test environment's container network.
+    if os.environ.get("NB_TEST_MODE") == "container":
+        return "nether-bridge"
+
+    # 2. Check for CI mode (also uses service name).
     if os.environ.get("CI_MODE"):
         return "nether-bridge"
+
+    # 3. Check for an explicit IP for remote testing via pytest.
     if "PROXY_IP" in os.environ:
         return os.environ["PROXY_IP"]
     if "DOCKER_HOST_IP" in os.environ:
         return os.environ["DOCKER_HOST_IP"]
+
+    # 4. Fallback for local `pytest` runs without special config.
     return "127.0.0.1"
 
 
@@ -78,24 +93,18 @@ def get_active_sessions_metric(proxy_host: str, server_name: str) -> int:
         response = requests.get(metrics_url, timeout=5)
         response.raise_for_status()
 
-        # Use a more robust regex that can find integer or float values.
         pattern = re.compile(
             rf'netherbridge_active_sessions{{server_name="{server_name}"}}\s+([0-9\.]+)'
         )
         match = pattern.search(response.text)
 
         if match:
-            # --- FIX: Convert the value to a float first, then to an int ---
             value_str = match.group(1)
             return int(float(value_str))
 
-        # If the metric is not found, it means there are 0 sessions for that server.
         return 0
     except (requests.RequestException, ValueError) as e:
         pytest.fail(f"Could not retrieve or parse active sessions metric: {e}")
-
-
-# --- ADD ALL THE HELPERS FROM test_integration.py BELOW ---
 
 
 def get_container_status(docker_client_fixture, container_name):
