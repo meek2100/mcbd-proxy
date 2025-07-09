@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   validate-and-test:
-    runs-on: self-hosted
+    runs-on: [ubuntu-latest]
 
     # Set environment variables for the CI job.
     # Docker Compose will use these to populate the variables in the compose file.

@@ -48,7 +48,9 @@ pytest-mock==3.14.1
 python-dotenv==1.1.1
     # via -r tests/requirements-dev.in
 requests==2.32.4
-    # via docker
+    # via
+    #   -r tests/requirements-dev.in
+    #   docker
 ruff==0.12.1
     # via -r tests/requirements-dev.in
 structlog==25.4.0

@@ -1,21 +1,22 @@
-# .github/workflows/load-testing.yml
-name: Manual Load Test
+name: Manual Load Test - Bedrock
 
 on:
+  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
     inputs:
-      server_type:
-        description: 'Server to test (java or bedrock)'
-        required: true
-        default: 'java'
       clients:
         description: 'Number of concurrent clients'
         required: true
-        default: '50'
+        default: '25'
+
+  # Also runs automatically on pushes to the feature branch
+  push:
+    branches:
+      - 'feature/load-testing'
 
 jobs:
-  load-test:
-    name: Run Load Test
+  load-test-bedrock:
+    name: Run Bedrock Load Test
     runs-on: [ubuntu-latest]
     env:
       JAVA_VERSION: "1.20.1"
@@ -40,25 +41,22 @@ jobs:
               echo "Nether-bridge is healthy."
               break
             fi
-            if [ "$(($(date +%s) - start_time))" -ge "$timeout" ]; then
-              echo "Timeout waiting for container."
+            if [ "$(($(date +%s) - start_time))" -ge "$timeout" ];
+              echo "Timeout waiting for nether-bridge container to become healthy."
+              docker compose -f tests/docker-compose.tests.yml logs --no-color
               exit 1
             fi
             sleep 5
           done
 
-      - name: Run Load Test Script
+      - name: Run Bedrock Load Test Script
         run: |
-          echo "--- Running load test against ${{ github.event.inputs.server_type }} server ---"
-          # We now run this inside the nb-tester container, which is on the same Docker network
-          # and can resolve the service name 'nether-bridge' directly.
+          echo "--- Running load test against Bedrock server ---"
           docker compose -f tests/docker-compose.tests.yml exec -T nb-tester \
             python tests/load_tester.py \
-              --server-type ${{ github.event.inputs.server_type }} \
-              --clients ${{ github.event.inputs.clients }}
+              --server-type bedrock \
+              --clients ${{ github.event.inputs.clients || '25' }}
 
-      # --- ADD THIS STEP ---
-      # This step will only run if one of the previous steps has failed.
       - name: Dump container logs on failure
         if: failure()
         run: |
