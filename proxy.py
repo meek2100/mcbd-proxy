@@ -380,98 +380,79 @@ class NetherBridgeProxy:
             return
 
         conn, client_addr = sock.accept()
-        self.inputs.append(conn)
-
         server_port = sock.getsockname()[1]
         server_config = self.servers_config_map[server_port]
         container_name = server_config.container_name
 
+        # The lock must be held until the session is registered to prevent the
+        # monitor thread from seeing a false idle state and shutting down the server.
         with self.server_locks[container_name]:
-            is_actually_running = self.docker_manager.is_container_running(
-                container_name
-            )
-            self.server_states[container_name]["running"] = is_actually_running
-
-            if not self.server_states[container_name]["running"]:
+            if not self.docker_manager.is_container_running(container_name):
                 self.logger.info(
                     "First TCP connection for stopped server. Starting...",
                     container_name=container_name,
                     client_addr=client_addr,
                 )
-                startup_success = self._start_minecraft_server(server_config)
-                if not startup_success:
+                if not self._start_minecraft_server(server_config):
                     self.logger.error(
                         "Server failed to become ready. Closing client connection.",
                         container_name=container_name,
                     )
-                    self.inputs.remove(conn)
                     conn.close()
                     return
 
-        if self.server_states[container_name]["running"]:
+            # Now that the server is running, connect to the backend.
             self.logger.info(
                 "Establishing new TCP session for running server.",
                 client_addr=client_addr,
                 server_name=server_config.name,
             )
+            server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-        ACTIVE_SESSIONS.labels(server_name=server_config.name).inc()
-        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # Use a retry loop for the backend connection to handle cases where
+            # the server is pingable but not yet fully accepting connections.
+            connected_to_backend = False
+            connect_start_time = time.time()
+            connect_timeout = 5  # seconds
+            while (
+                not connected_to_backend
+                and time.time() - connect_start_time < connect_timeout
+            ):
+                try:
+                    server_sock.settimeout(1.0)
+                    server_sock.connect((container_name, server_config.internal_port))
+                    connected_to_backend = True
+                except (socket.error, ConnectionRefusedError):
+                    time.sleep(0.25)
 
-        # --- NEW: Retry loop for backend connection ---
-        # This robustly handles the case where the server is pingable but the
-        # session manager isn't fully ready.
-        connected_to_backend = False
-        connect_start_time = time.time()
-        connect_timeout = 5  # seconds
-
-        while (
-            not connected_to_backend
-            and time.time() - connect_start_time < connect_timeout
-        ):
-            try:
-                if not self.docker_manager.is_container_running(container_name):
-                    raise ConnectionRefusedError(
-                        "Server stopped during backend connection attempt."
-                    )
-                server_sock.settimeout(1.0)  # Use a short timeout for each attempt
-                server_sock.connect((container_name, server_config.internal_port))
-                server_sock.setblocking(False)
-                connected_to_backend = True
-            except (socket.error, ConnectionRefusedError) as e:
-                self.logger.debug(
-                    "Backend connection failed, retrying...",
+            if not connected_to_backend:
+                self.logger.error(
+                    "Failed to connect to backend server after multiple retries.",
                     container_name=container_name,
-                    error=str(e),
                 )
-                time.sleep(0.25)  # Wait briefly before retrying
+                conn.close()
+                return
 
-        if not connected_to_backend:
-            self.logger.error(
-                "Failed to connect to backend server after multiple retries.",
-                container_name=container_name,
-            )
-            self.inputs.remove(conn)
-            conn.close()
-            ACTIVE_SESSIONS.labels(server_name=server_config.name).dec()
-            return
-        # --- End of new logic ---
+            # Add sockets to select loop BEFORE registering the session
+            conn.setblocking(False)
+            server_sock.setblocking(False)
+            self.inputs.append(conn)
+            self.inputs.append(server_sock)
 
-        self.inputs.append(server_sock)
-        conn.setblocking(False)
-
-        session_key = (client_addr, server_port, "tcp")
-        session_info = {
-            "client_socket": conn,
-            "server_socket": server_sock,
-            "target_container": container_name,
-            "last_packet_time": time.time(),
-            "listen_port": server_port,
-            "protocol": "tcp",
-        }
-        self.active_sessions[session_key] = session_info
-        self.socket_to_session_map[conn] = (session_key, "client_socket")
-        self.socket_to_session_map[server_sock] = (session_key, "server_socket")
+            # Finally, register the session so the monitor thread can see it
+            session_key = (client_addr, server_port, "tcp")
+            session_info = {
+                "client_socket": conn,
+                "server_socket": server_sock,
+                "target_container": container_name,
+                "last_packet_time": time.time(),
+                "listen_port": server_port,
+                "protocol": "tcp",
+            }
+            self.active_sessions[session_key] = session_info
+            self.socket_to_session_map[conn] = (session_key, "client_socket")
+            self.socket_to_session_map[server_sock] = (session_key, "server_socket")
+            ACTIVE_SESSIONS.labels(server_name=server_config.name).inc()
 
     def _handle_new_udp_packet(self, sock: socket.socket):
         """Handles the first UDP packet from a client, establishing a session."""
