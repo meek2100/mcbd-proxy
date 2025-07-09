@@ -5,7 +5,8 @@ version = "1.0.0"
 description = "An intelligent, on-demand proxy for Minecraft servers running in Docker."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT License" }
+# Use the SPDX identifier for the license
+license = { text = "MIT" }
 authors = [
     { name = "meek2100" },
 ]
@@ -15,7 +16,6 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
 
@@ -41,6 +41,16 @@ dev = [
     "requests",
 ]
 
+# Explicitly list your modules for setuptools
+[tool.setuptools]
+py-modules = [
+    "config",
+    "docker_manager",
+    "main",
+    "metrics",
+    "proxy",
+]
+
 [tool.ruff]
 line-length = 88
 exclude = [
@@ -55,9 +65,6 @@ exclude = [
 [tool.ruff.lint]
 select = ["E", "W", "F", "I"]
 ignore = []
-
-[tool.ruff.lint.per-file-ignores]
-# "tests/*.py" = ["S101"] # Example: Ignore assert statements in tests if needed.
 
 [tool.pytest.ini_options]
 markers = [
