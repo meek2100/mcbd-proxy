@@ -4,7 +4,6 @@ name: Pull Request Validation
 on:
   pull_request:
     branches: [ main, develop ]
-
   workflow_dispatch:
     inputs:
       branch:
@@ -20,9 +19,6 @@ permissions:
 jobs:
   validate-and-test:
     runs-on: [ubuntu-latest]
-
-    # Set environment variables for the CI job.
-    # Docker Compose will use these to populate the variables in the compose file.
     env:
       COMPOSE_BAKE: true
       BEDROCK_VERSION: 1.20.81.01
@@ -50,53 +46,22 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y jq
 
       - name: Start Test Environment
-        run: docker compose -f tests/docker-compose.tests.yml up -d --build --remove-orphans
-
-      - name: Wait for Nether-bridge to be healthy
-        run: |
-          echo "Waiting for nether-bridge container to be healthy..."
-          timeout=120
-          start_time=$(date +%s)
-          while true; do
-            status=$(docker inspect --format '{{.State.Health.Status}}' nether-bridge || echo "error")
-            if [ "$status" = "healthy" ]; then
-              echo "Nether-bridge is healthy."
-              break
-            fi
-            if [ "$(($(date +%s) - start_time))" -ge "$timeout" ]; then
-              echo "Timeout waiting for nether-bridge container to become healthy."
-              docker inspect nether-bridge
-              exit 1
-            fi
-            echo "Current status: $status. Waiting..."
-            sleep 5
-          done
+        run: docker compose -f tests/docker-compose.tests.yml up -d --build --remove-orphans --wait
 
       - name: Lint with ruff
-        run: |
-          echo "Running ruff linter..."
-          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester ruff check .
+        run: docker compose -f tests/docker-compose.tests.yml exec -T nb-tester ruff check .
 
       - name: Check formatting with ruff
-        run: |
-          echo "Checking formatting with ruff..."
-          docker compose -f tests/docker-compose.tests.yml exec -T nb-tester ruff format --check .
+        run: docker compose -f tests/docker-compose.tests.yml exec -T nb-tester ruff format --check .
 
       - name: Run all tests
-        id: run-tests
         run: |
           PROXY_IP=$(docker inspect nether-bridge | jq -r '.[0].NetworkSettings.Networks."tests_mc-network".IPAddress')
           echo "Found nether-bridge IP: ${PROXY_IP}"
-          docker compose -f tests/docker-compose.tests.yml exec -T --user naeus nb-tester env CI_MODE=true PROXY_IP=${PROXY_IP} python -m pytest \
-            --cov=main \
-            --cov=proxy \
-            --cov=config \
-            --cov=docker_manager \
-            --cov=metrics \
-            --cov-report term-missing
+          docker compose -f tests/docker-compose.tests.yml exec -T --user naeus nb-tester env CI_MODE=true PROXY_IP=${PROXY_IP} python -m pytest --cov=main --cov=proxy --cov=config --cov=docker_manager --cov=metrics --cov-report term-missing
 
       - name: Dump All Container Logs on Failure
-        if: ${{ failure() }}
+        if: failure()
         run: |
           echo "--- DUMPING ALL CONTAINER LOGS DUE TO FAILURE ---"
           docker compose -f tests/docker-compose.tests.yml ps -a
@@ -106,6 +71,4 @@ jobs:
 
       - name: Tear down test environment
         if: always()
-        run: |
-          echo "Tearing down Docker Compose environment..."
-          docker compose -f tests/docker-compose.tests.yml down -v --remove-orphans
+        run: docker compose -f tests/docker-compose.tests.yml down -v --remove-orphans
