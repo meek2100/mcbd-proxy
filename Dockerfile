@@ -1,4 +1,5 @@
 # Stage 1: Builder - Installs all dependencies and has the full source code.
+# This stage is used for building and for running tests in CI.
 FROM python:3.10-slim-buster AS builder
 WORKDIR /app
 
@@ -14,7 +15,6 @@ RUN python -m pip install --upgrade pip && \
 
 # Create a non-root user for security.
 RUN adduser --system --no-create-home naeus && \
-  chown -R naeus:nogroup /app && \
   chmod +x /app/entrypoint.sh
 
 # ---
@@ -30,8 +30,14 @@ RUN adduser --system --no-create-home naeus
 # Copy installed Python packages from the builder stage.
 COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
 
-# Copy the entire application directory, which now includes main.py and other modules.
-COPY --from=builder --chown=naeus:nogroup /app /app
+# Copy the entire application directory from the builder.
+COPY --from=builder /app /app
+
+# **THE FIX**: Change ownership of the app directory to the non-root user.
+RUN chown -R naeus:nogroup /app
+
+# Switch to the non-root user before setting the entrypoint.
+USER naeus
 
 # Set the entrypoint.
 ENTRYPOINT ["/app/entrypoint.sh"]
@@ -44,4 +50,4 @@ EXPOSE 19132/udp 25565/udp 25565/tcp 8000/tcp
 
 # Healthcheck to ensure the proxy is running correctly.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
-  CMD ["gosu", "naeus", "python", "main.py", "--healthcheck"]
+  CMD ["python", "main.py", "--healthcheck"]
