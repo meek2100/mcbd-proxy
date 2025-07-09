@@ -51,7 +51,7 @@ requests==2.32.4
     # via
     #   -r tests/requirements-dev.in
     #   docker
-ruff==0.12.1
+ruff==0.12.2
     # via -r tests/requirements-dev.in
 structlog==25.4.0
     # via -r tests/../requirements.in
