@@ -384,8 +384,9 @@ class NetherBridgeProxy:
         server_config = self.servers_config_map[server_port]
         container_name = server_config.container_name
 
-        # The lock must be held until the session is registered to prevent the
-        # monitor thread from seeing a false idle state and shutting down the server.
+        # FIX 1: The lock is acquired early and held until the session is fully
+        # registered. This prevents the monitor thread from starting a premature
+        # shutdown.
         with self.server_locks[container_name]:
             if not self.docker_manager.is_container_running(container_name):
                 self.logger.info(
@@ -401,7 +402,6 @@ class NetherBridgeProxy:
                     conn.close()
                     return
 
-            # Now that the server is running, connect to the backend.
             self.logger.info(
                 "Establishing new TCP session for running server.",
                 client_addr=client_addr,
@@ -409,11 +409,12 @@ class NetherBridgeProxy:
             )
             server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-            # Use a retry loop for the backend connection to handle cases where
-            # the server is pingable but not yet fully accepting connections.
+            # FIX 2: A retry loop to robustly connect to the backend server,
+            # handling the "ready vs. truly ready" state in CI.
             connected_to_backend = False
             connect_start_time = time.time()
             connect_timeout = 5  # seconds
+
             while (
                 not connected_to_backend
                 and time.time() - connect_start_time < connect_timeout
@@ -424,6 +425,7 @@ class NetherBridgeProxy:
                     connected_to_backend = True
                 except (socket.error, ConnectionRefusedError):
                     time.sleep(0.25)
+                    continue
 
             if not connected_to_backend:
                 self.logger.error(
@@ -439,7 +441,7 @@ class NetherBridgeProxy:
             self.inputs.append(conn)
             self.inputs.append(server_sock)
 
-            # Finally, register the session so the monitor thread can see it
+            # Finally, register the session so the monitor thread can see it.
             session_key = (client_addr, server_port, "tcp")
             session_info = {
                 "client_socket": conn,
