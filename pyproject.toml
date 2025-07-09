@@ -1,5 +1,4 @@
-# This file centralizes project metadata and tool configuration.
-
+# pyproject.toml
 [project]
 name = "nether-bridge"
 version = "1.0.0"
@@ -20,12 +19,27 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 
+dependencies = [
+    "docker",
+    "mcstatus",
+    "prometheus-client",
+    "structlog",
+    "colorama",
+]
+
 [project.urls]
 Homepage = "https://github.com/meek2100/nether-bridge"
 "Bug Tracker" = "https://github.com/meek2100/nether-bridge/issues"
 
-
-# --- Tool Configurations ---
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-mock",
+    "pytest-cov",
+    "ruff",
+    "python-dotenv",
+    "requests",
+]
 
 [tool.ruff]
 line-length = 88
@@ -38,12 +52,15 @@ exclude = [
     "examples",
 ]
 
-# Move settings into this new [tool.ruff.lint] section
 [tool.ruff.lint]
 select = ["E", "W", "F", "I"]
 ignore = []
 
-# Nest per-file-ignores under the new lint section
 [tool.ruff.lint.per-file-ignores]
-# If you have specific files or patterns where you want to ignore certain rules, add them here.
-# For example: "tests/*.py" = ["S101"] # Ignore assert statements in tests.
+# "tests/*.py" = ["S101"] # Example: Ignore assert statements in tests if needed.
+
+[tool.pytest.ini_options]
+markers = [
+    "unit: marks tests as unit tests that do not require external services.",
+    "integration: marks tests as integration tests that require Docker Compose.",
+]
