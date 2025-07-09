@@ -36,7 +36,6 @@ desktop.ini # Windows
 
 # Docker environment variables file (if you create one for local env)
 .env
-..env
 
 # Local test environment overrides
 tests/local_env.py

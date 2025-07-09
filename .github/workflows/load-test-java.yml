@@ -17,7 +17,7 @@ on:
 jobs:
   load-test-java:
     name: Run Java Load Test
-    runs-on: [self-hosted, ubuntu-latest]
+    runs-on: [ubuntu-latest]
     env:
       JAVA_VERSION: "1.20.1"
       JAVA_TYPE: "PAPER"
