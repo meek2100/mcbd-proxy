@@ -33,7 +33,6 @@ services:
     depends_on:
       - mc-bedrock
       - mc-java
-    command: --generate-test-config python main.py
     healthcheck:
       test: ["CMD", "python", "main.py", "--healthcheck"]
       interval: 5s

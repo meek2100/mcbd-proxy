@@ -17,7 +17,6 @@ FROM base AS builder
 WORKDIR /app
 
 # Install development dependencies.
-# Note: It will use the cached production dependencies from the 'base' stage.
 RUN pip install --no-cache-dir ".[dev]"
 
 # Copy the rest of the source code for testing.
@@ -40,6 +39,9 @@ COPY --from=base /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.
 # Copy the application code.
 COPY . /app
 
+# **THE FIX**: Copy the example config to the root of the app directory.
+COPY --chown=naeus:nogroup /app/examples/servers.json /app/servers.json
+
 # Set permissions and the user.
 RUN chown -R naeus:nogroup /app && \
   chmod +x /app/entrypoint.sh
@@ -54,4 +56,4 @@ EXPOSE 19132/udp 25565/udp 25565/tcp 8000/tcp
 
 # Healthcheck.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
-  CMD ["gosu", "naeus", "python", "main.py", "--healthcheck"]
+  CMD ["python", "main.py", "--healthcheck"]
