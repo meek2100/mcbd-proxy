@@ -138,6 +138,9 @@ class NetherBridgeProxy:
                 self._stop_minecraft_server(container_name)
 
                 # --- FIX: Block and wait for the container to fully stop ---
+                # This is critical in test environments to prevent race conditions
+                # where a test attempts to start a server before the previous one has
+                # fully shut down, leading to port conflicts or inconsistent state.
                 self.logger.info(
                     "Waiting for server to fully stop...",
                     container_name=container_name,
@@ -227,6 +230,17 @@ class NetherBridgeProxy:
                 with self.server_locks[container_name]:
                     state = self.server_states.get(container_name)
                     if not (state and state.get("running")):
+                        continue
+
+                    # Add a check to see if the container is *actually* running
+                    if not self.docker_manager.is_container_running(container_name):
+                        self.logger.info(
+                            "Monitor found server stopped unexpectedly. Updating state",
+                            container_name=container_name,
+                        )
+                        if state.get("running"):
+                            RUNNING_SERVERS.dec()
+                        state["running"] = False
                         continue
 
                     has_active_sessions = any(
@@ -501,20 +515,24 @@ class NetherBridgeProxy:
             )
 
         session_key = (client_addr, server_port, "udp")
-        if session_key not in self.active_sessions:
-            server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            server_sock.setblocking(False)
-            self.inputs.append(server_sock)
-            session_info = {
-                "server_socket": server_sock,
-                "target_container": container_name,
-                "last_packet_time": time.time(),
-                "listen_port": server_port,
-                "protocol": "udp",
-            }
-            self.active_sessions[session_key] = session_info
-            self.socket_to_session_map[server_sock] = (session_key, "server_socket")
-            ACTIVE_SESSIONS.labels(server_name=server_config.name).inc()
+
+        # Lock to ensure atomic check-and-create for new UDP sessions
+        with self.server_locks[container_name]:
+            if session_key not in self.active_sessions:
+                # This whole block is now protected from race conditions
+                server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                server_sock.setblocking(False)
+                self.inputs.append(server_sock)
+                session_info = {
+                    "server_socket": server_sock,
+                    "target_container": container_name,
+                    "last_packet_time": time.time(),
+                    "listen_port": server_port,
+                    "protocol": "udp",
+                }
+                self.active_sessions[session_key] = session_info
+                self.socket_to_session_map[server_sock] = (session_key, "server_socket")
+                ACTIVE_SESSIONS.labels(server_name=server_config.name).inc()
 
         session_info = self.active_sessions[session_key]
         session_info["last_packet_time"] = time.time()

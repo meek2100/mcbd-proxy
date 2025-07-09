@@ -114,6 +114,7 @@ services:
       - "19132:19132/udp"
       - "25565:25565/udp"
       - "25565:25565/tcp"
+      # - "8000:8000" # Optional: Uncomment to expose Prometheus metrics endpoint
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
@@ -189,20 +190,22 @@ services:
 
 These settings control the proxy's behavior, such as idle timeouts and query intervals.
 
-| Environment Variable | `settings.json` Key | Default Value | Description |
-| :------------------------------- | :----------------------------------- | :------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `LOG_LEVEL` | `log_level` | `INFO` | Sets the logging verbosity. Options: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
-| `NB_LOG_FORMATTER` | `log_formatter` | `json` | Sets the log output format. Options: `json` for machine-readable structured logs (production default), or `console` for human-readable colored logs (development). |
-| `NB_IDLE_TIMEOUT` | `idle_timeout_seconds` | `600` | Time in seconds a server must have 0 players before it's automatically stopped. |
-| `NB_PLAYER_CHECK_INTERVAL` | `player_check_interval_seconds` | `60` | How often (in seconds) the proxy checks for active players on running servers. |
-| `NB_QUERY_TIMEOUT` | `query_timeout_seconds` | `5` | Timeout (in seconds) for `mcstatus` queries when checking server readiness or player counts. |
-| `NB_SERVER_READY_MAX_WAIT` | `server_ready_max_wait_time_seconds` | `120` | Maximum time (in seconds) the proxy will wait for a newly started server to respond to status queries before giving up and forwarding packets anyway. |
-| `NB_INITIAL_BOOT_READY_MAX_WAIT` | `initial_boot_ready_max_wait_time_seconds` | `180` | Maximum time (in seconds) the proxy will wait for servers to become query-ready during initial startup (before issuing safe stops). This allows for longer initial boot times. |
-| `NB_SERVER_STARTUP_DELAY` | `server_startup_delay_seconds` | `5` | Delay (in seconds) after issuing a Docker start command before the proxy begins probing the server for readiness. Gives the server a moment to begin initializing. |
-| `NB_INITIAL_SERVER_QUERY_DELAY` | `initial_server_query_delay_seconds` | `10` | Delay (in seconds) before the proxy attempts to query a server that was found running on proxy startup. This allows time for the server to stabilize if it was previously mid-startup or in a crashed state. |
-| `NB_HEALTHCHECK_STALE_THRESHOLD` | `healthcheck_stale_threshold_seconds` | `60`    | Time in seconds before the main process heartbeat is considered stale by the health check. |
-| `NB_HEARTBEAT_INTERVAL`          | `proxy_heartbeat_interval_seconds`  | `15`    | How often (in seconds) the main proxy loop updates its heartbeat file.                |
-| `NB_TCP_LISTEN_BACKLOG` | `tcp_listen_backlog` | `128` | (Advanced) The maximum number of queued TCP connections for Java servers. Higher values can help handle sudden connection spikes. |
+| Environment Variable             | `settings.json` Key                        | Default Value | Description                                                                                                                                                                                                  |
+| :------------------------------- | :----------------------------------------- | :------------ | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LOG_LEVEL`                      | `log_level`                                | `INFO`        | Sets the logging verbosity. Options: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`.                                                                                                                        |
+| `NB_LOG_FORMATTER`               | `log_formatter`                            | `json`        | Sets the log output format. Options: `json` for machine-readable structured logs (production default), or `console` for human-readable colored logs (development).                                           |
+| `NB_IDLE_TIMEOUT`                | `idle_timeout_seconds`                     | `600`         | Time in seconds a server must have 0 players before it's automatically stopped.                                                                                                                              |
+| `NB_PLAYER_CHECK_INTERVAL`       | `player_check_interval_seconds`            | `60`          | How often (in seconds) the proxy checks for active players on running servers.                                                                                                                               |
+| `NB_QUERY_TIMEOUT`               | `query_timeout_seconds`                    | `5`           | Timeout (in seconds) for `mcstatus` queries when checking server readiness or player counts.                                                                                                                 |
+| `NB_SERVER_READY_MAX_WAIT`       | `server_ready_max_wait_time_seconds`       | `120`         | Maximum time (in seconds) the proxy will wait for a newly started server to respond to status queries before giving up and forwarding packets anyway.                                                        |
+| `NB_INITIAL_BOOT_READY_MAX_WAIT` | `initial_boot_ready_max_wait_time_seconds` | `180`         | Maximum time (in seconds) the proxy will wait for servers to become query-ready during initial startup (before issuing safe stops). This allows for longer initial boot times.                               |
+| `NB_SERVER_STARTUP_DELAY`        | `server_startup_delay_seconds`             | `5`           | Delay (in seconds) after issuing a Docker start command before the proxy begins probing the server for readiness. Gives the server a moment to begin initializing.                                           |
+| `NB_INITIAL_SERVER_QUERY_DELAY`  | `initial_server_query_delay_seconds`       | `10`          | Delay (in seconds) before the proxy attempts to query a server that was found running on proxy startup. This allows time for the server to stabilize if it was previously mid-startup or in a crashed state. |
+| `NB_HEALTHCHECK_STALE_THRESHOLD` | `healthcheck_stale_threshold_seconds`      | `60`          | Time in seconds before the main process heartbeat is considered stale by the health check.                                                                                                                   |
+| `NB_HEARTBEAT_INTERVAL`          | `proxy_heartbeat_interval_seconds`         | `15`          | How often (in seconds) the main proxy loop updates its heartbeat file.                                                                                                                                       |
+| `NB_TCP_LISTEN_BACKLOG`          | `tcp_listen_backlog`                       | `128`         | (Advanced) The maximum number of queued TCP connections for Java servers. Higher values can help handle sudden connection spikes.                                                                            |
+| `NB_MAX_SESSIONS`                | `max_concurrent_sessions`                  | `-1`          | (Advanced) Maximum number of concurrent sessions allowed. Useful for preventing resource exhaustion under heavy load. A value of -1 means unlimited.                                                         |
+
 **Example `settings.json`:**
 
 ```json
@@ -216,15 +219,19 @@ These settings control the proxy's behavior, such as idle timeouts and query int
 
 ### Server Definitions
 
-These settings define each Minecraft server managed by Nether-bridge. You can define multiple servers.
+These settings define each Minecraft server managed by Nether-bridge. You can define multiple servers. The primary method for defining servers is through 
 
-| Environment Variable Prefix (e.g., `NB_1_`) | `servers.json` Key | Type | Description | Required |
-| :------------------------------------------ | :------------------- | :------ | :------------------------------------------------------------------------------------------ | :------- |
-| `NB_X_NAME` | `name` | string | A friendly name for the server (e.g., "Bedrock Survival"). | No |
-| `NB_X_SERVER_TYPE` | `server_type` | string | Type of Minecraft server: `bedrock` or `java`. | Yes |
-| `NB_X_LISTEN_PORT` | `listen_port` | integer | The UDP port Nether-bridge listens on for this server (players connect to this port). | Yes |
-| `NB_X_CONTAINER_NAME` | `container_name` | string | The Docker container name of the Minecraft server. | Yes |
-| `NB_X_INTERNAL_PORT` | `internal_port` | integer | The internal port the Minecraft server listens on inside its container (usually `19132` for Bedrock, `25565` for Java). | Yes |
+`NB_X_...` environment variables, as this is the most common and recommended approach for containerized applications. Using 
+
+`servers.json` is an alternative for local setups or complex configurations.
+
+| Environment Variable Prefix (e.g., `NB_1_`) | `servers.json` Key | Type    | Description                                                                                                             | Required |
+| :------------------------------------------ | :----------------- | :------ | :---------------------------------------------------------------------------------------------------------------------- | :------- |
+| `NB_X_NAME`                                 | `name`             | string  | A friendly name for the server (e.g., "Bedrock Survival").                                                              | No       |
+| `NB_X_SERVER_TYPE`                          | `server_type`      | string  | Type of Minecraft server: `bedrock` or `java`.                                                                          | Yes      |
+| `NB_X_LISTEN_PORT`                          | `listen_port`      | integer | The UDP port Nether-bridge listens on for this server (players connect to this port).                                   | Yes      |
+| `NB_X_CONTAINER_NAME`                       | `container_name`   | string  | The Docker container name of the Minecraft server.                                                                      | Yes      |
+| `NB_X_INTERNAL_PORT`                        | `internal_port`    | integer | The internal port the Minecraft server listens on inside its container (usually `19132` for Bedrock, `25565` for Java). | Yes      |
 
 *Replace `X` with a unique, sequential number (e.g., `1`, `2`, `3`) for each server when using environment variables.*
 

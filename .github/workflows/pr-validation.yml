@@ -64,7 +64,10 @@ jobs:
             fi
             if [ "$(($(date +%s) - start_time))" -ge "$timeout" ]; then
               echo "Timeout waiting for nether-bridge container to become healthy."
+              echo "--- Docker Inspect Output ---"
               docker inspect nether-bridge
+              echo "--- Container Logs ---"
+              docker logs nether-bridge
               exit 1
             fi
             echo "Current status: $status. Waiting..."
