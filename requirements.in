@@ -1,6 +1,0 @@
-# Production Dependencies
-docker
-mcstatus
-prometheus_client
-structlog
-colorama
