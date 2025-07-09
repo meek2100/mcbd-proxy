@@ -1,4 +1,5 @@
 # .github/workflows/reusable-build.yml
+
 name: Reusable Docker Build and Push
 
 on:
@@ -16,7 +17,7 @@ on:
 
 jobs:
   build-and-push:
-    runs-on: self-hosted
+    runs-on: [ubuntu-latest]
     permissions:
       contents: read
       packages: write
@@ -51,6 +52,5 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Use the 'main' branch cache for tag builds, otherwise use the branch name.
           cache-from: type=registry,ref=${{ inputs.image_name }}-cache:${{ github.ref_type == 'tag' && 'main' || github.ref_name }}
           cache-to: type=registry,ref=${{ inputs.image_name }}-cache:${{ github.ref_type == 'tag' && 'main' || github.ref_name }},mode=max

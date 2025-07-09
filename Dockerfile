@@ -2,8 +2,8 @@
 # This layer is cached and only rebuilt when requirements.txt changes.
 FROM python:3.10-slim-buster AS base
 WORKDIR /app
-COPY requirements.txt .
-RUN python -m pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
+COPY pyproject.toml .
+RUN python -m pip install --upgrade pip && pip install --no-cache-dir .
 
 # Stage 2: Builder - A complete copy of the source code for use by other stages.
 FROM python:3.10-slim-buster AS builder
@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends gosu passwd && 
 # Copy the entire project context from the builder stage.
 COPY --from=builder /app /app
 # Install development dependencies.
-RUN pip install --no-cache-dir -r tests/requirements-dev.txt
+RUN pip install --no-cache-dir ".[dev]"
 # Create user and set permissions for the test environment.
 RUN adduser --system --no-create-home naeus && \
   chown -R naeus:nogroup /app && \

@@ -78,10 +78,10 @@ class NetherBridgeProxy:
             if not self.server_states[container_name].get("running", False):
                 self.server_states[container_name]["running"] = True
                 RUNNING_SERVERS.inc()
+            # This ensures we report success if the server is already running.
             return True
 
         startup_timer_start = time.time()
-        # This now correctly returns True or False
         success = self.docker_manager.start_server(server_config, self.settings)
 
         if success:
@@ -102,7 +102,7 @@ class NetherBridgeProxy:
             )
             self.server_states[container_name]["running"] = False
 
-        # This is the crucial fix: return the actual success status.
+        # This ensures we return the actual outcome (True or False) to the caller.
         return success
 
     def _stop_minecraft_server(self, container_name: str):
@@ -115,7 +115,10 @@ class NetherBridgeProxy:
             self.server_states[container_name]["running"] = False
 
     def _ensure_all_servers_stopped_on_startup(self):
-        """Ensures all managed servers are stopped when the proxy starts."""
+        """
+        Ensures all managed servers are stopped when the proxy starts.
+        This is a blocking operation to prevent race conditions in tests.
+        """
         self.logger.info(
             "Proxy startup: Ensuring all managed servers are initially stopped."
         )
@@ -133,6 +136,27 @@ class NetherBridgeProxy:
                     self.settings.query_timeout_seconds,
                 )
                 self._stop_minecraft_server(container_name)
+
+                # --- FIX: Block and wait for the container to fully stop ---
+                self.logger.info(
+                    "Waiting for server to fully stop...",
+                    container_name=container_name,
+                )
+                stop_timeout = 60  # seconds
+                stop_start_time = time.time()
+                while self.docker_manager.is_container_running(container_name):
+                    if time.time() - stop_start_time > stop_timeout:
+                        self.logger.error(
+                            "Timeout waiting for container to stop.",
+                            container_name=container_name,
+                        )
+                        break
+                    time.sleep(1)
+                else:  # This 'else' belongs to the 'while' loop
+                    self.logger.info(
+                        "Server confirmed to be stopped.",
+                        container_name=container_name,
+                    )
             else:
                 self.logger.info(
                     "Is confirmed to be stopped.", container_name=container_name
@@ -141,7 +165,6 @@ class NetherBridgeProxy:
     def _monitor_servers_activity(self):
         """Monitors server and session activity in a dedicated thread."""
         while not self._shutdown_requested:
-            # This will wait for the interval OR until the shutdown event is set
             self._shutdown_event.wait(self.settings.player_check_interval_seconds)
             if self._shutdown_requested:
                 break
@@ -152,9 +175,29 @@ class NetherBridgeProxy:
             )
             current_time = time.time()
 
-            # Session Cleanup Logic
+            # --- Proactive Crash Detection & Idle Timeout ---
             for session_key, session_info in list(self.active_sessions.items()):
+                container_name = session_info["target_container"]
                 server_config = self.servers_config_map.get(session_info["listen_port"])
+
+                if not self.docker_manager.is_container_running(container_name):
+                    self.logger.warning(
+                        "Backend active session container not running. Cleaning up.",
+                        container_name=container_name,
+                        client_addr=session_key[0],
+                    )
+                    if server_config:
+                        ACTIVE_SESSIONS.labels(server_name=server_config.name).dec()
+                    self._close_session_sockets(session_info)
+                    self.active_sessions.pop(session_key, None)
+                    self.socket_to_session_map.pop(
+                        session_info.get("client_socket"), None
+                    )
+                    self.socket_to_session_map.pop(
+                        session_info.get("server_socket"), None
+                    )
+                    continue
+
                 if not server_config:
                     continue
 
@@ -178,7 +221,7 @@ class NetherBridgeProxy:
                         session_info.get("server_socket"), None
                     )
 
-            # Server Shutdown Logic
+            # Server Shutdown Logic (for idle servers with no sessions)
             for server_conf in self.servers_list:
                 container_name = server_conf.container_name
                 with self.server_locks[container_name]:
@@ -202,8 +245,10 @@ class NetherBridgeProxy:
                         or self.settings.idle_timeout_seconds
                     )
                     if current_time - state.get("last_activity", 0) > idle_timeout:
+                        # Assign long message to a variable to meet line limit
+                        log_msg = "Server idle with 0 sessions. Initiating shutdown."
                         self.logger.info(
-                            "Server idle with 0 sessions. Initiating shutdown.",
+                            log_msg,
                             container_name=container_name,
                             idle_threshold_seconds=idle_timeout,
                         )
@@ -356,24 +401,44 @@ class NetherBridgeProxy:
         ACTIVE_SESSIONS.labels(server_name=server_config.name).inc()
         server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-        try:
-            if not self.server_states[container_name]["running"]:
-                raise ConnectionRefusedError(
-                    "Server not running to establish connection."
+        # --- NEW: Retry loop for backend connection ---
+        # This robustly handles the case where the server is pingable but the
+        # session manager isn't fully ready.
+        connected_to_backend = False
+        connect_start_time = time.time()
+        connect_timeout = 5  # seconds
+
+        while (
+            not connected_to_backend
+            and time.time() - connect_start_time < connect_timeout
+        ):
+            try:
+                if not self.docker_manager.is_container_running(container_name):
+                    raise ConnectionRefusedError(
+                        "Server stopped during backend connection attempt."
+                    )
+                server_sock.settimeout(1.0)  # Use a short timeout for each attempt
+                server_sock.connect((container_name, server_config.internal_port))
+                server_sock.setblocking(False)
+                connected_to_backend = True
+            except (socket.error, ConnectionRefusedError) as e:
+                self.logger.debug(
+                    "Backend connection failed, retrying...",
+                    container_name=container_name,
+                    error=str(e),
                 )
-            server_sock.settimeout(5.0)
-            server_sock.connect((container_name, server_config.internal_port))
-            server_sock.setblocking(False)
-        except (socket.error, socket.gaierror, ConnectionRefusedError) as e:
+                time.sleep(0.25)  # Wait briefly before retrying
+
+        if not connected_to_backend:
             self.logger.error(
-                "Failed to connect to backend server. It may have crashed post-check.",
+                "Failed to connect to backend server after multiple retries.",
                 container_name=container_name,
-                error=str(e),
             )
             self.inputs.remove(conn)
             conn.close()
             ACTIVE_SESSIONS.labels(server_name=server_config.name).dec()
             return
+        # --- End of new logic ---
 
         self.inputs.append(server_sock)
         conn.setblocking(False)
