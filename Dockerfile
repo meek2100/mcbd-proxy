@@ -33,13 +33,10 @@ COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/pytho
 # Copy the entire application directory from the builder.
 COPY --from=builder /app /app
 
-# **THE FIX**: Change ownership of the app directory to the non-root user.
+# Change ownership of the app directory to the non-root user.
 RUN chown -R naeus:nogroup /app
 
-# Switch to the non-root user before setting the entrypoint.
-USER naeus
-
-# Set the entrypoint.
+# Set the entrypoint. The script will run as root, then use gosu to drop privileges.
 ENTRYPOINT ["/app/entrypoint.sh"]
 
 # Set the default command to run the application.
@@ -50,4 +47,4 @@ EXPOSE 19132/udp 25565/udp 25565/tcp 8000/tcp
 
 # Healthcheck to ensure the proxy is running correctly.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
-  CMD ["python", "main.py", "--healthcheck"]
+  CMD ["gosu", "naeus", "python", "main.py", "--healthcheck"]
