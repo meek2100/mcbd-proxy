@@ -1,7 +1,7 @@
 # .github/workflows/fast-validation.yml
+
 name: Fast Validation (Lint & Unit Tests)
 
-# This workflow runs on every push to any branch.
 on: [push]
 
 permissions:
@@ -18,10 +18,10 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip' # Cache dependencies for faster runs
+          cache: 'pip'
 
       - name: Install Dependencies
-        run: pip install -r tests/requirements-dev.txt
+        run: pip install ".[dev]"
 
       - name: Lint with ruff
         run: ruff check .
@@ -30,8 +30,6 @@ jobs:
         run: ruff format --check .
 
       - name: Run Unit Tests
-        # This command now uses markers to run only the fast unit tests.
-        # It also measures coverage against all the new application modules.
         run: >
           pytest -m unit
           --cov=main

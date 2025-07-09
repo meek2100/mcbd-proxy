@@ -1,3 +1,5 @@
+# .github/workflows/load-test-bedrock.yml
+
 name: Manual Load Test - Bedrock
 
 on:
