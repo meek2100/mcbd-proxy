@@ -19,27 +19,27 @@ classifiers = [
 ]
 
 dependencies = [
-    # Pinned for production stability
+    # Pinned to match original requirements.txt for production stability
     "docker==7.1.0",
-    "mcstatus==12.1.0",
-    "prometheus-client==0.20.0",
-    "structlog==24.2.0",
+    "mcstatus==12.0.2",
+    "prometheus-client==0.22.1",
+    "structlog==25.4.0",
     "colorama==0.4.6",
 ]
 
 [project.urls]
-Homepage = "https://github.com/meek2100/nether-bridge"
-"Bug Tracker" = "https://github.com/meek2100/nether-bridge/issues"
+Homepage = "https://github.com/meek2100/mcbd-proxy"
+"Bug Tracker" = "https://github.com/meek2100/mcbd-proxy/issues"
 
 [project.optional-dependencies]
 dev = [
-    # Pinned for consistent development and testing environments
-    "pytest==8.2.2",
-    "pytest-mock==3.14.0",
-    "pytest-cov==5.0.0",
-    "ruff==0.4.10",
-    "python-dotenv==1.0.1",
-    "requests==2.32.3",
+    # Pinned to match original requirements-dev.txt
+    "pytest==8.4.1",
+    "pytest-mock==3.14.1",
+    "pytest-cov==6.2.1",
+    "ruff==0.12.2",
+    "python-dotenv==1.1.1",
+    "requests==2.32.4",
 ]
 
 # Explicitly list your modules for setuptools to handle the "flat-layout"
