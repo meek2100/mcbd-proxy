@@ -310,7 +310,7 @@ def test_proxy_cleans_up_session_on_container_crash(
         time.sleep(1)
 
         with pytest.raises(socket.error):
-            print("(Chaos Test) Sending data to trigger proxy's error handling...")
+            print("(Crash Test) Sending data to trigger proxy's error handling...")
             victim_socket.sendall(b"data_after_crash")
 
         assert wait_for_log_message(
@@ -320,7 +320,7 @@ def test_proxy_cleans_up_session_on_container_crash(
             timeout=10,
         ), "Proxy did not log the session cleanup after the container crash."
 
-        print("(Chaos Test) Test passed: Proxy correctly handled the crashed session.")
+        print("(Crash Test) Test passed: Proxy correctly handled the crashed session.")
 
     finally:
         victim_socket.close()

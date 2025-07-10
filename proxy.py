@@ -297,12 +297,11 @@ class NetherBridgeProxy:
             self._cleanup_session_by_socket(sock)
             return
 
-        for srv_cfg in self.servers_list:
-            container_name = srv_cfg.container_name
+        container_name = self._get_container_for_sock(sock)
+        if container_name:
             with self.server_locks[container_name]:
-                state = self.server_states[container_name]
-                if sock in state["pending_sockets"]:
-                    state["pending_sockets"][sock] += data
+                if sock in self.server_states[container_name]["pending_sockets"]:
+                    self.server_states[container_name]["pending_sockets"][sock] += data
                     return
 
         with self.session_lock:
@@ -358,6 +357,23 @@ class NetherBridgeProxy:
                 self._remove_socket(session.get("server_socket"))
                 self.socket_to_session_map.pop(session.get("client_socket"), None)
                 self.socket_to_session_map.pop(session.get("server_socket"), None)
+
+    def _get_container_for_sock(self, sock: socket.socket):
+        """Finds the container name associated with a given socket."""
+        # This is a bit of a hack to find the server config for a listen socket
+        # that has just accepted a connection.
+        try:
+            port = sock.getsockname()[1]
+            return self.servers_config_map[port].container_name
+        except (KeyError, OSError):
+            # Fallback for client sockets in an established session
+            with self.session_lock:
+                session_tuple = self.socket_to_session_map.get(sock)
+                if session_tuple:
+                    session = self.active_sessions.get(session_tuple[0])
+                    if session:
+                        return session.get("target_container")
+        return None
 
     def _run_proxy_loop(self, main_module):
         """The main event loop of the proxy."""
