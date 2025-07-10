@@ -144,34 +144,30 @@ class NetherBridgeProxy:
         ):
             current_time = time.time()
 
-            # --- FIX: Implement a robust two-stage check ---
-            # Stage 1: Aggressively prune all stale/crashed sessions first.
+            # --- FIX: Definitive two-stage monitor logic ---
+            # Stage 1: Clean up all stale/crashed sessions.
             with self.session_lock:
                 for key in list(self.active_sessions.keys()):
                     session = self.active_sessions.get(key)
                     if not session:
                         continue
 
-                    # Clean up if the session's container has stopped
-                    if not self.docker_manager.is_container_running(
+                    is_crashed = not self.docker_manager.is_container_running(
                         session["target_container"]
-                    ):
-                        self._cleanup_session_by_key(key)
-                        continue
-
-                    # Clean up if the session itself is inactive
+                    )
                     server_conf = self.servers_config_map[session["listen_port"]]
                     idle_timeout = (
                         server_conf.idle_timeout_seconds
                         or self.settings.idle_timeout_seconds
                     )
-                    if current_time - session["last_packet_time"] > idle_timeout:
-                        self.logger.info(
-                            "Cleaning up idle client session.", client_addr=key[0]
-                        )
+                    is_idle = (
+                        current_time - session["last_packet_time"]
+                    ) > idle_timeout
+
+                    if is_crashed or is_idle:
                         self._cleanup_session_by_key(key)
 
-            # Stage 2: Check for servers that are now truly idle.
+            # Stage 2: Check for servers that are now idle.
             for server_conf in self.servers_list:
                 with self.server_locks[server_conf.container_name]:
                     state = self.server_states[server_conf.container_name]
@@ -179,36 +175,30 @@ class NetherBridgeProxy:
                         continue
 
                     with self.session_lock:
-                        has_sessions = any(
-                            s["target_container"] == server_conf.container_name
-                            for s in self.active_sessions.values()
-                        )
-
-                    # If there are still active sessions, update activity time
-                    if has_sessions:
                         sessions_for_server = [
                             s
                             for s in self.active_sessions.values()
                             if s["target_container"] == server_conf.container_name
                         ]
-                        if sessions_for_server:
-                            state["last_activity"] = max(
-                                s["last_packet_time"] for s in sessions_for_server
-                            )
-                        continue
 
-                    # If we get here, the server has zero active sessions.
-                    # Now check its idle timer.
-                    idle_timeout = (
-                        server_conf.idle_timeout_seconds
-                        or self.settings.idle_timeout_seconds
-                    )
-                    if current_time - state["last_activity"] > idle_timeout:
-                        self.logger.info(
-                            "Server idle with no sessions. Initiating shutdown.",
-                            container_name=server_conf.container_name,
+                    if sessions_for_server:
+                        # If sessions remain (they must be active), update activity time
+                        state["last_activity"] = max(
+                            s["last_packet_time"] for s in sessions_for_server
                         )
-                        self._stop_minecraft_server(server_conf.container_name)
+                    else:
+                        # No sessions left, check if the idle timeout has passed
+                        # since the last known activity.
+                        idle_timeout = (
+                            server_conf.idle_timeout_seconds
+                            or self.settings.idle_timeout_seconds
+                        )
+                        if current_time - state["last_activity"] > idle_timeout:
+                            self.logger.info(
+                                "Server idle with no sessions. Initiating shutdown.",
+                                container_name=server_conf.container_name,
+                            )
+                            self._stop_minecraft_server(server_conf.container_name)
 
     def _remove_socket(self, sock: socket.socket):
         """Safely removes a socket from inputs and closes it."""
@@ -328,16 +318,35 @@ class NetherBridgeProxy:
     def _handle_new_connection(self, sock: socket.socket):
         """Handles a new incoming TCP connection from a client."""
         conn, client_addr = sock.accept()
-        conn.setblocking(False)
-        # --- FIX: Do NOT add the raw connection to self.inputs yet. ---
-        # It will be added only after a full session is established.
-        # self.inputs.append(conn) <--- THIS LINE IS REMOVED
 
+        # --- FIX: Detect and ignore Java status pings to stopped servers ---
         server_cfg = self.servers_config_map[sock.getsockname()[1]]
         container_name = server_cfg.container_name
-
         with self.server_locks[container_name]:
             state = self.server_states[container_name]
+            # If server is stopped and it's a Java server, check if it's a status ping
+            if state["status"] != "running" and server_cfg.server_type == "java":
+                try:
+                    # Peek at the first few bytes without consuming them
+                    initial_data = conn.recv(16, socket.MSG_PEEK)
+                    # A typical status ping starts with a small VarInt for length,
+                    # a packet ID of 0x00, and a protocol version. The third byte
+                    # is usually the start of the server address for status pings.
+                    # A next_state of 1 (at byte index 1 of the payload) is for Status.
+                    # We check if it's likely a status ping and not a login attempt.
+                    if len(initial_data) > 2 and initial_data[1] == 0x00:
+                        # This is likely a status ping. Close the connection
+                        # without starting the server to ignore test pollers.
+                        conn.close()
+                        return
+                except (socket.error, IndexError):
+                    # Not a valid packet or connection closed, ignore
+                    conn.close()
+                    return
+
+        conn.setblocking(False)
+        # It's a real connection, proceed with queuing and startup.
+        with self.server_locks[container_name]:
             if state["status"] == "running":
                 self._establish_tcp_session(conn, client_addr, server_cfg, b"")
             else:
