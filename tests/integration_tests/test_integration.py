@@ -430,7 +430,7 @@ def test_proxy_cleans_up_session_on_container_crash(
         assert wait_for_log_message(
             docker_client_fixture,
             "nether-bridge",
-            "[DEBUG] Session cleanup block triggered.",
+            "[DEBUG] Session cleanup block triggered by connection error.",
             timeout=10,
         ), "Proxy did not log the session cleanup after the container crash."
 

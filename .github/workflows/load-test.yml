@@ -79,7 +79,8 @@ jobs:
           docker compose -f tests/docker-compose.tests.yml exec nb-tester \
             python tests/load_tester.py \
               --server-type ${{ matrix.server_type }} \
-              --clients $CLIENT_COUNT
+              --clients $CLIENT_COUNT \
+              --chaos 30 # Add this line
 
       - name: Dump container logs on failure
         if: failure()
