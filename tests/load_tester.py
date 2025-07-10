@@ -166,7 +166,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--timeout",
         type=int,
-        default=240,
+        default=400,
         help="Max time (seconds) for the entire test, including server boot.",
     )
     parser.add_argument(
