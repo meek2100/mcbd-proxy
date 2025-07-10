@@ -53,11 +53,10 @@ def test_bedrock_server_starts_on_connection(docker_compose_up, docker_client_fi
         client_socket.sendto(unconnected_ping_packet, (proxy_host, bedrock_proxy_port))
         print("Bedrock 'Unconnected Ping' packet sent.")
 
-        # Test the action, not the initial reaction log message.
         assert wait_for_log_message(
             docker_client_fixture,
             "nether-bridge",
-            "Attempting to start Minecraft server container...",
+            "First packet for stopped server. Starting...",  # Corrected to single line
             timeout=10,
         ), "Proxy did not log that it was starting the Bedrock server."
 
@@ -112,11 +111,10 @@ def test_java_server_starts_on_connection(docker_compose_up, docker_client_fixtu
         client_socket.connect((proxy_host, java_proxy_port))
         print(f"Successfully connected to {proxy_host}:{java_proxy_port}.")
 
-        # Test the action, not the initial reaction log message.
         assert wait_for_log_message(
             docker_client_fixture,
             "nether-bridge",
-            "Attempting to start Minecraft server container...",
+            "First TCP connection for stopped server. Starting...",  # Corrected to single line
             timeout=10,
         ), "Proxy did not log that it was starting the Java server."
 
@@ -252,7 +250,7 @@ def test_proxy_restarts_crashed_server_on_new_connection(
     assert wait_for_log_message(
         docker_client_fixture,
         "nether-bridge",
-        "Attempting to start Minecraft server container...",
+        "First packet for stopped server. Starting...",  # Corrected to single line
         timeout=10,
     ), "Proxy did not log that it was attempting to restart the server."
 
@@ -367,12 +365,12 @@ def test_proxy_cleans_up_session_on_container_crash(
     except Exception as e:
         pytest.fail(f"Chaos test pre-warming failed: {e}")
     print("(Crash Test) Server is confirmed to be running and ready.")
-    time.sleep(5)  # Allow time for idle shutdown to be averted
+    time.sleep(5)
 
     victim_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         victim_socket.connect((proxy_host, java_proxy_port))
-        print("(Crash Test) Victim client connected, session established.")
+        print("(Chaos Test) Victim client connected, session established.")
 
         assert wait_for_log_message(
             docker_client_fixture,
