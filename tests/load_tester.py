@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import random
 import socket
 import sys
 import time
@@ -33,27 +34,45 @@ def simulate_single_client(
     host: str,
     port: int,
     test_timeout: int,
+    chaos_percent: int,
 ):
     """
-    Simulates a single, patient client. It will repeatedly try to get a
-    status from the server until the overall test_timeout is reached.
-    This simulates a player waiting at the "Connecting to server..." screen.
+    Simulates a single client connecting to the proxy.
+
+    If chaos mode is enabled, a percentage of clients will misbehave by
+    connecting and then abruptly disconnecting to test the proxy's error
+    handling and session cleanup.
     """
     start_time = time.time()
 
+    # --- Chaos Mode Logic ---
+    if chaos_percent > 0 and random.randint(1, 100) <= chaos_percent:
+        try:
+            if server_type == ServerType.JAVA:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(10)
+                sock.connect((host, port))
+                time.sleep(random.uniform(0.5, 2.0))
+                sock.close()
+            else:  # Bedrock
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.sendto(BEDROCK_UNCONNECTED_PING, (host, port))
+                time.sleep(random.uniform(0.5, 2.0))
+                sock.close()
+            return "CHAOS_ABORT"
+        except Exception as e:
+            return f"FAILURE: Chaos client failed - {type(e).__name__}"
+
+    # --- Regular "Patient" Client Logic ---
     if server_type == ServerType.JAVA:
-        # For Java, we create one long-lived TCP connection per client
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            # A generous timeout for the initial connection itself
             sock.settimeout(test_timeout)
             sock.connect((host, port))
-            # Once connected, set a shorter timeout for status pings
-            sock.settimeout(5)
+            sock.settimeout(5)  # Shorter timeout for subsequent pings
 
             while time.time() - start_time < test_timeout:
                 try:
-                    # Create packets inside the loop for resilience
                     (
                         handshake,
                         status_req,
@@ -61,9 +80,8 @@ def simulate_single_client(
                     sock.sendall(handshake)
                     sock.sendall(status_req)
                     sock.recv(4096)
-                    return "SUCCESS"  # Got a response
+                    return "SUCCESS"
                 except (socket.timeout, ConnectionResetError):
-                    # Server might be starting up; wait and retry
                     time.sleep(2)
                     continue
         except Exception as e:
@@ -73,22 +91,21 @@ def simulate_single_client(
                 sock.close()
 
     elif server_type == ServerType.BEDROCK:
-        # For Bedrock (UDP), we create a new socket for each attempt
         while time.time() - start_time < test_timeout:
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                sock.settimeout(3)  # Short timeout for each UDP ping
+                sock.settimeout(3)
                 sock.sendto(BEDROCK_UNCONNECTED_PING, (host, port))
                 sock.recvfrom(4096)
                 sock.close()
-                return "SUCCESS"  # Got a response
+                return "SUCCESS"
             except socket.timeout:
                 sock.close()
-                time.sleep(2)  # Wait and retry
+                time.sleep(2)
             except Exception as e:
                 return f"FAILURE: Bedrock client error - {type(e).__name__}"
 
-    return "FAILURE: Client timed out after " + f"{test_timeout} seconds."
+    return f"FAILURE: Client timed out after {test_timeout} seconds."
 
 
 def dump_debug_info(container_names_to_log):
@@ -104,7 +121,6 @@ def dump_debug_info(container_names_to_log):
 
         print("\n--- STATUS OF ALL TEST CONTAINERS ---")
         for container in client.containers.list(all=True):
-            # Only show containers relevant to this project
             if any(name in container.name for name in all_test_containers):
                 status = f"Status: {container.status}"
                 print(f"  - {container.name:<20} | {status}")
@@ -134,7 +150,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Load testing tool for Nether-bridge proxy."
     )
-    # --- (Argument parsing remains the same) ---
     parser.add_argument(
         "--server-type",
         type=ServerType,
@@ -154,6 +169,14 @@ if __name__ == "__main__":
         default=240,
         help="Max time (seconds) for the entire test, including server boot.",
     )
+    parser.add_argument(
+        "--chaos",
+        type=int,
+        default=0,
+        choices=range(0, 101),
+        metavar="[0-100]",
+        help="Percentage of clients that will connect and abruptly disconnect.",
+    )
 
     args = parser.parse_args()
 
@@ -163,7 +186,7 @@ if __name__ == "__main__":
         "mc-java" if args.server_type == ServerType.JAVA else "mc-bedrock"
     )
     containers_to_log = ["nether-bridge", target_container]
-    exit_code = 1  # Default to failure
+    exit_code = 1
 
     try:
         print("--- Nether-bridge True Cold-Start Load Test ---")
@@ -172,6 +195,7 @@ if __name__ == "__main__":
         print(f"Target Endpoint:    {target_host}:{port}")
         print(f"Concurrent Clients: {args.clients}")
         print(f"Client Timeout:     {args.timeout}s")
+        print(f"Chaos Percentage:   {args.chaos}%")
         print("---------------------------------------------")
 
         ensure_container_stopped(target_container)
@@ -188,18 +212,21 @@ if __name__ == "__main__":
                     target_host,
                     port,
                     args.timeout,
+                    args.chaos,
                 )
                 tasks.append(task)
             results = [t.result() for t in tasks]
 
         end_time = time.time()
 
-        success_count = len([r for r in results if r == "SUCCESS"])
-        failure_count = len(results) - success_count
+        success_count = results.count("SUCCESS")
+        chaos_count = results.count("CHAOS_ABORT")
+        failure_count = len(results) - success_count - chaos_count
 
         print("\n--- Load Test Summary ---")
         print(f"Total Time Elapsed: {end_time - start_time:.2f} seconds")
         print(f"Successful Clients: {success_count} / {args.clients}")
+        print(f"Chaos Clients:      {chaos_count} / {args.clients}")
         print(f"Failed Clients:     {failure_count} / {args.clients}")
         print("-------------------------")
 
@@ -207,7 +234,7 @@ if __name__ == "__main__":
             print("\nFailure Details:")
             failure_reasons = {}
             for r in results:
-                if r != "SUCCESS":
+                if r.startswith("FAILURE"):
                     failure_reasons[r] = failure_reasons.get(r, 0) + 1
             for reason, count in failure_reasons.items():
                 print(f"- {reason}: {count} occurrences")
@@ -223,7 +250,6 @@ if __name__ == "__main__":
         exit_code = 1
 
     finally:
-        # This block will now run on both success and failure
         print("\n--- DUMPING DIAGNOSTIC INFO ---")
         dump_debug_info(containers_to_log)
         sys.exit(exit_code)
