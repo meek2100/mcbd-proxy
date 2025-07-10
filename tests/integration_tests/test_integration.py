@@ -53,10 +53,11 @@ def test_bedrock_server_starts_on_connection(docker_compose_up, docker_client_fi
         client_socket.sendto(unconnected_ping_packet, (proxy_host, bedrock_proxy_port))
         print("Bedrock 'Unconnected Ping' packet sent.")
 
+        # Test the action, not the initial reaction log message.
         assert wait_for_log_message(
             docker_client_fixture,
             "nether-bridge",
-            "First packet received for stopped server. Starting...",
+            "Attempting to start Minecraft server container...",
             timeout=10,
         ), "Proxy did not log that it was starting the Bedrock server."
 
@@ -111,10 +112,11 @@ def test_java_server_starts_on_connection(docker_compose_up, docker_client_fixtu
         client_socket.connect((proxy_host, java_proxy_port))
         print(f"Successfully connected to {proxy_host}:{java_proxy_port}.")
 
+        # Test the action, not the initial reaction log message.
         assert wait_for_log_message(
             docker_client_fixture,
             "nether-bridge",
-            "First TCP connection for stopped server. Starting...",
+            "Attempting to start Minecraft server container...",
             timeout=10,
         ), "Proxy did not log that it was starting the Java server."
 
@@ -247,10 +249,11 @@ def test_proxy_restarts_crashed_server_on_new_connection(
         client_socket.close()
 
     # --- 4. Verify that the proxy detects this and tries to start it again ---
+    # Test the action, not the initial reaction log message.
     assert wait_for_log_message(
         docker_client_fixture,
         "nether-bridge",
-        "First packet received for stopped server. Starting...",
+        "Attempting to start Minecraft server container...",
         timeout=10,
     ), "Proxy did not log that it was attempting to restart the server."
 
@@ -302,8 +305,6 @@ def test_configuration_reload_on_sighup(docker_compose_up, docker_client_fixture
   ]
 }
 """
-    # FIX: Use `printf` instead of `echo` to safely write the JSON string
-    # without the shell mangling the quotes.
     cmd_write_config = f"printf '%s' '{new_config_json}' > /app/servers.json"
     exit_code, output = container.exec_run(cmd_write_config, user="naeus", demux=True)
     assert exit_code == 0, (
@@ -384,7 +385,6 @@ def test_proxy_cleans_up_session_on_container_crash(
             )
             pre_warm_socket.sendall(handshake)
             pre_warm_socket.sendall(status_request)
-            # FIX: Increase timeout to allow for slow server startup in CI.
             assert wait_for_mc_server_ready(
                 {"host": proxy_host, "port": java_proxy_port, "type": "java"},
                 timeout=240,

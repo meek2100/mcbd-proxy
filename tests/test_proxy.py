@@ -18,7 +18,6 @@ from proxy import NetherBridgeProxy
 @pytest.fixture
 def default_proxy_settings():
     """Provides a default ProxySettings object for testing."""
-    # This dictionary is formatted to be under 88 characters per line.
     settings_dict = {
         "idle_timeout_seconds": 0.2,
         "player_check_interval_seconds": 0.1,
@@ -85,7 +84,8 @@ def test_proxy_initialization(
     assert proxy_instance.servers_list == mock_servers_config
     assert proxy_instance.docker_manager is not None
     assert "test-mc-bedrock" in proxy_instance.server_states
-    assert not proxy_instance.server_states["test-mc-bedrock"]["running"]
+    # Test the new state machine initialization
+    assert proxy_instance.server_states["test-mc-bedrock"]["status"] == "stopped"
 
 
 @pytest.mark.unit
@@ -110,61 +110,53 @@ def test_signal_handler_sigint(proxy_instance):
 
 
 @pytest.mark.unit
-def test_start_minecraft_server_wrapper_success(proxy_instance, mock_servers_config):
+def test_start_minecraft_server_task_success(proxy_instance, mock_servers_config):
     """
-    Tests the proxy's start method. It should delegate to the DockerManager
-    and update its internal state on success.
+    Tests the proxy's background start task. It should delegate to the
+    DockerManager and update its internal state on success.
     """
     server_config = mock_servers_config[0]
     container_name = server_config.container_name
 
-    proxy_instance.docker_manager.is_container_running.return_value = False
+    # Setup: one pending connection
+    mock_conn, mock_addr = MagicMock(), ("127.0.0.1", 12345)
+    proxy_instance.server_states[container_name]["pending_connections"].append(
+        (mock_conn, mock_addr)
+    )
+
     proxy_instance.docker_manager.start_server.return_value = True
 
-    proxy_instance._start_minecraft_server(server_config)
+    # Mock the session establishment to check if it's called
+    with patch.object(
+        proxy_instance, "_establish_tcp_session"
+    ) as mock_establish_session:
+        proxy_instance._start_minecraft_server_task(server_config)
 
-    proxy_instance.docker_manager.is_container_running.assert_called_once_with(
-        container_name
-    )
     proxy_instance.docker_manager.start_server.assert_called_once_with(
         server_config, proxy_instance.settings
     )
-    assert proxy_instance.server_states[container_name]["running"] is True
-
-
-@pytest.mark.unit
-def test_start_minecraft_server_wrapper_already_running(
-    proxy_instance, mock_servers_config
-):
-    """Tests that if the server is already running, the start logic is skipped."""
-    server_config = mock_servers_config[0]
-    proxy_instance.docker_manager.is_container_running.return_value = True
-
-    proxy_instance._start_minecraft_server(server_config)
-
-    proxy_instance.docker_manager.start_server.assert_not_called()
-    assert proxy_instance.server_states[server_config.container_name]["running"] is True
+    assert proxy_instance.server_states[container_name]["status"] == "running"
+    mock_establish_session.assert_called_once_with(mock_conn, mock_addr, server_config)
+    assert not proxy_instance.server_states[container_name]["pending_connections"]
 
 
 @pytest.mark.unit
 def test_stop_minecraft_server_wrapper(proxy_instance):
     """
-
     Tests that the proxy's stop method correctly calls the docker_manager
     and updates its state.
     """
     container_name = "test-mc-bedrock"
-    proxy_instance.server_states[container_name]["running"] = True
+    proxy_instance.server_states[container_name]["status"] = "running"
     proxy_instance.docker_manager.stop_server.return_value = True
 
     proxy_instance._stop_minecraft_server(container_name)
 
     proxy_instance.docker_manager.stop_server.assert_called_once_with(container_name)
-    assert not proxy_instance.server_states[container_name]["running"]
+    assert proxy_instance.server_states[container_name]["status"] == "stopped"
 
 
 @pytest.mark.unit
-# Correct the patch target to look for the Event class inside the proxy module
 @patch("proxy.Event.wait")
 def test_monitor_servers_activity_stops_idle_server(
     mock_event_wait, proxy_instance, mock_servers_config
@@ -173,25 +165,22 @@ def test_monitor_servers_activity_stops_idle_server(
     Tests that the monitor thread correctly identifies an idle server
     and calls the stop method.
     """
-    # This side effect will allow the loop to run once, then raise an
-    # error on the second call to Event.wait() to exit the test.
     mock_event_wait.side_effect = [None, InterruptedError("Stop loop")]
 
     idle_server_config = mock_servers_config[0]
     container_name = idle_server_config.container_name
 
     # Set up the state for an idle server that is currently running
-    proxy_instance.server_states[container_name]["running"] = True
+    proxy_instance.server_states[container_name]["status"] = "running"
     proxy_instance.server_states[container_name]["last_activity"] = time.time() - 1000
+    proxy_instance.docker_manager.is_container_running.return_value = True
 
-    # Mock the stop method on the instance to verify it gets called
     with patch.object(proxy_instance, "_stop_minecraft_server") as mock_stop_method:
         try:
             proxy_instance._monitor_servers_activity()
         except InterruptedError:
-            pass  # Expected way to exit the while loop for testing purposes
+            pass
 
-    # Assert that the logic correctly identified and tried to stop the idle server.
     mock_stop_method.assert_called_once_with(container_name)
 
 
@@ -204,21 +193,11 @@ def test_run_proxy_loop_handles_select_error(mock_sleep, mock_select, proxy_inst
     logs it, and continues, preventing a crash.
     """
 
-    # We define a side effect function for the select mock.
     def select_side_effect(*args, **kwargs):
-        # The FIRST time this is called, we set the flag to stop the loop
-        # on the NEXT iteration. Then we raise the error to be tested.
         proxy_instance._shutdown_requested = True
         raise select.error
 
     mock_select.side_effect = select_side_effect
-
-    # The _run_proxy_loop method requires the main module for reloads, so we mock it.
     mock_main_module = MagicMock()
-
-    # The loop will run once, hit the error, call sleep, continue,
-    # and then exit because the shutdown flag is now set.
     proxy_instance._run_proxy_loop(mock_main_module)
-
-    # Assert that the loop caught the error and slept for 1 second.
     mock_sleep.assert_called_once_with(1)

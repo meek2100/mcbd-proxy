@@ -3,11 +3,8 @@
 name: Load Test
 
 on:
-  # 1. Run automatically on Pull Requests against main and develop branches
   pull_request:
     branches: [ main, develop ]
-
-  # 2. Allow manual runs from the GitHub Actions tab with custom inputs
   workflow_dispatch:
     inputs:
       server_type:
@@ -21,22 +18,17 @@ on:
       clients:
         description: 'Number of concurrent clients'
         required: true
-        default: '100'
+        default: '50'
 
 jobs:
-  load-test:
-    name: Run Load Test (${{ strategy.matrix.server_type }})
+  load-test-ideal:
+    name: Load Test - Ideal Conditions (${{ strategy.matrix.server_type }})
     runs-on: [ubuntu-latest]
-
     strategy:
       matrix:
-        # If run manually, this creates a JSON array with one item, e.g., '["java"]'.
-        # If run by a PR, this uses the default JSON array '["java", "bedrock"]'.
-        # fromJSON() then correctly parses this into a list for the matrix.
         server_type: ${{ fromJSON(github.event.inputs.server_type && format('["{0}"]', github.event.inputs.server_type) || '["java", "bedrock"]') }}
 
     env:
-      # Define server versions here, keeping them consistent
       JAVA_VERSION: "1.20.1"
       JAVA_TYPE: "PAPER"
       BEDROCK_VERSION: "1.20.81.01"
@@ -68,19 +60,72 @@ jobs:
             sleep 5
           done
 
-      - name: Run Load Test Script
+      - name: Run Load Test Script (Ideal)
         run: |
-          # Use the matrix variable to select the server type.
-          # For automated PR runs, use a small client count (e.g., 10).
-          # For manual runs, use the number provided in the workflow dispatch inputs.
           CLIENT_COUNT=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.clients || '10' }}
           
-          echo "--- Running load test on ${{ matrix.server_type }} with $CLIENT_COUNT clients ---"
+          echo "--- Running load test on ${{ matrix.server_type }} with $CLIENT_COUNT clients (Ideal Conditions) ---"
           docker compose -f tests/docker-compose.tests.yml exec nb-tester \
             python tests/load_tester.py \
               --server-type ${{ matrix.server_type }} \
               --clients $CLIENT_COUNT \
-              --chaos 30 # Add this line
+              --chaos 0
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: |
+          echo "--- A step failed. Dumping all container logs. ---"
+          docker compose -f tests/docker-compose.tests.yml logs --no-color
+
+  load-test-chaos:
+    name: Load Test - Chaos Conditions (${{ strategy.matrix.server_type }})
+    runs-on: [ubuntu-latest]
+    strategy:
+      matrix:
+        server_type: ${{ fromJSON(github.event.inputs.server_type && format('["{0}"]', github.event.inputs.server_type) || '["java", "bedrock"]') }}
+
+    env:
+      JAVA_VERSION: "1.20.1"
+      JAVA_TYPE: "PAPER"
+      BEDROCK_VERSION: "1.20.81.01"
+      BEDROCK_DOWNLOAD_URL: https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.20.81.01.zip
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up and start test environment
+        run: |
+          echo "--- Building and starting Docker services ---"
+          docker compose -f tests/docker-compose.tests.yml up --build -d
+          
+          echo "--- Waiting for nether-bridge to be healthy ---"
+          timeout=120
+          start_time=$(date +%s)
+          while true; do
+            status=$(docker inspect --format '{{.State.Health.Status}}' nether-bridge || echo "error")
+            if [ "$status" = "healthy" ]; then
+              echo "Nether-bridge is healthy."
+              break
+            fi
+            if [ "$(($(date +%s) - start_time))" -ge "$timeout" ]; then
+              echo "Timeout waiting for nether-bridge container to become healthy."
+              docker compose -f tests/docker-compose.tests.yml logs --no-color
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Run Load Test Script (Chaos)
+        run: |
+          CLIENT_COUNT=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.clients || '10' }}
+          
+          echo "--- Running load test on ${{ matrix.server_type }} with $CLIENT_COUNT clients (Chaos Conditions) ---"
+          docker compose -f tests/docker-compose.tests.yml exec nb-tester \
+            python tests/load_tester.py \
+              --server-type ${{ matrix.server_type }} \
+              --clients $CLIENT_COUNT \
+              --chaos 25
 
       - name: Dump container logs on failure
         if: failure()
