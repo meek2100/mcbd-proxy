@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 import signal
@@ -10,11 +9,9 @@ from pathlib import Path
 import structlog
 from prometheus_client import start_http_server
 
-# Import the refactored modules
 from config import load_application_config
 from proxy import NetherBridgeProxy
 
-# The heartbeat file constant remains at the application level
 HEARTBEAT_FILE = Path("proxy_heartbeat.tmp")
 
 
@@ -57,8 +54,6 @@ def perform_health_check():
     """Performs a self-sufficient two-stage health check."""
     logger = structlog.get_logger(__name__)
     try:
-        # We still need to load settings to get the threshold.
-        # It's okay if the healthcheck process itself doesn't find servers.
         settings, _ = load_application_config()
         logger.debug("Health Check Stage 1 (Configuration) OK.")
     except Exception as e:
@@ -89,126 +84,97 @@ def perform_health_check():
         sys.exit(1)
 
 
-def run_app(proxy: NetherBridgeProxy):
+def run_proxy_instance(proxy: NetherBridgeProxy):
     """
-    Starts all services and runs the main proxy loop.
-    This was previously the `run` method on the proxy class.
+    Runs a single lifecycle of the proxy. Returns True if a reload is requested.
     """
     logger = structlog.get_logger(__name__)
-    logger.info("--- Starting Nether-bridge On-Demand Proxy ---")
-
-    if proxy.settings.prometheus_enabled:
-        try:
-            logger.info(
-                "Starting Prometheus metrics server...",
-                port=proxy.settings.prometheus_port,
-            )
-            start_http_server(proxy.settings.prometheus_port)
-            logger.info("Prometheus metrics server started.")
-        except Exception as e:
-            logger.error("Could not start Prometheus metrics server.", error=str(e))
-    else:
-        logger.info("Prometheus metrics server is disabled by configuration.")
-
-    app_metadata = os.environ.get("APP_IMAGE_METADATA")
-    if app_metadata:
-        try:
-            meta = json.loads(app_metadata)
-            logger.info("Application build metadata", **meta)
-        except json.JSONDecodeError:
-            logger.warning("Could not parse APP_IMAGE_METADATA", metadata=app_metadata)
+    logger.info("--- Starting Nether-bridge Proxy Instance ---")
 
     if HEARTBEAT_FILE.exists():
         try:
             HEARTBEAT_FILE.unlink()
-            logger.info("Removed stale heartbeat file.", path=str(HEARTBEAT_FILE))
         except OSError as e:
             logger.warning("Could not remove stale heartbeat file.", error=str(e))
 
-    # Connect the Docker manager
     proxy.docker_manager.connect()
-
-    # Run startup tasks
     proxy._ensure_all_servers_stopped_on_startup()
 
     for srv_cfg in proxy.servers_list:
         try:
             proxy._create_listening_socket(srv_cfg)
         except OSError:
-            # If a socket fails to bind on startup, it's a fatal error.
-            sys.exit(1)
+            logger.critical("Fatal error creating listening socket. Exiting.")
+            return False  # Exit the main loop
 
     monitor_thread = threading.Thread(
         target=proxy._monitor_servers_activity, daemon=True
     )
     monitor_thread.start()
 
-    # Pass the main module to the loop for access to configure_logging on reload
-    proxy._run_proxy_loop(sys.modules[__name__])
+    reload_needed = proxy._run_proxy_loop()
 
-    # --- SHUTDOWN SEQUENCE STARTS HERE ---
-    # The _run_proxy_loop has exited, which means a shutdown was requested.
-
-    logger.info("Graceful shutdown initiated.")
-
-    # 1. Terminate all active player sessions immediately.
+    logger.info("Instance shutting down. Cleaning up resources.")
     proxy._shutdown_all_sessions()
-
-    # 2. Wait for the background monitor thread to finish its last loop.
-    logger.info("Waiting for monitor thread to terminate...")
-    monitor_thread.join(timeout=5.0)  # Add a timeout for safety
+    monitor_thread.join(timeout=5.0)
     if monitor_thread.is_alive():
         logger.warning("Monitor thread did not terminate in time.")
-    else:
-        logger.info("Monitor thread has terminated.")
 
-    logger.info("Shutdown complete. Exiting.")
+    return reload_needed
 
 
 def main():
     """The main entrypoint for the Nether-bridge application."""
-    # Early configuration for healthcheck and initial logs.
     early_log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
     early_log_formatter = os.environ.get("NB_LOG_FORMATTER", "console")
     configure_logging(early_log_level, early_log_formatter)
+    logger = structlog.get_logger(__name__)
 
     if "--healthcheck" in sys.argv:
         perform_health_check()
         return
 
+    # Load initial settings to start prometheus if enabled
     try:
-        settings, servers = load_application_config()
+        initial_settings, _ = load_application_config()
+        if initial_settings.prometheus_enabled:
+            start_http_server(initial_settings.prometheus_port)
+            logger.info(
+                "Prometheus metrics server started.",
+                port=initial_settings.prometheus_port,
+            )
     except Exception as e:
-        # Catch critical config loading errors
-        logger = structlog.get_logger(__name__)
-        logger.critical(
-            "FATAL: A critical error occurred during configuration loading.",
-            error=str(e),
-        )
-        sys.exit(1)
+        logger.error("Could not start Prometheus server on initial load.", error=str(e))
 
-    # Reconfigure with final settings from files/env
-    configure_logging(settings.log_level, settings.log_formatter)
-    logger = structlog.get_logger(__name__)
-    logger.info(
-        "Log level and formatter set to final values.",
-        log_level=settings.log_level,
-        log_formatter=settings.log_formatter,
-    )
+    reload_requested = True
+    is_first_run = True
+    while reload_requested:
+        if not is_first_run:
+            logger.info("Reloading configuration and restarting proxy logic...")
+        is_first_run = False
 
-    if not servers:
-        # load_application_config logs the critical error, so we just exit.
-        sys.exit(1)
+        try:
+            settings, servers = load_application_config()
+        except Exception as e:
+            logger.critical("FATAL: Error loading configuration.", error=str(e))
+            sys.exit(1)
 
-    proxy = NetherBridgeProxy(settings, servers)
+        configure_logging(settings.log_level, settings.log_formatter)
 
-    # Set the signal handlers to point to the method on the proxy instance
-    if hasattr(signal, "SIGHUP"):
-        signal.signal(signal.SIGHUP, proxy.signal_handler)
-    signal.signal(signal.SIGINT, proxy.signal_handler)
-    signal.signal(signal.SIGTERM, proxy.signal_handler)
+        if not servers:
+            logger.critical("No servers configured. Exiting.")
+            sys.exit(1)
 
-    run_app(proxy)
+        proxy = NetherBridgeProxy(settings, servers)
+
+        if hasattr(signal, "SIGHUP"):
+            signal.signal(signal.SIGHUP, proxy.signal_handler)
+        signal.signal(signal.SIGINT, proxy.signal_handler)
+        signal.signal(signal.SIGTERM, proxy.signal_handler)
+
+        reload_requested = run_proxy_instance(proxy)
+
+    logger.info("Application has exited gracefully.")
 
 
 if __name__ == "__main__":

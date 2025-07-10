@@ -36,14 +36,12 @@ class DockerManager:
             container = self.client.containers.get(container_name)
             return container.status == "running"
         except docker.errors.NotFound:
-            # This is an expected condition, so debug level is appropriate
             self.logger.debug(
                 "Container not found, assuming not running.",
                 container_name=container_name,
             )
             return False
         except docker.errors.APIError as e:
-            # An API error is unexpected and should be logged as an error
             self.logger.error(
                 "API error checking container status.",
                 container_name=container_name,
@@ -51,12 +49,11 @@ class DockerManager:
             )
             return False
         except Exception as e:
-            # Catch any other unexpected exceptions
             self.logger.error(
                 "Unexpected error checking container status.",
                 container_name=container_name,
                 error=str(e),
-                exc_info=True,  # Add full stack trace for unexpected errors
+                exc_info=True,
             )
             return False
 
@@ -65,9 +62,6 @@ class DockerManager:
     ) -> bool:
         """
         Starts a given Minecraft server container and waits for it to become ready.
-
-        Returns:
-            bool: True if the server was started and became ready, False otherwise.
         """
         container_name = server_config.container_name
         self.logger.info(
@@ -78,13 +72,12 @@ class DockerManager:
             container = self.client.containers.get(container_name)
             container.start()
             self.logger.info(
-                "Docker 'start' command issued.", container_name=container_name
+                "Docker 'start' command issued. Waiting for network to settle.",
+                container_name=container_name,
+                delay_seconds=settings.server_startup_delay_seconds,
             )
-
-            # Wait a few seconds for the server process to initialize
             time.sleep(settings.server_startup_delay_seconds)
 
-            # Wait for the server to respond to status pings and return its result
             return self.wait_for_server_query_ready(
                 server_config,
                 settings.server_ready_max_wait_time_seconds,
@@ -114,9 +107,6 @@ class DockerManager:
     def stop_server(self, container_name: str) -> bool:
         """
         Stops a given Minecraft server container.
-
-        Returns:
-            bool: True if the stop command succeeded or container was not running.
         """
         try:
             container = self.client.containers.get(container_name)
@@ -135,7 +125,7 @@ class DockerManager:
                 "Container not found, assuming already stopped.",
                 container_name=container_name,
             )
-            return True  # If it doesn't exist, it's considered stopped.
+            return True
         except docker.errors.APIError as e:
             self.logger.error(
                 "Docker API error during stop.",
@@ -159,8 +149,7 @@ class DockerManager:
     ) -> bool:
         """
         Polls a Minecraft server using mcstatus until it responds or a timeout
-        is reached. This is used to ensure a server is fully loaded before
-        forwarding traffic.
+        is reached.
         """
         container_name = server_config.container_name
         target_ip = container_name

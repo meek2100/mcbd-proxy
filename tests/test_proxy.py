@@ -84,7 +84,6 @@ def test_proxy_initialization(
     assert proxy_instance.servers_list == mock_servers_config
     assert proxy_instance.docker_manager is not None
     assert "test-mc-bedrock" in proxy_instance.server_states
-    # Test the new state machine initialization
     assert proxy_instance.server_states["test-mc-bedrock"]["status"] == "stopped"
 
 
@@ -118,7 +117,6 @@ def test_start_minecraft_server_task_success(proxy_instance, mock_servers_config
     server_config = mock_servers_config[0]
     container_name = server_config.container_name
 
-    # Setup: one pending connection
     mock_conn, mock_addr = MagicMock(), ("127.0.0.1", 12345)
     proxy_instance.server_states[container_name]["pending_connections"].append(
         (mock_conn, mock_addr)
@@ -126,7 +124,6 @@ def test_start_minecraft_server_task_success(proxy_instance, mock_servers_config
 
     proxy_instance.docker_manager.start_server.return_value = True
 
-    # Mock the session establishment to check if it's called
     with patch.object(
         proxy_instance, "_establish_tcp_session"
     ) as mock_establish_session:
@@ -170,7 +167,6 @@ def test_monitor_servers_activity_stops_idle_server(
     idle_server_config = mock_servers_config[0]
     container_name = idle_server_config.container_name
 
-    # Set up the state for an idle server that is currently running
     proxy_instance.server_states[container_name]["status"] = "running"
     proxy_instance.server_states[container_name]["last_activity"] = time.time() - 1000
     proxy_instance.docker_manager.is_container_running.return_value = True
@@ -198,6 +194,5 @@ def test_run_proxy_loop_handles_select_error(mock_sleep, mock_select, proxy_inst
         raise select.error
 
     mock_select.side_effect = select_side_effect
-    mock_main_module = MagicMock()
-    proxy_instance._run_proxy_loop(mock_main_module)
+    proxy_instance._run_proxy_loop()
     mock_sleep.assert_called_once_with(1)
