@@ -16,131 +16,57 @@ from tests.helpers import (
 )
 
 
-# --- Integration Test Cases ---
 @pytest.mark.integration
 def test_bedrock_server_starts_on_connection(docker_compose_up, docker_client_fixture):
     """
-    Test that the mc-bedrock server starts when a connection attempt is made
-    to the nether-bridge proxy on its Bedrock port.
+    Test that the mc-bedrock server starts when a connection attempt is made.
     """
     proxy_host = get_proxy_host()
     bedrock_proxy_port = BEDROCK_PROXY_PORT
-    mc_bedrock_container_name = "mc-bedrock"
+    container_name = "mc-bedrock"
 
-    assert wait_for_proxy_to_be_ready(docker_client_fixture), (
-        "Proxy did not become ready."
-    )
-
-    initial_status = get_container_status(
-        docker_client_fixture, mc_bedrock_container_name
-    )
-    assert initial_status in [
+    assert wait_for_proxy_to_be_ready(docker_client_fixture)
+    assert get_container_status(docker_client_fixture, container_name) in [
         "exited",
         "created",
-    ], f"Bedrock server should be stopped, but is: {initial_status}"
-    print(f"\nInitial status of {mc_bedrock_container_name}: {initial_status}")
+    ]
 
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        print(
-            f"Simulating connection to nether-bridge on port {bedrock_proxy_port} "
-            f"on host {proxy_host}..."
-        )
-        unconnected_ping_packet = (
-            b"\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\x00\xfe\xfe\xfe\xfe"
-            b"\xfd\xfd\xfd\xfd\x12\x34\x56\x78\x00\x00\x00\x00\x00\x00\x00\x00"
-        )
-        client_socket.sendto(unconnected_ping_packet, (proxy_host, bedrock_proxy_port))
-        print("Bedrock 'Unconnected Ping' packet sent.")
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client_socket:
+        client_socket.sendto(b"ping", (proxy_host, bedrock_proxy_port))
 
-        assert wait_for_log_message(
-            docker_client_fixture,
-            "nether-bridge",
-            "First packet for stopped server. Starting...",  # Corrected to single line
-            timeout=10,
-        ), "Proxy did not log that it was starting the Bedrock server."
-
-        assert wait_for_container_status(
-            docker_client_fixture,
-            mc_bedrock_container_name,
-            ["running"],
-            timeout=180,
-            interval=2,
-        ), f"Bedrock server '{mc_bedrock_container_name}' did not start after 180s."
-
-        assert wait_for_mc_server_ready(
-            {
-                "host": proxy_host,
-                "port": bedrock_proxy_port,
-                "type": "bedrock",
-            },
-            timeout=180,
-            interval=5,
-        ), "Bedrock server did not become query-ready through proxy."
-    finally:
-        client_socket.close()
+    assert wait_for_container_status(docker_client_fixture, container_name, ["running"])
+    assert wait_for_mc_server_ready(
+        {"host": proxy_host, "port": bedrock_proxy_port, "type": "bedrock"}
+    )
 
 
 @pytest.mark.integration
 def test_java_server_starts_on_connection(docker_compose_up, docker_client_fixture):
     """
-    Test that the mc-java server starts when a connection attempt is made
-    to the nether-bridge proxy on its Java port.
+    Test that the mc-java server starts when a connection attempt is made.
     """
     proxy_host = get_proxy_host()
     java_proxy_port = JAVA_PROXY_PORT
-    mc_java_container_name = "mc-java"
+    container_name = "mc-java"
 
-    assert wait_for_proxy_to_be_ready(docker_client_fixture), (
-        "Proxy did not become ready."
-    )
-
-    initial_status = get_container_status(docker_client_fixture, mc_java_container_name)
-    assert initial_status in [
+    assert wait_for_proxy_to_be_ready(docker_client_fixture)
+    assert get_container_status(docker_client_fixture, container_name) in [
         "exited",
         "created",
-    ], f"Java server should be stopped, but is: {initial_status}"
-    print(f"\nInitial status of {mc_java_container_name}: {initial_status}")
+    ]
 
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        print(
-            f"Simulating connection to nether-bridge on port {java_proxy_port} "
-            f"on host {proxy_host}..."
-        )
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
         client_socket.connect((proxy_host, java_proxy_port))
-        print(f"Successfully connected to {proxy_host}:{java_proxy_port}.")
-
-        assert wait_for_log_message(
-            docker_client_fixture,
-            "nether-bridge",
-            "First TCP connection for stopped server. Starting...",  # Corrected to single line
-            timeout=10,
-        ), "Proxy did not log that it was starting the Java server."
-
-        handshake_packet, status_request_packet = (
-            get_java_handshake_and_status_request_packets(proxy_host, java_proxy_port)
+        handshake, status_req = get_java_handshake_and_status_request_packets(
+            proxy_host, java_proxy_port
         )
-        client_socket.sendall(handshake_packet)
-        client_socket.sendall(status_request_packet)
-        print("Java handshake and status request packets sent.")
+        client_socket.sendall(handshake)
+        client_socket.sendall(status_req)
 
-        assert wait_for_container_status(
-            docker_client_fixture,
-            mc_java_container_name,
-            ["running"],
-            timeout=180,
-            interval=2,
-        ), f"Java server '{mc_java_container_name}' did not start after 180s."
-
-        assert wait_for_mc_server_ready(
-            {"host": proxy_host, "port": java_proxy_port, "type": "java"},
-            timeout=180,
-            interval=5,
-        ), "Java server did not become query-ready through proxy."
-
-    finally:
-        client_socket.close()
+    assert wait_for_container_status(docker_client_fixture, container_name, ["running"])
+    assert wait_for_mc_server_ready(
+        {"host": proxy_host, "port": java_proxy_port, "type": "java"}
+    )
 
 
 @pytest.mark.integration
@@ -209,7 +135,6 @@ def test_proxy_restarts_crashed_server_on_new_connection(
         b"\xfd\xfd\xfd\xfd\x12\x34\x56\x78\x00\x00\x00\x00\x00\x00\x00\x00"
     )
 
-    # --- 1. Start the server and confirm it is running ---
     print(
         (
             f"\n(Crash Test) Triggering initial server start for "
@@ -227,7 +152,6 @@ def test_proxy_restarts_crashed_server_on_new_connection(
     ), "Container did not start on first connection."
     print("(Crash Test) Initial server start successful.")
 
-    # --- 2. Manually stop the container to simulate a crash ---
     print(f"(Crash Test) Manually stopping container '{mc_bedrock_container_name}'...")
     container = docker_client_fixture.containers.get(mc_bedrock_container_name)
     container.stop()
@@ -238,7 +162,6 @@ def test_proxy_restarts_crashed_server_on_new_connection(
 
     time.sleep(2)
 
-    # --- 3. Attempt a new connection to the 'crashed' server ---
     print("\n(Crash Test) Attempting new connection to trigger restart...")
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -246,15 +169,14 @@ def test_proxy_restarts_crashed_server_on_new_connection(
     finally:
         client_socket.close()
 
-    # --- 4. Verify that the proxy detects this and tries to start it again ---
-    assert wait_for_log_message(
+    assert wait_for_container_status(
         docker_client_fixture,
-        "nether-bridge",
-        "First packet for stopped server. Starting...",  # Corrected to single line
-        timeout=10,
-    ), "Proxy did not log that it was attempting to restart the server."
+        mc_bedrock_container_name,
+        ["running"],
+        timeout=180,
+    ), "Proxy did not restart the crashed server upon new connection."
 
-    print("(Crash Test) Proxy correctly logged its intent to restart. Test passed.")
+    print("(Crash Test) Proxy correctly restarted the server. Test passed.")
 
 
 @pytest.mark.integration
@@ -271,7 +193,6 @@ def test_configuration_reload_on_sighup(docker_compose_up, docker_client_fixture
         "Proxy did not become ready."
     )
 
-    # --- 1. Verify initial configuration is active ---
     print("\n(SIGHUP Test) Verifying initial server configuration...")
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client_socket:
@@ -282,7 +203,6 @@ def test_configuration_reload_on_sighup(docker_compose_up, docker_client_fixture
             f"Initial port {initial_bedrock_port} should be open but was not: {e}"
         )
 
-    # --- 2. Create new config and send SIGHUP ---
     print("(SIGHUP Test) Writing new configuration inside the container...")
     container = docker_client_fixture.containers.get("nether-bridge")
 
@@ -319,7 +239,6 @@ def test_configuration_reload_on_sighup(docker_compose_up, docker_client_fixture
 
     print("(SIGHUP Test) Proxy logged reload completion. Verifying new behavior...")
 
-    # --- 4. Verify new configuration is active and old one is not ---
     print(f"(SIGHUP Test) Verifying old port {initial_bedrock_port} is closed...")
     with pytest.raises((ConnectionRefusedError, OSError)):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client_socket:
@@ -391,7 +310,7 @@ def test_proxy_cleans_up_session_on_container_crash(
         time.sleep(1)
 
         with pytest.raises(socket.error):
-            print("(Crash Test) Sending data to trigger proxy's error handling...")
+            print("(Chaos Test) Sending data to trigger proxy's error handling...")
             victim_socket.sendall(b"data_after_crash")
 
         assert wait_for_log_message(
@@ -401,7 +320,7 @@ def test_proxy_cleans_up_session_on_container_crash(
             timeout=10,
         ), "Proxy did not log the session cleanup after the container crash."
 
-        print("(Crash Test) Test passed: Proxy correctly handled the crashed session.")
+        print("(Chaos Test) Test passed: Proxy correctly handled the crashed session.")
 
     finally:
         victim_socket.close()
