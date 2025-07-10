@@ -142,35 +142,69 @@ class NetherBridgeProxy:
         while not self._shutdown_event.wait(
             self.settings.player_check_interval_seconds
         ):
+            current_time = time.time()
             container_statuses = {
                 s.container_name: self.docker_manager.is_container_running(
                     s.container_name
                 )
                 for s in self.servers_list
             }
-            current_time = time.time()
+
+            # First, clean up any stale/crashed sessions
             with self.session_lock:
                 for key, session in list(self.active_sessions.items()):
+                    server_conf = self.servers_config_map[session["listen_port"]]
+                    session_idle_timeout = (
+                        server_conf.idle_timeout_seconds
+                        or self.settings.idle_timeout_seconds
+                    )
+
+                    # Clean up if the container has crashed
                     if not container_statuses.get(session["target_container"]):
+                        self.logger.warning(
+                            "Session found for stopped container. Cleaning up.",
+                            client_addr=key[0],
+                        )
                         self._cleanup_session_by_key(key)
+                        continue
+
+                    # Clean up if the session has been inactive for too long
+                    if (
+                        current_time - session["last_packet_time"]
+                        > session_idle_timeout
+                    ):
+                        self.logger.info(
+                            "Cleaning up idle client session.", client_addr=key[0]
+                        )
+                        self._cleanup_session_by_key(key)
+                        continue
+
+            # Second, check if any servers are now idle and can be stopped
             for server_conf in self.servers_list:
                 with self.server_locks[server_conf.container_name]:
                     state = self.server_states[server_conf.container_name]
                     if state["status"] != "running":
                         continue
+
+                    # Update server status if it stopped unexpectedly
                     if not container_statuses.get(server_conf.container_name):
                         if state.get("status") == "running":
                             RUNNING_SERVERS.dec()
                         state["status"] = "stopped"
                         continue
+
                     with self.session_lock:
                         has_sessions = any(
                             s["target_container"] == server_conf.container_name
                             for s in self.active_sessions.values()
                         )
+
+                    # If server has sessions, update its activity time and continue
                     if has_sessions:
                         state["last_activity"] = current_time
                         continue
+
+                    # If no sessions, check if the idle timeout has been exceeded
                     idle_timeout = (
                         server_conf.idle_timeout_seconds
                         or self.settings.idle_timeout_seconds
