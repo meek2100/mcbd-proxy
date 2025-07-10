@@ -109,17 +109,22 @@ class NetherBridgeProxy:
         self.docker_manager.stop_server(container_name)
 
     def _ensure_all_servers_stopped_on_startup(self):
-        """Ensures all managed servers are stopped when the proxy starts."""
-        self.logger.info(
-            "Proxy startup: Ensuring all managed servers are initially stopped."
-        )
+        """
+        Ensures all managed servers are stopped when the proxy starts.
+        This allows servers to complete their first-time setup/update
+        before being put into an on-demand state.
+        """
+        self.logger.info("Proxy startup: Beginning initial server state verification.")
+        time.sleep(self.settings.initial_server_query_delay_seconds)
+
         for srv_conf in self.servers_list:
             if self.docker_manager.is_container_running(srv_conf.container_name):
                 self.logger.warning(
-                    "Found running server at startup. Stopping.",
+                    "Found running server at startup. Stopping for on-demand.",
                     container_name=srv_conf.container_name,
                 )
                 self._stop_minecraft_server(srv_conf.container_name)
+        self.logger.info("Initial server state verification complete.")
 
     def _monitor_servers_activity(self):
         """Monitors server and session activity in a dedicated thread."""
@@ -300,8 +305,9 @@ class NetherBridgeProxy:
         container_name = self._get_container_for_sock(sock)
         if container_name:
             with self.server_locks[container_name]:
-                if sock in self.server_states[container_name]["pending_sockets"]:
-                    self.server_states[container_name]["pending_sockets"][sock] += data
+                state = self.server_states[container_name]
+                if sock in state["pending_sockets"]:
+                    state["pending_sockets"][sock] += data
                     return
 
         with self.session_lock:
@@ -360,13 +366,10 @@ class NetherBridgeProxy:
 
     def _get_container_for_sock(self, sock: socket.socket):
         """Finds the container name associated with a given socket."""
-        # This is a bit of a hack to find the server config for a listen socket
-        # that has just accepted a connection.
         try:
             port = sock.getsockname()[1]
             return self.servers_config_map[port].container_name
         except (KeyError, OSError):
-            # Fallback for client sockets in an established session
             with self.session_lock:
                 session_tuple = self.socket_to_session_map.get(sock)
                 if session_tuple:

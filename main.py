@@ -110,7 +110,6 @@ def run_app(proxy: NetherBridgeProxy):
 def main():
     """The main entrypoint for the Nether-bridge application."""
     if "--healthcheck" in sys.argv:
-        # Health checks should be quiet unless they fail
         configure_logging("INFO", "json")
         perform_health_check()
         return
