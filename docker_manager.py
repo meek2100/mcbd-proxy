@@ -90,13 +90,11 @@ class DockerManager:
         )
         start_time = time.time()
         consecutive_successes = 0
-        required_successes = 3  # Require 3 successful pings in a row
+        required_successes = 3
 
         while time.time() - start_time < max_wait_seconds:
             if not self.is_container_running(server_config.container_name):
-                self.logger.error(
-                    "Container stopped unexpectedly while waiting for ready."
-                )
+                self.logger.error("Container stopped unexpectedly.")
                 return False
             try:
                 if server_config.server_type == "bedrock":
@@ -104,7 +102,7 @@ class DockerManager:
                         f"{server_config.container_name}:{server_config.internal_port}",
                         timeout=query_timeout_seconds,
                     )
-                else:  # java
+                else:
                     server = JavaServer.lookup(
                         f"{server_config.container_name}:{server_config.internal_port}",
                         timeout=query_timeout_seconds,
