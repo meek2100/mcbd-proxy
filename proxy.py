@@ -143,77 +143,56 @@ class NetherBridgeProxy:
             self.settings.player_check_interval_seconds
         ):
             current_time = time.time()
-            container_statuses = {
-                s.container_name: self.docker_manager.is_container_running(
-                    s.container_name
-                )
-                for s in self.servers_list
-            }
-
-            # First, clean up any stale/crashed sessions
-            with self.session_lock:
-                for key, session in list(self.active_sessions.items()):
-                    server_conf = self.servers_config_map[session["listen_port"]]
-                    session_idle_timeout = (
-                        server_conf.idle_timeout_seconds
-                        or self.settings.idle_timeout_seconds
-                    )
-
-                    # Clean up if the container has crashed
-                    if not container_statuses.get(session["target_container"]):
-                        self.logger.warning(
-                            "Session found for stopped container. Cleaning up.",
-                            client_addr=key[0],
-                        )
-                        self._cleanup_session_by_key(key)
-                        continue
-
-                    # Clean up if the session has been inactive for too long
-                    if (
-                        current_time - session["last_packet_time"]
-                        > session_idle_timeout
-                    ):
-                        self.logger.info(
-                            "Cleaning up idle client session.", client_addr=key[0]
-                        )
-                        self._cleanup_session_by_key(key)
-                        continue
-
-            # Second, check if any servers are now idle and can be stopped
+            # --- FIX: Simplified and more robust monitoring logic ---
             for server_conf in self.servers_list:
                 with self.server_locks[server_conf.container_name]:
                     state = self.server_states[server_conf.container_name]
                     if state["status"] != "running":
                         continue
 
-                    # Update server status if it stopped unexpectedly
-                    if not container_statuses.get(server_conf.container_name):
-                        if state.get("status") == "running":
-                            RUNNING_SERVERS.dec()
+                    if not self.docker_manager.is_container_running(
+                        server_conf.container_name
+                    ):
                         state["status"] = "stopped"
+                        RUNNING_SERVERS.dec()
                         continue
 
                     with self.session_lock:
-                        has_sessions = any(
-                            s["target_container"] == server_conf.container_name
+                        sessions = [
+                            s
                             for s in self.active_sessions.values()
+                            if s["target_container"] == server_conf.container_name
+                        ]
+
+                    if sessions:
+                        # Server is active if its sessions are active.
+                        # Base its last activity on the most recent packet.
+                        latest_packet_time = max(
+                            s["last_packet_time"] for s in sessions
                         )
+                        state["last_activity"] = latest_packet_time
 
-                    # If server has sessions, update its activity time and continue
-                    if has_sessions:
-                        state["last_activity"] = current_time
-                        continue
-
-                    # If no sessions, check if the idle timeout has been exceeded
                     idle_timeout = (
                         server_conf.idle_timeout_seconds
                         or self.settings.idle_timeout_seconds
                     )
+
+                    # If server's last activity is older than the timeout, shut it down.
                     if current_time - state["last_activity"] > idle_timeout:
                         self.logger.info(
                             "Server idle. Initiating shutdown.",
                             container_name=server_conf.container_name,
                         )
+                        # Clean up any lingering idle sessions before stopping
+                        with self.session_lock:
+                            keys_to_clean = [
+                                k
+                                for k, v in self.active_sessions.items()
+                                if v["target_container"] == server_conf.container_name
+                            ]
+                            for key in keys_to_clean:
+                                self._cleanup_session_by_key(key)
+
                         self._stop_minecraft_server(server_conf.container_name)
 
     def _remove_socket(self, sock: socket.socket):
@@ -283,17 +262,37 @@ class NetherBridgeProxy:
         """Connects to the backend and establishes a full TCP session."""
         container_name = server_config.container_name
         self.logger.info("Establishing TCP session.", client_addr=client_addr)
-        try:
-            server_sock = socket.create_connection(
-                (container_name, server_config.internal_port), timeout=5
+
+        # --- FIX: Re-introduce connection retry loop for robustness ---
+        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        connect_start_time = time.time()
+        connected_to_backend = False
+
+        while time.time() - connect_start_time < 10:  # 10-second timeout
+            try:
+                server_sock.settimeout(1.0)
+                server_sock.connect((container_name, server_config.internal_port))
+                server_sock.setblocking(False)
+                connected_to_backend = True
+                break
+            except (socket.error, ConnectionRefusedError):
+                time.sleep(0.25)  # Wait briefly before retrying
+
+        if not connected_to_backend:
+            self.logger.error(
+                "Failed to connect to backend server.", container=container_name
             )
-            server_sock.setblocking(False)
+            self._remove_socket(conn)
+            return
+
+        try:
             self.inputs.append(server_sock)
             if buffer:
                 server_sock.sendall(buffer)
         except (socket.error, ConnectionRefusedError) as e:
-            self.logger.error("Failed to connect to backend.", error=str(e))
+            self.logger.error("Failed to send buffered data.", error=str(e))
             self._remove_socket(conn)
+            self._remove_socket(server_sock)
             return
 
         with self.session_lock:
