@@ -144,25 +144,22 @@ class NetherBridgeProxy:
         ):
             current_time = time.time()
 
-            # Stage 1: Clean up any stale or crashed sessions
+            # --- FIX: Implement a robust two-stage check ---
+            # Stage 1: Aggressively prune all stale/crashed sessions first.
             with self.session_lock:
                 for key in list(self.active_sessions.keys()):
                     session = self.active_sessions.get(key)
                     if not session:
                         continue
 
-                    # Clean up if the session's container has stopped/crashed
+                    # Clean up if the session's container has stopped
                     if not self.docker_manager.is_container_running(
                         session["target_container"]
                     ):
-                        self.logger.warning(
-                            "Session found for stopped container. Cleaning up.",
-                            client_addr=key[0],
-                        )
                         self._cleanup_session_by_key(key)
                         continue
 
-                    # Clean up if the session has been inactive for too long
+                    # Clean up if the session itself is inactive
                     server_conf = self.servers_config_map[session["listen_port"]]
                     idle_timeout = (
                         server_conf.idle_timeout_seconds
@@ -174,7 +171,7 @@ class NetherBridgeProxy:
                         )
                         self._cleanup_session_by_key(key)
 
-            # Stage 2: Check for idle servers that can now be stopped
+            # Stage 2: Check for servers that are now truly idle.
             for server_conf in self.servers_list:
                 with self.server_locks[server_conf.container_name]:
                     state = self.server_states[server_conf.container_name]
@@ -187,7 +184,7 @@ class NetherBridgeProxy:
                             for s in self.active_sessions.values()
                         )
 
-                    # If server has active sessions, update its activity time
+                    # If there are still active sessions, update activity time
                     if has_sessions:
                         sessions_for_server = [
                             s
@@ -200,7 +197,8 @@ class NetherBridgeProxy:
                             )
                         continue
 
-                    # If no sessions are left, check if the server is idle
+                    # If we get here, the server has zero active sessions.
+                    # Now check its idle timer.
                     idle_timeout = (
                         server_conf.idle_timeout_seconds
                         or self.settings.idle_timeout_seconds
@@ -331,7 +329,10 @@ class NetherBridgeProxy:
         """Handles a new incoming TCP connection from a client."""
         conn, client_addr = sock.accept()
         conn.setblocking(False)
-        self.inputs.append(conn)
+        # --- FIX: Do NOT add the raw connection to self.inputs yet. ---
+        # It will be added only after a full session is established.
+        # self.inputs.append(conn) <--- THIS LINE IS REMOVED
+
         server_cfg = self.servers_config_map[sock.getsockname()[1]]
         container_name = server_cfg.container_name
 
