@@ -76,6 +76,12 @@ class NetherBridgeProxy:
         with self.server_locks[container_name]:
             state = self.server_states[container_name]
             if success:
+                # -- Give the server a moment to stabilize after becoming query-ready --
+                self.logger.info(
+                    "Server is query-ready. Pausing briefly to allow stabilization."
+                )
+                time.sleep(3)  # A short, fixed delay.
+
                 state["status"] = "running"
                 state["last_activity"] = time.time()
                 RUNNING_SERVERS.inc()
@@ -88,15 +94,16 @@ class NetherBridgeProxy:
                     pending_tcp=len(state["pending_tcp_sockets"]),
                     pending_udp=len(state["pending_udp_packets"]),
                 )
-                # Stagger TCP connections to prevent overwhelming the server
+
+                # --- FIX: Increase the stagger between connections ---
                 for sock, buffer in list(state["pending_tcp_sockets"].items()):
                     self._establish_tcp_session(
                         sock, sock.getpeername(), server_config, buffer
                     )
-                    time.sleep(0.1)  # Stagger connections
+                    time.sleep(0.5)  # Increased stagger to prevent flooding
+
                 state["pending_tcp_sockets"].clear()
 
-                # Process buffered UDP packets
                 for client_addr, data in list(state["pending_udp_packets"].items()):
                     self._establish_udp_session(client_addr, data, server_config)
                 state["pending_udp_packets"].clear()
