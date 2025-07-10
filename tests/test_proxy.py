@@ -79,7 +79,10 @@ def test_handle_new_tcp_connection_starts_stopped_server(mock_thread, proxy_inst
     proxy_instance._handle_new_connection(mock_socket)
 
     assert proxy_instance.server_states["test-mc-java"]["status"] == "starting"
-    assert mock_conn in proxy_instance.server_states["test-mc-java"]["pending_sockets"]
+    # FIX: Use the correct key for the pending sockets dictionary
+    assert (
+        mock_conn in proxy_instance.server_states["test-mc-java"]["pending_tcp_sockets"]
+    )
     mock_thread.assert_called_once()
 
 
@@ -100,8 +103,10 @@ def test_handle_new_tcp_connection_queues_for_starting_server(proxy_instance):
     ):
         proxy_instance._handle_new_connection(mock_socket)
 
+        # FIX: Use the correct key for the pending sockets dictionary
         assert (
-            mock_conn in proxy_instance.server_states["test-mc-java"]["pending_sockets"]
+            mock_conn
+            in proxy_instance.server_states["test-mc-java"]["pending_tcp_sockets"]
         )
         mock_establish.assert_not_called()
         mock_thread.assert_not_called()
@@ -120,7 +125,8 @@ def test_start_server_task_processes_pending_connections(
 
     mock_conn, mock_addr = MagicMock(), ("127.0.0.1", 12345)
     mock_conn.getpeername.return_value = mock_addr
-    proxy_instance.server_states[container_name]["pending_sockets"] = {
+    # FIX: Use the correct key when setting up the mock pending connection
+    proxy_instance.server_states[container_name]["pending_tcp_sockets"] = {
         mock_conn: b"buffered_data"
     }
     proxy_instance.docker_manager.start_server.return_value = True
@@ -134,4 +140,4 @@ def test_start_server_task_processes_pending_connections(
         mock_establish_session.assert_called_once_with(
             mock_conn, mock_addr, server_config, b"buffered_data"
         )
-        assert not proxy_instance.server_states[container_name]["pending_sockets"]
+        assert not proxy_instance.server_states[container_name]["pending_tcp_sockets"]
