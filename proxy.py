@@ -76,11 +76,10 @@ class NetherBridgeProxy:
         with self.server_locks[container_name]:
             state = self.server_states[container_name]
             if success:
-                # -- Give the server a moment to stabilize after becoming query-ready --
                 self.logger.info(
                     "Server is query-ready. Pausing briefly to allow stabilization."
                 )
-                time.sleep(3)  # A short, fixed delay.
+                time.sleep(3)
 
                 state["status"] = "running"
                 state["last_activity"] = time.time()
@@ -95,12 +94,11 @@ class NetherBridgeProxy:
                     pending_udp=len(state["pending_udp_packets"]),
                 )
 
-                # --- FIX: Increase the stagger between connections ---
                 for sock, buffer in list(state["pending_tcp_sockets"].items()):
                     self._establish_tcp_session(
                         sock, sock.getpeername(), server_config, buffer
                     )
-                    time.sleep(0.5)  # Increased stagger to prevent flooding
+                    time.sleep(0.1)
 
                 state["pending_tcp_sockets"].clear()
 
@@ -151,8 +149,6 @@ class NetherBridgeProxy:
         ):
             current_time = time.time()
 
-            # --- FIX: Definitive two-stage monitor logic ---
-            # Stage 1: Clean up all stale/crashed sessions.
             with self.session_lock:
                 for key in list(self.active_sessions.keys()):
                     session = self.active_sessions.get(key)
@@ -174,7 +170,6 @@ class NetherBridgeProxy:
                     if is_crashed or is_idle:
                         self._cleanup_session_by_key(key)
 
-            # Stage 2: Check for servers that are now idle.
             for server_conf in self.servers_list:
                 with self.server_locks[server_conf.container_name]:
                     state = self.server_states[server_conf.container_name]
@@ -189,20 +184,17 @@ class NetherBridgeProxy:
                         ]
 
                     if sessions_for_server:
-                        # If sessions remain (they must be active), update activity time
                         state["last_activity"] = max(
                             s["last_packet_time"] for s in sessions_for_server
                         )
                     else:
-                        # No sessions left, check if the idle timeout has passed
-                        # since the last known activity.
                         idle_timeout = (
                             server_conf.idle_timeout_seconds
                             or self.settings.idle_timeout_seconds
                         )
                         if current_time - state["last_activity"] > idle_timeout:
                             self.logger.info(
-                                "Server idle with no sessions. Initiating shutdown.",
+                                "Server idle. Initiating shutdown.",
                                 container_name=server_conf.container_name,
                             )
                             self._stop_minecraft_server(server_conf.container_name)
@@ -273,14 +265,16 @@ class NetherBridgeProxy:
     def _establish_tcp_session(self, conn, client_addr, server_config, buffer):
         """Connects to the backend and establishes a full TCP session."""
         container_name = server_config.container_name
-        self.logger.info("Establishing TCP session.", client_addr=client_addr)
+        self.logger.info(
+            "Establishing new TCP session for running server",
+            client_addr=client_addr,
+        )
 
-        # --- FIX: Re-introduce connection retry loop for robustness ---
         server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         connect_start_time = time.time()
         connected_to_backend = False
 
-        while time.time() - connect_start_time < 10:  # 10-second timeout
+        while time.time() - connect_start_time < 10:
             try:
                 server_sock.settimeout(1.0)
                 server_sock.connect((container_name, server_config.internal_port))
@@ -288,7 +282,7 @@ class NetherBridgeProxy:
                 connected_to_backend = True
                 break
             except (socket.error, ConnectionRefusedError):
-                time.sleep(0.25)  # Wait briefly before retrying
+                time.sleep(0.25)
 
         if not connected_to_backend:
             self.logger.error(
@@ -326,33 +320,21 @@ class NetherBridgeProxy:
         """Handles a new incoming TCP connection from a client."""
         conn, client_addr = sock.accept()
 
-        # --- FIX: Detect and ignore Java status pings to stopped servers ---
         server_cfg = self.servers_config_map[sock.getsockname()[1]]
         container_name = server_cfg.container_name
         with self.server_locks[container_name]:
             state = self.server_states[container_name]
-            # If server is stopped and it's a Java server, check if it's a status ping
             if state["status"] != "running" and server_cfg.server_type == "java":
                 try:
-                    # Peek at the first few bytes without consuming them
                     initial_data = conn.recv(16, socket.MSG_PEEK)
-                    # A typical status ping starts with a small VarInt for length,
-                    # a packet ID of 0x00, and a protocol version. The third byte
-                    # is usually the start of the server address for status pings.
-                    # A next_state of 1 (at byte index 1 of the payload) is for Status.
-                    # We check if it's likely a status ping and not a login attempt.
                     if len(initial_data) > 2 and initial_data[1] == 0x00:
-                        # This is likely a status ping. Close the connection
-                        # without starting the server to ignore test pollers.
                         conn.close()
                         return
                 except (socket.error, IndexError):
-                    # Not a valid packet or connection closed, ignore
                     conn.close()
                     return
 
         conn.setblocking(False)
-        # It's a real connection, proceed with queuing and startup.
         with self.server_locks[container_name]:
             if state["status"] == "running":
                 self._establish_tcp_session(conn, client_addr, server_cfg, b"")
@@ -361,7 +343,10 @@ class NetherBridgeProxy:
                 state["pending_tcp_sockets"][conn] = b""
                 if state["status"] == "stopped":
                     state["status"] = "starting"
-                    self.logger.info("Starting server...", container=container_name)
+                    self.logger.info(
+                        "First TCP connection for stopped server. Starting...",
+                        container=container_name,
+                    )
                     Thread(
                         target=self._start_minecraft_server_task, args=(server_cfg,)
                     ).start()
@@ -420,7 +405,8 @@ class NetherBridgeProxy:
                 if state["status"] == "stopped":
                     state["status"] = "starting"
                     self.logger.info(
-                        "First packet. Starting server...", client_addr=client_addr
+                        "First packet received for stopped server. Starting...",
+                        client_addr=client_addr,
                     )
                     Thread(
                         target=self._start_minecraft_server_task, args=(server_config,)
@@ -465,13 +451,12 @@ class NetherBridgeProxy:
             dest_sock = session["server_socket"]
             dest_addr = (server_cfg.container_name, server_cfg.internal_port)
             direction = "c2s"
-        else:  # server_socket
-            dest_sock = session.get("client_socket")  # For TCP
-            dest_addr = session_key[0]  # The original client address for UDP
+        else:
+            dest_sock = session.get("client_socket")
+            dest_addr = session_key[0]
             direction = "s2c"
 
         if session["protocol"] == "udp":
-            # For server-to-client UDP, we send via the main listening socket
             if direction == "s2c":
                 dest_sock = self.listen_sockets.get(session["listen_port"])
 
@@ -479,7 +464,7 @@ class NetherBridgeProxy:
             try:
                 if session["protocol"] == "tcp":
                     dest_sock.sendall(data)
-                else:  # UDP
+                else:
                     dest_sock.sendto(data, dest_addr)
                 BYTES_TRANSFERRED.labels(
                     server_name=server_cfg.name, direction=direction
@@ -527,7 +512,7 @@ class NetherBridgeProxy:
             if port in self.servers_config_map:
                 return self.servers_config_map[port].container_name
         except (KeyError, OSError):
-            pass  # Socket might be closed
+            pass
         with self.session_lock:
             session_tuple = self.socket_to_session_map.get(sock)
             if session_tuple:
@@ -545,7 +530,7 @@ class NetherBridgeProxy:
 
             try:
                 readable, _, _ = select.select(self.inputs, [], [], 1.0)
-            except (select.error, ValueError):  # ValueError if a socket is closed
+            except (select.error, ValueError):
                 continue
 
             if (
