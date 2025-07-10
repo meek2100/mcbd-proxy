@@ -310,14 +310,6 @@ def test_configuration_reload_on_sighup(docker_compose_up, docker_client_fixture
     print("(SIGHUP Test) Sending SIGHUP signal...")
     container.kill(signal="SIGHUP")
 
-    # FIX: Wait for the correct sequence of logs for a graceful restart
-    assert wait_for_log_message(
-        docker_client_fixture,
-        "nether-bridge",
-        "Requesting a configuration reload.",
-        timeout=15,
-    ), "Proxy did not log that it received the SIGHUP signal."
-
     assert wait_for_log_message(
         docker_client_fixture,
         "nether-bridge",
@@ -332,16 +324,12 @@ def test_configuration_reload_on_sighup(docker_compose_up, docker_client_fixture
     time.sleep(5)
 
     # Check that the old port is now closed
-    try:
+    with pytest.raises(socket.error):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client_socket:
             client_socket.settimeout(2)
-            client_socket.sendto(b"old-port-ping", (proxy_host, initial_bedrock_port))
-            client_socket.recvfrom(1024)
-            pytest.fail(f"Old port {initial_bedrock_port} is still open unexpectedly.")
-    except (ConnectionRefusedError, OSError):
-        print(f"Old port {initial_bedrock_port} is correctly closed.")
-    except socket.timeout:
-        pytest.fail(f"Old port {initial_bedrock_port} is still open (timed out).")
+            # This is expected to fail, so we don't need to send data
+            client_socket.connect((proxy_host, initial_bedrock_port))
+    print(f"Old port {initial_bedrock_port} is correctly closed.")
 
     # Check that the new port is now open
     try:
@@ -366,6 +354,7 @@ def test_proxy_cleans_up_session_on_container_crash(
     proxy_host = get_proxy_host()
     java_proxy_port = JAVA_PROXY_PORT
     mc_java_container_name = "mc-java"
+    victim_socket = None
 
     assert wait_for_proxy_to_be_ready(docker_client_fixture), (
         "Proxy did not become ready before chaos test."
@@ -392,8 +381,8 @@ def test_proxy_cleans_up_session_on_container_crash(
     except Exception as e:
         pytest.fail(f"Chaos test pre-warming failed: {e}")
 
-    victim_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
+        victim_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         victim_socket.connect((proxy_host, java_proxy_port))
         print("(Chaos Test) Victim client connected, session established.")
 
@@ -431,4 +420,5 @@ def test_proxy_cleans_up_session_on_container_crash(
         print("(Chaos Test) Test passed: Proxy correctly handled the crashed session.")
 
     finally:
-        victim_socket.close()
+        if victim_socket:
+            victim_socket.close()

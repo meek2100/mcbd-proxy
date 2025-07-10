@@ -43,6 +43,7 @@ def simulate_single_client(
     connecting and then abruptly disconnecting to test the proxy's error
     handling and session cleanup.
     """
+    time.sleep(random.uniform(0.1, 0.5))  # Stagger client connections
     start_time = time.time()
 
     # --- Chaos Mode Logic ---
@@ -65,6 +66,7 @@ def simulate_single_client(
 
     # --- Regular "Patient" Client Logic ---
     if server_type == ServerType.JAVA:
+        sock = None  # Initialize sock to None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(test_timeout)
@@ -81,29 +83,35 @@ def simulate_single_client(
                     sock.sendall(status_req)
                     sock.recv(4096)
                     return "SUCCESS"
-                except (socket.timeout, ConnectionResetError):
+                except (socket.timeout, ConnectionResetError, BrokenPipeError) as e:
+                    print(f"INFO: Encountered {type(e).__name__}, retrying...")
                     time.sleep(2)
                     continue
         except Exception as e:
-            return f"FAILURE: Could not connect or stay connected - {type(e).__name__}"
+            return f"FAILURE: Could not connect or stay connected - {type(e).__name__}: {e}"  # noqa: E501
         finally:
-            if "sock" in locals():
+            if sock:
                 sock.close()
 
     elif server_type == ServerType.BEDROCK:
-        while time.time() - start_time < test_timeout:
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                sock.settimeout(3)
-                sock.sendto(BEDROCK_UNCONNECTED_PING, (host, port))
-                sock.recvfrom(4096)
+        sock = None  # Initialize sock to None
+        try:
+            while time.time() - start_time < test_timeout:
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    sock.settimeout(3)
+                    sock.sendto(BEDROCK_UNCONNECTED_PING, (host, port))
+                    sock.recvfrom(4096)
+                    sock.close()
+                    return "SUCCESS"
+                except socket.timeout:
+                    sock.close()
+                    time.sleep(2)
+                except Exception as e:
+                    return f"FAILURE: Bedrock client error - {type(e).__name__}: {e}"
+        finally:
+            if sock:
                 sock.close()
-                return "SUCCESS"
-            except socket.timeout:
-                sock.close()
-                time.sleep(2)
-            except Exception as e:
-                return f"FAILURE: Bedrock client error - {type(e).__name__}"
 
     return f"FAILURE: Client timed out after {test_timeout} seconds."
 
@@ -235,7 +243,8 @@ if __name__ == "__main__":
             failure_reasons = {}
             for r in results:
                 if r.startswith("FAILURE"):
-                    failure_reasons[r] = failure_reasons.get(r, 0) + 1
+                    reason = r.split(":")[0]
+                    failure_reasons[reason] = failure_reasons.get(reason, 0) + 1
             for reason, count in failure_reasons.items():
                 print(f"- {reason}: {count} occurrences")
             exit_code = 1
