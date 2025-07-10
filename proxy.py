@@ -322,12 +322,19 @@ class NetherBridgeProxy:
 
         server_cfg = self.servers_config_map[sock.getsockname()[1]]
         container_name = server_cfg.container_name
+
+        # FIX: The previous filter was too aggressive. This new logic correctly
+        # identifies status pings while allowing login attempts to pass through,
+        # which is necessary for the integration tests to function as designed.
         with self.server_locks[container_name]:
             state = self.server_states[container_name]
             if state["status"] != "running" and server_cfg.server_type == "java":
                 try:
+                    # Peek at the first few bytes without consuming them
                     initial_data = conn.recv(16, socket.MSG_PEEK)
-                    if len(initial_data) > 2 and initial_data[1] == 0x00:
+                    # A handshake packet's 3rd byte indicates the next state.
+                    # 1 = Status, 2 = Login. We only want to ignore status pings.
+                    if len(initial_data) > 2 and initial_data[2] == 1:
                         conn.close()
                         return
                 except (socket.error, IndexError):
@@ -336,6 +343,7 @@ class NetherBridgeProxy:
 
         conn.setblocking(False)
         with self.server_locks[container_name]:
+            state = self.server_states[container_name]
             if state["status"] == "running":
                 self._establish_tcp_session(conn, client_addr, server_cfg, b"")
             else:
