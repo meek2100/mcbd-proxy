@@ -143,56 +143,73 @@ class NetherBridgeProxy:
             self.settings.player_check_interval_seconds
         ):
             current_time = time.time()
-            # --- FIX: Simplified and more robust monitoring logic ---
+
+            # Stage 1: Clean up any stale or crashed sessions
+            with self.session_lock:
+                for key in list(self.active_sessions.keys()):
+                    session = self.active_sessions.get(key)
+                    if not session:
+                        continue
+
+                    # Clean up if the session's container has stopped/crashed
+                    if not self.docker_manager.is_container_running(
+                        session["target_container"]
+                    ):
+                        self.logger.warning(
+                            "Session found for stopped container. Cleaning up.",
+                            client_addr=key[0],
+                        )
+                        self._cleanup_session_by_key(key)
+                        continue
+
+                    # Clean up if the session has been inactive for too long
+                    server_conf = self.servers_config_map[session["listen_port"]]
+                    idle_timeout = (
+                        server_conf.idle_timeout_seconds
+                        or self.settings.idle_timeout_seconds
+                    )
+                    if current_time - session["last_packet_time"] > idle_timeout:
+                        self.logger.info(
+                            "Cleaning up idle client session.", client_addr=key[0]
+                        )
+                        self._cleanup_session_by_key(key)
+
+            # Stage 2: Check for idle servers that can now be stopped
             for server_conf in self.servers_list:
                 with self.server_locks[server_conf.container_name]:
                     state = self.server_states[server_conf.container_name]
                     if state["status"] != "running":
                         continue
 
-                    if not self.docker_manager.is_container_running(
-                        server_conf.container_name
-                    ):
-                        state["status"] = "stopped"
-                        RUNNING_SERVERS.dec()
-                        continue
-
                     with self.session_lock:
-                        sessions = [
+                        has_sessions = any(
+                            s["target_container"] == server_conf.container_name
+                            for s in self.active_sessions.values()
+                        )
+
+                    # If server has active sessions, update its activity time
+                    if has_sessions:
+                        sessions_for_server = [
                             s
                             for s in self.active_sessions.values()
                             if s["target_container"] == server_conf.container_name
                         ]
+                        if sessions_for_server:
+                            state["last_activity"] = max(
+                                s["last_packet_time"] for s in sessions_for_server
+                            )
+                        continue
 
-                    if sessions:
-                        # Server is active if its sessions are active.
-                        # Base its last activity on the most recent packet.
-                        latest_packet_time = max(
-                            s["last_packet_time"] for s in sessions
-                        )
-                        state["last_activity"] = latest_packet_time
-
+                    # If no sessions are left, check if the server is idle
                     idle_timeout = (
                         server_conf.idle_timeout_seconds
                         or self.settings.idle_timeout_seconds
                     )
-
-                    # If server's last activity is older than the timeout, shut it down.
                     if current_time - state["last_activity"] > idle_timeout:
                         self.logger.info(
-                            "Server idle. Initiating shutdown.",
+                            "Server idle with no sessions. Initiating shutdown.",
                             container_name=server_conf.container_name,
                         )
-                        # Clean up any lingering idle sessions before stopping
-                        with self.session_lock:
-                            keys_to_clean = [
-                                k
-                                for k, v in self.active_sessions.items()
-                                if v["target_container"] == server_conf.container_name
-                            ]
-                            for key in keys_to_clean:
-                                self._cleanup_session_by_key(key)
-
                         self._stop_minecraft_server(server_conf.container_name)
 
     def _remove_socket(self, sock: socket.socket):
