@@ -40,6 +40,7 @@ dev = [
     "ruff==0.12.2",
     "python-dotenv==1.1.1",
     "requests==2.32.4",
+    "pytest-asyncio",
 ]
 
 # Explicitly list your modules for setuptools to handle the "flat-layout"
@@ -72,3 +73,4 @@ markers = [
     "unit: marks tests as unit tests that do not require external services.",
     "integration: marks tests as integration tests that require Docker Compose.",
 ]
+asyncio_mode = "auto"

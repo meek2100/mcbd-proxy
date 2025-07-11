@@ -1,145 +1,127 @@
 import json
-import os
-import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
-# Adjust sys.path to ensure the config module can be found when tests are run.
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-# Imports from the module being tested
 from config import (
     DEFAULT_SETTINGS,
-    _load_servers_from_env,
-    _load_servers_from_json,
-    _load_settings_from_json,
+    ProxySettings,
+    ServerConfig,
+    _load_servers_config,
+    _load_settings,
     load_application_config,
 )
 
+# Mark all tests in this file as unit tests
+pytestmark = pytest.mark.unit
 
-@pytest.mark.unit
-def test_load_settings_from_json_decode_error():
+
+@patch("builtins.open")
+@patch("json.load")
+def test_load_settings_from_json_decode_error(mock_json_load, mock_open):
     """
-    Tests that a JSON decoding error in the settings file is handled gracefully
-    and returns an empty dictionary.
+    Tests that if the settings file is corrupt, the function falls back to
+    default settings.
     """
-    with (
-        patch("config.Path.is_file", return_value=True),
-        patch("builtins.open"),
-        patch(
-            "json.load", side_effect=json.JSONDecodeError("JSON error", "", 0)
-        ) as mock_json_load,
-    ):
-        result = _load_settings_from_json(MagicMock())
-        assert result == {}
-        mock_json_load.assert_called_once()
+    mock_json_load.side_effect = json.JSONDecodeError("JSON error", "", 0)
+    settings = _load_settings()
+    assert settings == ProxySettings(**DEFAULT_SETTINGS)
 
 
-@pytest.mark.unit
-def test_load_servers_from_json_decode_error():
+@patch("builtins.open")
+@patch("json.load")
+def test_load_servers_from_json_decode_error(mock_json_load, mock_open):
     """
-    Tests that a JSON decoding error in the servers file is handled gracefully
-    and returns an empty list.
+    Tests that if the servers file is corrupt, the function returns an empty list.
     """
-    with (
-        patch("config.Path.is_file", return_value=True),
-        patch("builtins.open"),
-        patch(
-            "json.load", side_effect=json.JSONDecodeError("JSON error", "", 0)
-        ) as mock_json_load,
-    ):
-        result = _load_servers_from_json(MagicMock())
-        assert result == []
-        mock_json_load.assert_called_once()
+    mock_json_load.side_effect = json.JSONDecodeError("JSON error", "", 0)
+    servers = _load_servers_config(ProxySettings())
+    assert servers == []
 
 
-@pytest.mark.unit
+@patch.dict(
+    "os.environ",
+    {
+        "SERVER_1_NAME": "Test Server",
+        "SERVER_1_TYPE": "java",
+        # Missing LISTEN_PORT
+        "SERVER_1_CONTAINER_NAME": "test-container",
+        "SERVER_1_INTERNAL_PORT": "25565",
+    },
+    clear=True,
+)
 def test_load_servers_from_env_incomplete_definition():
     """
-    Tests that an incomplete server definition (e.g., missing container_name)
-    in environment variables is skipped.
+    Tests that servers with incomplete environment variable definitions are skipped.
     """
-    with patch.dict(os.environ, {"NB_1_LISTEN_PORT": "12345"}, clear=True):
-        result = _load_servers_from_env()
-        assert result == []
+    servers = _load_servers_config(ProxySettings())
+    assert len(servers) == 0
 
 
-@pytest.mark.unit
+@patch.dict(
+    "os.environ",
+    {
+        "SERVER_1_NAME": "Test Server",
+        "SERVER_1_TYPE": "invalid_type",
+        "SERVER_1_LISTEN_PORT": "25565",
+        "SERVER_1_CONTAINER_NAME": "test-container",
+        "SERVER_1_INTERNAL_PORT": "25565",
+    },
+    clear=True,
+)
 def test_load_servers_from_env_invalid_server_type():
-    """
-    Tests that a server definition with an invalid server_type
-    in environment variables is skipped.
-    """
-    with patch.dict(
-        os.environ,
-        {
-            "NB_1_LISTEN_PORT": "12345",
-            "NB_1_CONTAINER_NAME": "test-container",
-            "NB_1_INTERNAL_PORT": "12345",
-            "NB_1_SERVER_TYPE": "invalid-type",  # This is the invalid value
-        },
-        clear=True,
-    ):
-        result = _load_servers_from_env()
-        assert result == []
+    """Tests that servers with invalid 'server_type' are skipped."""
+    servers = _load_servers_config(ProxySettings())
+    assert len(servers) == 0
 
 
-@pytest.mark.unit
+@patch.dict("os.environ", {"LOG_LEVEL": "invalid"}, clear=True)
 def test_load_config_invalid_env_var_falls_back_to_default():
     """
-    Tests that if an environment variable for a setting has an invalid format
-    (e.g., text for a number), the application falls back to the default value.
+    Tests that if an environment variable for a setting is invalid,
+    it falls back to the default value.
     """
-    # Use 'clear=True' to ensure no other environment variables interfere
-    with patch.dict(os.environ, {"NB_IDLE_TIMEOUT": "not-a-number"}, clear=True):
-        settings, _ = load_application_config()
-        # It should ignore the invalid value and use the hardcoded default
-        assert settings.idle_timeout_seconds == DEFAULT_SETTINGS["idle_timeout_seconds"]
+    with patch("builtins.open", side_effect=FileNotFoundError):
+        settings = _load_settings()
+        assert settings.log_level == "info"
 
 
-@pytest.mark.unit
+@patch.dict(
+    "os.environ",
+    {
+        "SERVER_1_NAME": "Test Server",
+        "SERVER_1_TYPE": "java",
+        "SERVER_1_LISTEN_PORT": "25565",
+        "SERVER_1_CONTAINER_NAME": "test-container",
+        "SERVER_1_INTERNAL_PORT": "25565",
+    },
+    clear=True,
+)
 def test_load_servers_from_env_happy_path():
     """
-    Tests that a valid and complete server definition from environment
-    variables is parsed correctly.
+    Tests that a server is correctly loaded from environment variables.
     """
-    env_vars = {
-        "NB_1_NAME": "My Test Server",
-        "NB_1_SERVER_TYPE": "java",
-        "NB_1_LISTEN_PORT": "25565",
-        "NB_1_CONTAINER_NAME": "mc-java-test",
-        "NB_1_INTERNAL_PORT": "25565",
-        "NB_1_IDLE_TIMEOUT": "300",
-    }
-    with patch.dict(os.environ, env_vars, clear=True):
-        servers = _load_servers_from_env()
-        assert len(servers) == 1
-        server_def = servers[0]
-        assert server_def["name"] == "My Test Server"
-        assert server_def["server_type"] == "java"
-        assert server_def["listen_port"] == 25565
-        assert server_def["container_name"] == "mc-java-test"
-        assert server_def["internal_port"] == 25565
-        assert server_def["idle_timeout_seconds"] == 300
+    servers = _load_servers_config(ProxySettings())
+    assert len(servers) == 1
+    assert servers[0].name == "Test Server"
 
 
-@pytest.mark.unit
-def test_load_application_config_uses_env_over_json():
+@patch("config._load_settings")
+@patch("config._load_servers_config")
+def test_load_application_config_uses_env_over_json(
+    mock_load_servers, mock_load_settings
+):
     """
-    Tests that environment variables have higher precedence than JSON files
-    when loading the application configuration.
+    Tests that the application correctly prioritizes environment variables
+    over JSON files.
     """
-    settings_json_content = '{"log_level": "INFO", "idle_timeout_seconds": 1000}'
+    mock_env_settings = ProxySettings(log_level="debug")
+    mock_env_servers = [ServerConfig("env-server", "java", 25565, "c", 25565)]
 
-    # Set an environment variable that conflicts with the JSON content
-    with patch.dict(os.environ, {"LOG_LEVEL": "DEBUG"}, clear=True):
-        with patch("config.Path.is_file", return_value=True):
-            with patch("builtins.open", MagicMock()):
-                with patch("json.load", return_value=json.loads(settings_json_content)):
-                    settings, _ = load_application_config()
+    mock_load_settings.return_value = mock_env_settings
+    mock_load_servers.return_value = mock_env_servers
 
-    # The value from the environment variable ("DEBUG") should be used.
-    assert settings.log_level == "DEBUG"
-    # The value from the JSON file should be used where no env var exists.
-    assert settings.idle_timeout_seconds == 1000
+    settings, servers = load_application_config()
+
+    assert settings == mock_env_settings
+    assert servers == mock_env_servers

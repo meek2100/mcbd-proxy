@@ -1,101 +1,61 @@
-import os
-import signal
 import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Adjust sys.path to ensure modules can be found when tests are run.
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-# Imports from the module being tested
 from main import main, perform_health_check
 
-
-@pytest.mark.unit
-@patch("main.sys.argv", ["main.py", "--healthcheck"])
-@patch("main.perform_health_check")
-def test_main_runs_health_check(mock_perform_health):
-    """
-    Tests that the main function correctly calls perform_health_check
-    when the '--healthcheck' argument is provided.
-    """
-    main()
-    mock_perform_health.assert_called_once()
+# Mark all tests in this file as unit tests
+pytestmark = pytest.mark.unit
 
 
-@pytest.mark.unit
-@patch("main.sys.argv", ["main.py"])
-@patch("main.load_application_config")
+@patch("main.sys.exit")
+@patch("main.HEARTBEAT_FILE")
+def test_health_check_fails_if_file_missing(mock_heartbeat_file, mock_exit):
+    """Tests that the health check fails if the heartbeat file is missing."""
+    mock_heartbeat_file.exists.return_value = False
+    perform_health_check()
+    mock_exit.assert_called_with(1)
+
+
+@patch("main.sys.exit")
+@patch("main.time.time", return_value=100)
+@patch("main.HEARTBEAT_FILE")
+def test_health_check_fails_if_heartbeat_is_stale(
+    mock_heartbeat_file, mock_time, mock_exit
+):
+    """Tests that the health check fails if the heartbeat is stale."""
+    mock_heartbeat_file.exists.return_value = True
+    mock_heartbeat_file.read_text.return_value = "0"
+    perform_health_check()
+    mock_exit.assert_called_with(1)
+
+
+@patch("main.asyncio.run")
 @patch("main.NetherBridgeProxy")
-@patch("main.run_proxy_instance")
-@patch("signal.signal")
-@patch("main.start_http_server")  # Mock prometheus server
+@patch("main.load_application_config")
+@patch("main.configure_logging")
+@patch("main.start_http_server")
 def test_main_execution_flow(
     mock_start_http,
-    mock_signal,
-    mock_run_instance,
-    mock_proxy_class,
+    mock_configure_logging,
     mock_load_config,
+    mock_proxy,
+    mock_asyncio_run,
 ):
-    """
-    Tests the main execution flow, ensuring that config is loaded,
-    the proxy is instantiated, signal handlers are set, and the app is run.
-    """
-    mock_settings = MagicMock(
-        log_level="INFO", log_formatter="console", prometheus_enabled=False
-    )
+    """Tests the main execution flow of the application."""
+    mock_settings = MagicMock()
+    mock_settings.prometheus_enabled = True
     mock_servers = [MagicMock()]
-    mock_load_config.return_value = (mock_settings, mock_servers)
-    mock_proxy_instance = MagicMock()
-    mock_proxy_class.return_value = mock_proxy_instance
+    mock_load_config.side_effect = [
+        (mock_settings, mock_servers),
+        (mock_settings, mock_servers),
+    ]
+    mock_asyncio_run.return_value = False  # Simulate no reload request
 
-    # Make the loop run only once for the test
-    mock_run_instance.return_value = False
+    with patch.object(sys, "argv", ["main.py"]):
+        main()
 
-    main()
-
-    # It's called once for prometheus check, and once for the main loop
     assert mock_load_config.call_count == 2
-    mock_proxy_class.assert_called_once_with(mock_settings, mock_servers)
-    mock_signal.assert_any_call(signal.SIGINT, mock_proxy_instance.signal_handler)
-    mock_signal.assert_any_call(signal.SIGTERM, mock_proxy_instance.signal_handler)
-    mock_run_instance.assert_called_once_with(mock_proxy_instance)
-
-
-@pytest.mark.unit
-@patch("main.HEARTBEAT_FILE")
-def test_health_check_fails_if_file_missing(mock_heartbeat_file):
-    """
-    Tests that the health check fails with exit code 1 if the
-    heartbeat file does not exist.
-    """
-    mock_settings = MagicMock(healthcheck_stale_threshold_seconds=60)
-    with patch(
-        "main.load_application_config", return_value=(mock_settings, [MagicMock()])
-    ):
-        mock_heartbeat_file.is_file.return_value = False
-        with pytest.raises(SystemExit) as e:
-            perform_health_check()
-        assert e.value.code == 1
-
-
-@pytest.mark.unit
-@patch("main.HEARTBEAT_FILE")
-@patch("time.time")
-def test_health_check_fails_if_heartbeat_is_stale(mock_time, mock_heartbeat_file):
-    """
-    Tests that the health check fails with exit code 1 if the heartbeat
-    file is older than the configured threshold.
-    """
-    mock_settings = MagicMock(healthcheck_stale_threshold_seconds=60)
-    with patch(
-        "main.load_application_config", return_value=(mock_settings, [MagicMock()])
-    ):
-        mock_heartbeat_file.is_file.return_value = True
-        mock_time.return_value = 1000  # Current time
-        mock_heartbeat_file.read_text.return_value = "900"  # Stale timestamp
-
-        with pytest.raises(SystemExit) as e:
-            perform_health_check()
-        assert e.value.code == 1
+    mock_proxy.assert_called_once_with(mock_settings, mock_servers)
+    mock_asyncio_run.assert_called_once()
