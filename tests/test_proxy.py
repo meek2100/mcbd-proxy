@@ -1,4 +1,3 @@
-# tests/test_proxy.py
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,6 +14,19 @@ def mock_settings():
     return ProxySettings(
         idle_timeout_seconds=0.5,  # Reduced for faster test execution
         player_check_interval_seconds=0.1,  # Reduced for faster test execution
+        query_timeout_seconds=5,
+        server_ready_max_wait_time_seconds=120,
+        initial_boot_ready_max_wait_time_seconds=180,
+        server_startup_delay_seconds=5,
+        initial_server_query_delay_seconds=10,
+        log_level="INFO",
+        log_formatter="json",
+        healthcheck_stale_threshold_seconds=60,
+        proxy_heartbeat_interval_seconds=15,
+        tcp_listen_backlog=128,
+        max_concurrent_sessions=-1,
+        prometheus_enabled=True,
+        prometheus_port=8000,
     )
 
 
@@ -48,6 +60,8 @@ def mock_docker_manager():
     manager = MagicMock(spec=DockerManager)
     manager.start_server = AsyncMock(return_value=True)
     manager.stop_server = AsyncMock(return_value=True)
+    manager.is_container_running = AsyncMock(return_value=False)
+    manager.wait_for_server_query_ready = AsyncMock(return_value=True)
     return manager
 
 
@@ -64,12 +78,37 @@ def reload_event():
 
 
 @pytest.fixture
-def proxy(mock_settings, mock_docker_manager, shutdown_event, reload_event):
+def mock_metrics():
+    """Fixture for mock Prometheus metric objects."""
+    metrics = MagicMock()
+    metrics.ACTIVE_SESSIONS = MagicMock()
+    metrics.RUNNING_SERVERS = MagicMock()
+    metrics.BYTES_TRANSFERRED = MagicMock()
+    metrics.SERVER_STARTUP_DURATION = MagicMock()
+    return metrics
+
+
+@pytest.fixture
+def proxy(
+    mock_settings,
+    mock_docker_manager,
+    shutdown_event,
+    reload_event,
+    mock_metrics,
+):
     """
     Fixture to create a NetherBridgeProxy instance with mocked dependencies.
     """
     return NetherBridgeProxy(
-        mock_settings, [], mock_docker_manager, shutdown_event, reload_event
+        mock_settings,
+        [],
+        mock_docker_manager,
+        shutdown_event,
+        reload_event,
+        mock_metrics.ACTIVE_SESSIONS,
+        mock_metrics.RUNNING_SERVERS,
+        mock_metrics.BYTES_TRANSFERRED,
+        mock_metrics.SERVER_STARTUP_DURATION,
     )
 
 
@@ -82,7 +121,13 @@ async def test_handle_tcp_connection_starts_stopped_server(
     Tests that a TCP connection attempt to a stopped server
     triggers the server to start.
     """
-    proxy.servers = [mock_java_server_config]
+    proxy.servers_list = [mock_java_server_config]
+    proxy.servers_config_map = {
+        mock_java_server_config.listen_port: mock_java_server_config
+    }
+    proxy.server_states[mock_java_server_config.container_name]["status"] = (
+        "stopped"  # Ensure initial state is stopped
+    )
 
     # Configure realistic stream mocks for client-side
     reader = AsyncMock()
@@ -120,7 +165,6 @@ async def test_handle_tcp_connection_starts_stopped_server(
     # Assert client-side stream interactions
     writer.write.assert_called_with(b"server_data")  # Data proxied from server
     writer.drain.assert_awaited_once()
-    # writer.close.assert_called_once() # Temporarily commented out
     writer.wait_closed.assert_awaited_once()
 
     # Assert server-side stream interactions (proxied from client)
@@ -128,7 +172,6 @@ async def test_handle_tcp_connection_starts_stopped_server(
         b"client_data"
     )  # Data proxied from client
     mock_server_writer.drain.assert_awaited_once()
-    # mock_server_writer.close.assert_called_once() # Temporarily commented out
     mock_server_writer.wait_closed.assert_awaited_once()
 
 
@@ -141,12 +184,19 @@ async def test_handle_udp_datagram_starts_stopped_server(
     Tests that a UDP datagram to a stopped server
     triggers the server to start.
     """
-    proxy.servers = [mock_bedrock_server_config]
+    proxy.servers_list = [mock_bedrock_server_config]
+    proxy.servers_config_map = {
+        mock_bedrock_server_config.listen_port: mock_bedrock_server_config
+    }
+    proxy.server_states[mock_bedrock_server_config.container_name]["status"] = (
+        "stopped"  # Ensure initial state is stopped
+    )
 
     # Configure a transport mock with synchronous methods
     transport = MagicMock()
     transport.sendto = MagicMock()
     transport.close = MagicMock()
+    transport.is_closing.return_value = False
 
     # Mock asyncio.get_running_loop().create_datagram_endpoint
     mock_ep = AsyncMock(return_value=(transport, MagicMock()))
@@ -159,7 +209,7 @@ async def test_handle_udp_datagram_starts_stopped_server(
     mock_docker_manager.start_server.assert_awaited_once_with(
         mock_bedrock_server_config, proxy.settings
     )
-    # Ensure transport.close() is called
+    # Ensure transport.close() is called when session cleans up
     transport.close.assert_called_once()
 
 
@@ -171,7 +221,10 @@ async def test_monitor_stops_idle_server(
     """
     Tests that the monitor stops a server that has been idle for too long.
     """
-    proxy.servers = [mock_java_server_config]
+    proxy.servers_list = [mock_java_server_config]
+    proxy.servers_config_map = {
+        mock_java_server_config.listen_port: mock_java_server_config
+    }
     container_name = mock_java_server_config.container_name
     state = proxy.server_states[container_name]
 
@@ -226,6 +279,7 @@ async def test_monitor_stops_idle_server(
         )  # Await its completion
 
     mock_docker_manager.stop_server.assert_awaited_once_with(container_name)
+    # FIX: Assert for "stopped" status as per proxy.py's implementation
     assert proxy.server_states[container_name]["status"] == "stopped"
 
 
@@ -238,7 +292,10 @@ async def test_monitor_does_not_stop_active_server(
     Tests that the monitor does not stop a server that is active
     (has active sessions).
     """
-    proxy.servers = [mock_java_server_config]
+    proxy.servers_list = [mock_java_server_config]
+    proxy.servers_config_map = {
+        mock_java_server_config.listen_port: mock_java_server_config
+    }
     container_name = mock_java_server_config.container_name
     state = proxy.server_states[container_name]
 
@@ -296,6 +353,14 @@ async def test_udp_protocol_datagram_received(proxy, mock_bedrock_server_config)
     Tests that the UdpProxyProtocol correctly calls _handle_udp_datagram
     when a datagram is received.
     """
+    proxy.servers_list = [mock_bedrock_server_config]
+    proxy.servers_config_map = {
+        mock_bedrock_server_config.listen_port: mock_bedrock_server_config
+    }
+    proxy.server_states[mock_bedrock_server_config.container_name]["status"] = (
+        "stopped"  # Ensure initial state is stopped
+    )
+
     # Mock _handle_udp_datagram on the proxy instance
     proxy._handle_udp_datagram = AsyncMock()
 
