@@ -1,7 +1,5 @@
-# main.py
 import asyncio
 import signal
-import sys
 
 import structlog
 
@@ -9,51 +7,45 @@ from config import load_application_config
 from docker_manager import DockerManager
 from proxy import NetherBridgeProxy
 
-# Configure structured logging for the application
+# Configure structured logging
 structlog.configure(
     processors=[
+        structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
-        structlog.processors.StackInfoRenderer(),
-        structlog.dev.set_exc_info,
         structlog.processors.TimeStamper(fmt="iso"),
-        structlog.dev.ConsoleRenderer(),
-    ],
-    wrapper_class=structlog.make_filtering_bound_logger(min_level="INFO"),
-    logger_factory=structlog.PrintLoggerFactory(),
-    cache_logger_on_first_use=True,
+        structlog.processors.JSONRenderer(),
+    ]
 )
 logger = structlog.get_logger()
 
 
 async def main():
-    """Initializes and runs the Nether-bridge proxy server."""
+    """Initializes and runs the proxy application."""
     shutdown_event = asyncio.Event()
 
-    def _handle_shutdown_signal(sig):
-        """Sets the shutdown event when a signal is received."""
-        logger.warning("Shutdown signal received", signal=sig.name)
+    def signal_handler():
+        logger.info("Shutdown signal received.")
         shutdown_event.set()
 
-    # Register signal handlers for graceful shutdown
     loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _handle_shutdown_signal, sig)
+    loop.add_signal_handler(signal.SIGINT, signal_handler)
+    loop.add_signal_handler(signal.SIGTERM, signal_handler)
 
+    docker_manager = None
     try:
         settings, servers = load_application_config()
-        if not servers:
-            logger.critical("No servers configured. Exiting.")
-            sys.exit(1)
+        docker_manager = DockerManager(docker_url=settings.docker_url)
 
-        docker_manager = DockerManager()
-        await docker_manager.connect()
+        # The manager now connects automatically, no .connect() needed.
 
         proxy = NetherBridgeProxy(settings, servers, docker_manager, shutdown_event)
         await proxy.run()
 
-    except Exception:
-        logger.exception("An unhandled exception occurred during main execution")
+    except Exception as e:
+        logger.error("An unhandled exception occurred during main execution", error=e)
     finally:
+        if docker_manager:
+            await docker_manager.close()
         logger.info("Application has shut down.")
 
 
@@ -61,4 +53,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("KeyboardInterrupt received, exiting.")
+        logger.info("Application interrupted by user.")

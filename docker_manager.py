@@ -79,7 +79,7 @@ class DockerManager:
             return False
         except Exception as e:
             logger.error(
-                "Unexpected error during server startup.",
+                "An unexpected error occurred during server startup.",
                 server=server_config.name,
                 error=str(e),
             )
@@ -103,7 +103,7 @@ class DockerManager:
             return False
         except Exception as e:
             logger.error(
-                "Unexpected error during server shutdown.",
+                "An unexpected error occurred during server shutdown.",
                 container=container_name,
                 error=str(e),
             )
