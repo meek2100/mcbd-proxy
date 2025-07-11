@@ -1,13 +1,14 @@
 import asyncio
 import signal
+import sys
+import time
 
 import structlog
 
-from config import load_application_config
+from config import ProxySettings, load_application_config
 from docker_manager import DockerManager
-from proxy import NetherBridgeProxy
+from proxy import HEARTBEAT_FILE, NetherBridgeProxy
 
-# Configure structured logging
 structlog.configure(
     processors=[
         structlog.contextvars.merge_contextvars,
@@ -16,31 +17,63 @@ structlog.configure(
         structlog.processors.JSONRenderer(),
     ]
 )
-logger = structlog.get_logger()
+logger = structlog.get_logger(__name__)
+
+
+async def perform_health_check(settings: ProxySettings):
+    if not HEARTBEAT_FILE.is_file():
+        logger.error("Health Check FAIL: Heartbeat file not found.")
+        sys.exit(1)
+
+    try:
+        stale_threshold = getattr(settings, "healthcheck_stale_threshold_seconds", 60)
+        age = int(time.time()) - int(HEARTBEAT_FILE.read_text())
+
+        if age < stale_threshold:
+            logger.info("Health Check OK", age_seconds=age)
+            sys.exit(0)
+        else:
+            logger.error("Health Check FAIL: Heartbeat is stale.", age_seconds=age)
+            sys.exit(1)
+    except Exception as e:
+        logger.error(
+            "Health Check FAIL: Could not read or parse heartbeat file.", error=e
+        )
+        sys.exit(1)
 
 
 async def main():
-    """Initializes and runs the proxy application."""
-    shutdown_event = asyncio.Event()
+    settings, servers = load_application_config()
 
-    def signal_handler():
-        logger.info("Shutdown signal received.")
-        shutdown_event.set()
+    if "--healthcheck" in sys.argv:
+        await perform_health_check(settings)
+        return
+
+    shutdown_event = asyncio.Event()
+    reload_event = asyncio.Event()
+
+    def signal_handler(sig):
+        if sig == signal.SIGHUP:
+            logger.info("SIGHUP received. Triggering configuration reload.")
+            reload_event.set()
+        else:  # SIGINT, SIGTERM
+            logger.info("Shutdown signal received.")
+            shutdown_event.set()
 
     loop = asyncio.get_running_loop()
-    loop.add_signal_handler(signal.SIGINT, signal_handler)
-    loop.add_signal_handler(signal.SIGTERM, signal_handler)
+    # Add SIGHUP handler if the OS supports it
+    if hasattr(signal, "SIGHUP"):
+        loop.add_signal_handler(signal.SIGHUP, signal_handler, signal.SIGHUP)
+    loop.add_signal_handler(signal.SIGINT, signal_handler, signal.SIGINT)
+    loop.add_signal_handler(signal.SIGTERM, signal_handler, signal.SIGTERM)
 
     docker_manager = None
     try:
-        settings, servers = load_application_config()
         docker_manager = DockerManager(docker_url=settings.docker_url)
-
-        # The manager now connects automatically, no .connect() needed.
-
-        proxy = NetherBridgeProxy(settings, servers, docker_manager, shutdown_event)
+        proxy = NetherBridgeProxy(
+            settings, servers, docker_manager, shutdown_event, reload_event
+        )
         await proxy.run()
-
     except Exception as e:
         logger.error("An unhandled exception occurred during main execution", error=e)
     finally:
