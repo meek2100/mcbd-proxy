@@ -1,3 +1,4 @@
+# tests/test_proxy.py
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -225,7 +226,7 @@ async def test_monitor_stops_idle_server(
         )  # Await its completion
 
     mock_docker_manager.stop_server.assert_awaited_once_with(container_name)
-    assert proxy.server_states[container_name]["status"] == "exited"
+    assert proxy.server_states[container_name]["status"] == "stopped"
 
 
 @pytest.mark.unit
