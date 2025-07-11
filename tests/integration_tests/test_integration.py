@@ -316,7 +316,6 @@ def test_configuration_reload_on_sighup(docker_compose_up, docker_client_fixture
         "SIGHUP received. Requesting a configuration reload.",
         timeout=15,
     ), "Proxy did not log that it received the SIGHUP signal."
-
     print("(SIGHUP Test) Proxy logged SIGHUP. Verifying new behavior...")
 
     # --- 3. Verify new configuration is active and old one is not ---
