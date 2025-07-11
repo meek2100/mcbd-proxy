@@ -12,7 +12,7 @@ from tests.helpers import (
     wait_for_container_status,
     wait_for_log_message,
     wait_for_mc_server_ready,
-    wait_for_proxy_to_be_healthy,
+    wait_for_proxy_to_be_ready,  # Corrected function name
 )
 
 
@@ -27,7 +27,7 @@ async def test_bedrock_server_starts_on_connection(
     proxy_host = get_proxy_host(env_config)
     mc_bedrock = "mc-bedrock"
 
-    await wait_for_proxy_to_be_healthy(docker_client_fixture)
+    await wait_for_proxy_to_be_ready(docker_client_fixture)
     initial_status = await get_container_status(docker_client_fixture, mc_bedrock)
     assert initial_status in ["exited", "created"]
 
@@ -67,7 +67,7 @@ async def test_java_server_starts_on_connection(
     proxy_host = get_proxy_host(env_config)
     mc_java = "mc-java"
 
-    await wait_for_proxy_to_be_healthy(docker_client_fixture)
+    await wait_for_proxy_to_be_ready(docker_client_fixture)
     initial_status = await get_container_status(docker_client_fixture, mc_java)
     assert initial_status in ["exited", "created"]
 
@@ -105,7 +105,7 @@ async def test_server_shuts_down_on_idle(
     proxy_host = get_proxy_host(env_config)
     mc_bedrock = "mc-bedrock"
 
-    await wait_for_proxy_to_be_healthy(docker_client_fixture)
+    await wait_for_proxy_to_be_ready(docker_client_fixture)
 
     # Start the server by making a connection
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
