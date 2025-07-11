@@ -14,7 +14,9 @@ logger = structlog.get_logger(__name__)
 
 
 class DockerManager:
-    """Manages interactions with the Docker daemon to control server containers."""
+    """Manages interactions with the Docker daemon to control server
+    containers.
+    """
 
     def __init__(self, docker_url: str):
         try:
@@ -75,7 +77,7 @@ class DockerManager:
                 "Unsupported server type for readiness check",
                 server_type=server_config.server_type,
             )
-            await asyncio.sleep(5)  # Wait a bit even for unsupported types
+            await asyncio.sleep(query_timeout)  # Use query_timeout for sleep
             return False
 
         while time.time() - start_time < max_wait_time:
@@ -92,8 +94,7 @@ class DockerManager:
                     server=server_config.name,
                     error=str(e),
                 )
-                # This sleep should use the query_timeout to match test expectations
-                await asyncio.sleep(query_timeout)  # FIX: Use query_timeout here
+                await asyncio.sleep(query_timeout)
         logger.error(
             "Server did not become query-ready in time.", server=server_config.name
         )
