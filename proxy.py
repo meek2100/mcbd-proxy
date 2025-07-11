@@ -1,7 +1,7 @@
 import asyncio
 import signal
 import time
-from threading import Lock, RLock, Thread
+from threading import Lock, RLock
 from typing import Dict, List
 
 import structlog
@@ -68,7 +68,7 @@ class NetherBridgeUDPProxyProtocol(asyncio.DatagramProtocol):
         if self.proxy._initiate_server_start(self.server_config):
             self.logger.info(
                 "First UDP packet for non-running server. Triggering async "
-                "server start.",  # Fixed line 70
+                "server start.",
                 container_name=container_name,
             )
 
@@ -384,68 +384,72 @@ class NetherBridgeProxy:
             )
 
     def _initiate_server_start(self, server_config: ServerConfig):
-        """Atomically checks state and starts the server startup thread if needed."""
+        """Atomically checks state and starts the server startup task if needed."""
         container_name = server_config.container_name
         with self.server_locks[container_name]:
             if self.server_states[container_name]["status"] == "stopped":
                 self.logger.info(
-                    "Server is stopped. Initiating startup sequence.",
+                    "Server is stopped. Initiating async startup task.",
                     server_name=server_config.name,
                 )
                 self.server_states[container_name]["status"] = "starting"
                 self.server_states[container_name]["ready_event"].clear()
-                thread = Thread(
-                    target=self._start_minecraft_server_task,
-                    args=(server_config,),
-                    daemon=True,
+                # Use asyncio.create_task to run the async task
+                asyncio.create_task(
+                    self._start_minecraft_server_async_task(server_config)
                 )
-                thread.start()
                 return True
         return False
 
-    def _start_minecraft_server_task(self, server_config: ServerConfig):
+    async def _start_minecraft_server_async_task(self, server_config: ServerConfig):
         """
-        Runs in a background thread to start a server.
+        Runs in the async event loop to start a server.
         """
         container_name = server_config.container_name
         startup_timer_start = time.time()
 
-        success = self.docker_manager.start_server(server_config, self.settings)
+        # Call the async version of start_server
+        success = await self.docker_manager.start_server(server_config, self.settings)
 
-        with self.server_locks[container_name]:
+        with self.server_locks[container_name]:  # Still use lock for shared state
             state = self.server_states[container_name]
             if success:
                 state["status"] = "running"
                 state["ready_event"].set()
+                # Update metrics - these are thread-safe or can be adapted for async
                 RUNNING_SERVERS.inc()
                 duration = time.time() - startup_timer_start
                 SERVER_STARTUP_DURATION.labels(server_name=server_config.name).observe(
                     duration
                 )
                 self.logger.info(
-                    "Startup process complete.",
+                    "Async startup process complete.",
                     container_name=container_name,
                     duration_seconds=duration,
                 )
             else:
                 self.logger.error(
-                    "Server startup process failed.", container_name=container_name
+                    "Async server startup process failed.",
+                    container_name=container_name,
                 )
                 state["status"] = "stopped"
                 state["ready_event"].clear()
 
-    def _ensure_all_servers_stopped_on_startup(self):
+    async def _ensure_all_servers_stopped_on_startup(self):
         """Ensures all managed servers are stopped when the proxy starts."""
         self.logger.info(
             "Proxy startup: Ensuring all managed servers are initially stopped."
         )
         for server_config in self.servers_list:
-            if self.docker_manager.is_container_running(server_config.container_name):
+            # Need to await the async check and stop
+            if await self.docker_manager.is_container_running(
+                server_config.container_name
+            ):
                 self.logger.warning(
                     "Found running at proxy startup. Issuing a safe stop.",
                     container_name=server_config.container_name,
                 )
-                self.docker_manager.stop_server(server_config.container_name)
+                await self.docker_manager.stop_server(server_config.container_name)
 
     def _monitor_servers_activity(self):
         """Monitors server activity and shuts down idle servers."""

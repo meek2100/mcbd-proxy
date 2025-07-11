@@ -1,12 +1,8 @@
-"""
-Centralized Prometheus metrics definitions for the Nether-bridge application.
+import structlog
+from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
-By defining these in a separate module, we ensure they are created as singletons
-only once when this module is first imported by any part of the application,
-preventing "Duplicated timeseries" errors during testing.
-"""
-
-from prometheus_client import Counter, Gauge, Histogram
+# Initialize logger for this module
+logger = structlog.get_logger(__name__)
 
 # A gauge to track the number of active player sessions.
 # Labeled by server name to allow for per-server monitoring.
@@ -37,3 +33,17 @@ BYTES_TRANSFERRED = Counter(
     "Total bytes transferred through the proxy",
     ["server_name", "direction"],
 )
+
+
+def start_metrics_server(port: int = 8000):
+    """
+    Starts the Prometheus metrics HTTP server.
+    """
+    try:
+        start_http_server(port)
+        logger.info("Prometheus metrics server started successfully.", port=port)
+    except Exception as e:
+        logger.error(
+            "Failed to start Prometheus metrics server.", port=port, error=str(e)
+        )
+        # Depending on criticality, you might want to re-raise or handle differently
