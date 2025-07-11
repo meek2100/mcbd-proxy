@@ -19,7 +19,7 @@ classifiers = [
 ]
 
 dependencies = [
-    # Pinned to match original requirements.txt for production stability
+    "aiodocker==0.21.0",
     "docker==7.1.0",
     "mcstatus==12.0.2",
     "prometheus-client==0.22.1",
@@ -40,7 +40,7 @@ dev = [
     "ruff==0.12.2",
     "python-dotenv==1.1.1",
     "requests==2.32.4",
-    "pytest-asyncio",
+    "pytest-asyncio==1.0.0",
 ]
 
 # Explicitly list your modules for setuptools to handle the "flat-layout"
