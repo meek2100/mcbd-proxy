@@ -4,7 +4,7 @@ import time
 import aiodocker
 import aiodocker.exceptions
 import structlog
-from mcstatus import JavaServer
+from mcstatus import BedrockServer, JavaServer
 
 from config import ProxySettings, ServerConfig
 
@@ -32,21 +32,37 @@ class DockerManager:
         Checks if a Minecraft server inside a container is ready to accept
         connections.
         """
-        if server_config.server_type != "java":
-            await asyncio.sleep(10)
-            return True
-
         start_time = time.time()
+        server_address = f"127.0.0.1:{server_config.internal_port}"
+
+        ServerClass = None
+        if server_config.server_type == "java":
+            ServerClass = JavaServer
+        elif server_config.server_type == "bedrock":
+            ServerClass = BedrockServer
+        else:
+            logger.warning(
+                "Unsupported server type for readiness check",
+                server_type=server_config.server_type,
+            )
+            # For unsupported types, we might just wait a bit or fail
+            await asyncio.sleep(5)
+            return False
+
         while time.time() - start_time < max_wait_time:
             try:
-                server = await JavaServer.async_lookup(
-                    f"127.0.0.1:{server_config.internal_port}"
-                )
+                server = await ServerClass.async_lookup(server_address)
                 await server.async_status()
                 logger.info("Server is ready.", server=server_config.name)
                 return True
-            except Exception:
-                await asyncio.sleep(2)
+            except Exception as e:
+                logger.debug(
+                    "Server not ready yet, retrying...",
+                    server=server_config.name,
+                    error=str(e),
+                )
+                await asyncio.sleep(2)  # Wait before retrying
+        logger.error("Server did not become ready in time.", server=server_config.name)
         return False
 
     async def start_server(
@@ -64,9 +80,6 @@ class DockerManager:
             if not await self._is_server_ready(
                 server_config, settings.server_ready_max_wait_time_seconds
             ):
-                logger.error(
-                    "Server did not become ready in time.", server=server_config.name
-                )
                 return False
             return True
         except aiodocker.exceptions.DockerError as e:
