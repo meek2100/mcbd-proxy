@@ -200,7 +200,7 @@ class NetherBridgeProxy:
                     "Found running at proxy startup. Issuing a safe stop.",
                     container_name=server_config.container_name,
                 )
-                self.docker_manager.stop_server(server_config)
+                self.docker_manager.stop_server(server_config.container_name)
 
     def _monitor_servers_activity(self):
         """Monitors server activity and shuts down idle servers."""
