@@ -19,17 +19,6 @@ def mock_aiodocker_client():
 
 
 @pytest.fixture
-def docker_manager_instance(mock_aiodocker_client):
-    """
-    Provides a DockerManager instance with a mocked aiodocker client.
-    Initializes DockerManager with a dummy URL, as it expects one.
-    """
-    manager = DockerManager(docker_url="unix://var/run/docker.sock")
-    manager.client = mock_aiodocker_client
-    return manager
-
-
-@pytest.fixture
 def mock_container_object():
     """Provides a reusable AsyncMock for an aiodocker container object."""
     return AsyncMock(spec=aiodocker.containers.DockerContainer)
@@ -51,10 +40,29 @@ def mock_server_config():
 def mock_proxy_settings():
     """Provides a mock ProxySettings object for testing."""
     settings = MagicMock(spec=ProxySettings)
-    settings.server_ready_max_wait_time_seconds = 1  # Short timeout for tests
-    settings.query_timeout_seconds = 0.5  # Short timeout for queries
+    # Adjusted timeout and query interval for clearer test timing
+    settings.server_ready_max_wait_time_seconds = 3.1
+    settings.query_timeout_seconds = 1.0
     settings.docker_url = "unix://var/run/docker.sock"
     return settings
+
+
+@pytest.fixture
+def docker_manager_instance(mock_aiodocker_client):
+    """
+    Provides a DockerManager instance with a mocked aiodocker client.
+    Patches DockerManager's __init__ to prevent real aiodocker.Docker() call.
+    """
+    # Patch the DockerManager's __init__ method temporarily.
+    # This prevents the real aiodocker.Docker() from being instantiated
+    # inside DockerManager's __init__ and trying to get a running event loop.
+    with patch("docker_manager.DockerManager.__init__", return_value=None):
+        manager = DockerManager(
+            docker_url="unix://var/run/docker.sock"
+        )  # This call is now mocked
+        # Manually set the mocked client on the instance after its (mocked) creation
+        manager.client = mock_aiodocker_client
+        yield manager
 
 
 # --- Tests for is_container_running ---
@@ -122,17 +130,22 @@ async def test_is_container_running_api_error(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-@patch("docker_manager.JavaServer.async_lookup")
+# Patch the JavaServer class itself, not just async_lookup
+@patch("docker_manager.JavaServer", new_callable=AsyncMock)
 async def test_wait_for_server_query_ready_success_java(
-    mock_async_lookup,
+    mock_java_server_class,  # This is now the mock of JavaServer class
     docker_manager_instance,
     mock_server_config,
     mock_proxy_settings,
 ):
     """Tests that the readiness probe succeeds for a Java server."""
-    mock_server = AsyncMock()
-    mock_server.async_status.return_value = MagicMock()  # Mock the status object
-    mock_async_lookup.return_value = mock_server
+    mock_server_instance = (
+        AsyncMock()
+    )  # This will be the instance returned by async_lookup
+    mock_server_instance.async_status.return_value = MagicMock()
+    mock_java_server_class.async_lookup.return_value = (
+        mock_server_instance  # Set behavior on the mock class
+    )
 
     result = await docker_manager_instance.wait_for_server_query_ready(
         mock_server_config,
@@ -140,24 +153,30 @@ async def test_wait_for_server_query_ready_success_java(
         mock_proxy_settings.query_timeout_seconds,
     )
     assert result is True
-    mock_async_lookup.assert_awaited_once()
-    mock_server.async_status.assert_awaited_once()
+    mock_java_server_class.async_lookup.assert_awaited_once()
+    # Assert call on the mock class
+    mock_server_instance.async_status.assert_awaited_once()
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-@patch("docker_manager.BedrockServer.async_lookup")
+# Patch the BedrockServer class itself, not just async_lookup
+@patch("docker_manager.BedrockServer", new_callable=AsyncMock)
 async def test_wait_for_server_query_ready_success_bedrock(
-    mock_async_lookup,
+    mock_bedrock_server_class,  # This is now the mock of BedrockServer class
     docker_manager_instance,
     mock_server_config,
     mock_proxy_settings,
 ):
     """Tests that the readiness probe succeeds for a Bedrock server."""
     mock_server_config.server_type = "bedrock"  # Change to bedrock
-    mock_server = AsyncMock()
-    mock_server.async_status.return_value = MagicMock()
-    mock_async_lookup.return_value = mock_server
+    mock_server_instance = (
+        AsyncMock()
+    )  # This will be the instance returned by async_lookup
+    mock_server_instance.async_status.return_value = MagicMock()
+    mock_bedrock_server_class.async_lookup.return_value = (
+        mock_server_instance  # Set behavior on the mock class
+    )
 
     result = await docker_manager_instance.wait_for_server_query_ready(
         mock_server_config,
@@ -165,15 +184,17 @@ async def test_wait_for_server_query_ready_success_bedrock(
         mock_proxy_settings.query_timeout_seconds,
     )
     assert result is True
-    mock_async_lookup.assert_awaited_once()
-    mock_server.async_status.assert_awaited_once()
+    mock_bedrock_server_class.async_lookup.assert_awaited_once()
+    # Assert call on the mock class
+    mock_server_instance.async_status.assert_awaited_once()
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-@patch("docker_manager.JavaServer.async_lookup", side_effect=Exception("Timeout"))
+# Patch the JavaServer class itself for the timeout test
+@patch("docker_manager.JavaServer", new_callable=AsyncMock)
 async def test_wait_for_server_query_ready_timeout(
-    mock_async_lookup,
+    mock_java_server_class,
     docker_manager_instance,
     mock_server_config,
     mock_proxy_settings,
@@ -181,15 +202,20 @@ async def test_wait_for_server_query_ready_timeout(
     """
     Tests that the readiness probe times out if the server never responds.
     """
-    # Ensure time.time() progresses enough to trigger a timeout
-    with patch("time.time", side_effect=[0, 0.6, 1.1, 1.6, 2.1]):
+    # Configure mock_java_server_class.async_lookup to always raise an exception
+    mock_java_server_class.async_lookup.side_effect = Exception("Timeout")
+
+    # Use time.time() patch to control the loop's progression
+    with patch("time.time", side_effect=[0, 1.0, 2.0, 3.0, 4.0]):
         result = await docker_manager_instance.wait_for_server_query_ready(
             mock_server_config,
-            mock_proxy_settings.server_ready_max_wait_time_seconds,  # 1 second
-            mock_proxy_settings.query_timeout_seconds,  # 0.5 second
+            mock_proxy_settings.server_ready_max_wait_time_seconds,  # 3.1 seconds
+            mock_proxy_settings.query_timeout_seconds,  # 1.0 second
         )
         assert result is False
-        assert mock_async_lookup.await_count > 1  # Should retry at least once
+        # Expected calls based on timeouts:
+        # Initial call at t=0, then calls at t=1.0, 2.0, 3.0. Total 4 calls.
+        assert mock_java_server_class.async_lookup.await_count == 4
 
 
 @pytest.mark.unit

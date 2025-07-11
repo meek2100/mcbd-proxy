@@ -92,7 +92,8 @@ class DockerManager:
                     server=server_config.name,
                     error=str(e),
                 )
-                await asyncio.sleep(2)  # Wait before retrying
+                # This sleep should use the query_timeout to match test expectations
+                await asyncio.sleep(query_timeout)  # FIX: Use query_timeout here
         logger.error(
             "Server did not become query-ready in time.", server=server_config.name
         )
