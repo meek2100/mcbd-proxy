@@ -1,7 +1,5 @@
-# tests/helpers.py
-
 import asyncio
-import time
+import os
 
 import aiodocker
 import pytest
@@ -12,12 +10,34 @@ JAVA_PROXY_PORT = 25565
 
 
 def get_proxy_host(env_config):
-    """Retrieves the Docker host IP for proxy connections."""
-    return env_config.get("DOCKER_HOST_IP", "127.0.0.1")
+    """
+    Determines the correct IP address or hostname for the proxy
+    based on the test environment configuration.
+    """
+    # 1. Check if running inside the test environment's container network.
+    #    This is typically set for CI and 'nb-tester' container.
+    if (
+        env_config.get("NB_TEST_MODE") == "container"
+        or os.environ.get("CI_MODE") == "true"
+    ):
+        return "nether-bridge"
+
+    # 2. Check for an explicit IP set for remote/local Docker host.
+    #    PROXY_IP is used in GitHub Actions (pr-validation.yml).
+    #    DOCKER_HOST_IP is set in local_env.py (used via conftest.py).
+    if "PROXY_IP" in env_config:
+        return env_config["PROXY_IP"]
+    if "DOCKER_HOST_IP" in env_config:
+        return env_config["DOCKER_HOST_IP"]
+
+    # 3. Fallback for local `pytest` runs without special config.
+    return "127.0.0.1"
 
 
 async def get_container_status(docker_client: aiodocker.Docker, container_name: str):
-    """Gets the Docker container's current status (e.g., 'running', 'exited')."""
+    """
+    Retrieves the current status of a Docker container asynchronously.
+    """
     try:
         container = await docker_client.containers.get(container_name)
         data = await container.show()
@@ -28,33 +48,29 @@ async def get_container_status(docker_client: aiodocker.Docker, container_name: 
         pytest.fail(f"Docker error getting status for {container_name}: {e.message}")
 
 
-async def wait_for_log_message(
-    docker_client: aiodocker.Docker,
-    container_name: str,
-    message: str,
-    timeout: int = 60,
-) -> bool:
-    """Waits for a specific log message to appear in a container's logs."""
+async def wait_for_log_message(docker_client, container_name, message, timeout=60):
+    """
+    Waits for a specific message to appear in a container's logs.
+    """
     try:
         container = await docker_client.containers.get(container_name)
         async for line in container.log(stdout=True, stderr=True, follow=True):
-            if message in line:
+            if message in line.decode("utf-8"):
                 return True
-            await asyncio.sleep(0.1)  # Yield control to allow other tasks to run
-            timeout -= 0.1
+            # Simple timeout check (can be more sophisticated)
+            timeout -= 0.1  # Reduce timeout for each small sleep
             if timeout <= 0:
-                print(f"Timeout waiting for message: '{message}' in {container_name}")
                 return False
-    except aiodocker.exceptions.DockerError as e:
-        pytest.fail(
-            f"Container '{container_name}' not found while waiting for logs: "
-            f"{e.message}"
-        )
+            await asyncio.sleep(0.1)  # Give control back to the event loop
+    except aiodocker.exceptions.DockerError:
+        pytest.fail(f"Container '{container_name}' not found during log wait.")
     return False
 
 
-async def wait_for_mc_server_ready(server_info: dict, timeout: int = 120) -> bool:
-    """Waits for a Minecraft server to become query-ready."""
+async def wait_for_mc_server_ready(server_info, timeout=120):
+    """
+    Waits for a Minecraft server to become query-ready via mcstatus.
+    """
     host, port, server_type = (
         server_info["host"],
         server_info["port"],
@@ -64,7 +80,7 @@ async def wait_for_mc_server_ready(server_info: dict, timeout: int = 120) -> boo
 
     for _ in range(timeout):
         try:
-            # Short timeout for each individual query attempt
+            # Use a short timeout for the lookup to quickly retry
             server = await ServerClass.async_lookup(f"{host}:{port}", timeout=1)
             await server.async_status()
             return True
@@ -73,36 +89,31 @@ async def wait_for_mc_server_ready(server_info: dict, timeout: int = 120) -> boo
     return False
 
 
-async def wait_for_proxy_to_be_healthy(
-    docker_client: aiodocker.Docker, timeout: int = 120
+async def wait_for_container_status(
+    docker_client: aiodocker.Docker,
+    container_name: str,
+    target_status: str,
+    timeout: int = 240,
 ) -> bool:
     """
-    Waits for the 'nether-bridge' container to report a 'healthy' status
-    from its Docker healthcheck.
+    Waits for a container to reach a specific target status.
     """
-    container_name = "nether-bridge"
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        try:
-            container = await docker_client.containers.get(container_name)
-            data = await container.show()
-            health_status = data["State"].get("Health", {}).get("Status")
-            if health_status == "healthy":
-                return True
-            await asyncio.sleep(5)  # Wait before checking again
-        except aiodocker.exceptions.DockerError as e:
-            if e.status == 404:
-                pytest.fail(f"Nether-bridge container not found: {e.message}")
-            else:
-                pytest.fail(f"Docker error checking health: {e.message}")
-        except Exception as e:
-            pytest.fail(f"Unexpected error checking health: {e}")
+    start_time = asyncio.get_event_loop().time()
+    while asyncio.get_event_loop().time() - start_time < timeout:
+        current_status = await get_container_status(docker_client, container_name)
+        if current_status == target_status:
+            return True
+        await asyncio.sleep(5)  # Poll every 5 seconds
     return False
 
 
-async def wait_for_proxy_to_be_ready(docker_client: aiodocker.Docker) -> bool:
+async def wait_for_proxy_to_be_ready(docker_client, timeout=60):
     """
-    Placeholder for backward compatibility.
-    Prefer `wait_for_proxy_to_healthy` for accurate health checks.
+    Waits for the nether-bridge proxy to be fully initialized.
     """
-    return await wait_for_proxy_to_be_healthy(docker_client)
+    return await wait_for_log_message(
+        docker_client,
+        "nether-bridge",
+        "Starting main proxy packet forwarding loop",
+        timeout,
+    )

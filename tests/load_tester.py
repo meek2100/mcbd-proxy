@@ -16,10 +16,16 @@ import docker
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from tests.docker_utils import ensure_container_stopped
-from tests.helpers import (
-    BEDROCK_UNCONNECTED_PING,
-    get_java_handshake_and_status_request_packets,
-    get_proxy_host,
+from tests.helpers import (  # Removed get_proxy_host from here
+    BEDROCK_PROXY_PORT,
+    JAVA_PROXY_PORT,
+)
+
+# --- Constants ---
+# The raw packet for a Bedrock Edition "Unconnected Ping".
+BEDROCK_UNCONNECTED_PING = (  # Moved here
+    b"\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\x00\xfe\xfe\xfe\xfe"
+    b"\xfd\xfd\xfd\xfd\x12\x34\x56\x78\x00\x00\x00\x00\x00\x00\x00\x00"
 )
 
 
@@ -27,6 +33,53 @@ from tests.helpers import (
 class ServerType(Enum):
     JAVA = "java"
     BEDROCK = "bedrock"
+
+
+def _encode_varint(value):  # Moved here and made private
+    """Helper to encode VarInt for Java protocol."""
+    buf = b""
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if value != 0:
+            byte |= 0x80
+        buf += bytes([byte])
+        if value == 0:
+            break
+    return buf
+
+
+def _get_java_handshake_and_status_request_packets(host, port):  # Moved here & private
+    """Constructs the two packets needed to request a status from a Java server."""
+    server_address_bytes = host.encode("utf-8")
+    handshake_payload = (
+        _encode_varint(754)  # Protocol version
+        + _encode_varint(len(server_address_bytes))
+        + server_address_bytes
+        + port.to_bytes(2, byteorder="big")
+        + _encode_varint(1)  # Next state: status
+    )
+    handshake_packet = (
+        _encode_varint(len(handshake_payload)) + b"\x00" + handshake_payload
+    )
+
+    status_request_payload = b""
+    status_request_packet = (
+        _encode_varint(len(status_request_payload)) + b"\x00" + status_request_payload
+    )
+
+    return handshake_packet, status_request_packet
+
+
+def get_proxy_host_for_load_tester():
+    """
+    Determines the correct IP address or hostname for the proxy from within
+    the load tester container context.
+    """
+    if os.environ.get("NB_TEST_MODE") == "container":
+        return "nether-bridge"
+    # Fallback to localhost for local direct execution
+    return "127.0.0.1"
 
 
 def simulate_single_client(
@@ -38,7 +91,6 @@ def simulate_single_client(
 ):
     """
     Simulates a single client connecting to the proxy.
-
     If chaos mode is enabled, a percentage of clients will misbehave by
     connecting and then abruptly disconnecting to test the proxy's error
     handling and session cleanup.
@@ -78,7 +130,7 @@ def simulate_single_client(
                     (
                         handshake,
                         status_req,
-                    ) = get_java_handshake_and_status_request_packets(host, port)
+                    ) = _get_java_handshake_and_status_request_packets(host, port)
                     sock.sendall(handshake)
                     sock.sendall(status_req)
                     sock.recv(4096)
@@ -88,7 +140,10 @@ def simulate_single_client(
                     time.sleep(2)
                     continue
         except Exception as e:
-            return f"FAILURE: Could not connect or stay connected - {type(e).__name__}: {e}"  # noqa: E501
+            return (
+                f"FAILURE: Could not connect or stay connected - "
+                f"{type(e).__name__}: {e}"
+            )
         finally:
             if sock:
                 sock.close()
@@ -188,8 +243,10 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    target_host = get_proxy_host()
-    port = 25565 if args.server_type == ServerType.JAVA else 19132
+    target_host = get_proxy_host_for_load_tester()
+    port = (
+        JAVA_PROXY_PORT if args.server_type == ServerType.JAVA else BEDROCK_PROXY_PORT
+    )
     target_container = (
         "mc-java" if args.server_type == ServerType.JAVA else "mc-bedrock"
     )
