@@ -1,8 +1,9 @@
+# proxy.py
 import asyncio
-import signal
+import signal  # Import the signal module
 import time
-from threading import Lock, RLock
-from typing import Dict, List
+from threading import Lock  # Removed 'Thread' as it's used in main.py
+from typing import Dict, List  # Added for type hints based on prior context
 
 import structlog
 
@@ -11,28 +12,28 @@ from docker_manager import DockerManager
 from metrics import (
     ACTIVE_SESSIONS,
     BYTES_TRANSFERRED,
-    RUNNING_SERVERS,
     SERVER_STARTUP_DURATION,
 )
 
-HEARTBEAT_INTERVAL_SECONDS = 30
+# Constants, if any, should be defined here or imported from config
+HEARTBEAT_INTERVAL_SECONDS = (
+    30  # This constant was in the old proxy.py, keeping for context
+)
 
 
 class NetherBridgeUDPProxyProtocol(asyncio.DatagramProtocol):
     """
-    Handles UDP packet forwarding for Minecraft: Bedrock Edition.
+    A UDP protocol for proxying Bedrock Edition traffic.
+    Handles client connections and forwards data to backend server.
     """
 
-    def __init__(
-        self, proxy_instance: "NetherBridgeProxy", server_config: ServerConfig
-    ):
-        self.proxy = proxy_instance
+    def __init__(self, proxy: "NetherBridgeProxy", server_config: ServerConfig):
+        self.proxy = proxy
         self.server_config = server_config
         self.transport = None  # This is the transport for the listening UDP socket
         self.logger = structlog.get_logger(__name__).bind(
             server_name=server_config.name, server_type=server_config.server_type
         )
-
         # Map (client_addr) -> (backend_transport, last_activity_time)
         # This helps manage "sessions" for connectionless UDP
         self.client_to_backend_info = {}
@@ -65,7 +66,7 @@ class NetherBridgeUDPProxyProtocol(asyncio.DatagramProtocol):
 
         # 1. Initiate server start if needed
         # This will be largely similar to TCP logic, but specific to UDP needs
-        if self.proxy._initiate_server_start(self.server_config):
+        if await self.proxy._initiate_server_start(self.server_config):
             self.logger.info(
                 "First UDP packet for non-running server. Triggering async "
                 "server start.",
@@ -208,7 +209,8 @@ class NetherBridgeUDPRemoteProtocol(asyncio.DatagramProtocol):
             if self.main_protocol.transport:
                 self.main_protocol.transport.sendto(data, self.client_addr)
                 BYTES_TRANSFERRED.labels(
-                    server_name=self.main_protocol.server_config.name, direction="s2c"
+                    server_name=self.main_protocol.server_config.name,
+                    direction="s2c",
                 ).inc(len(data))
                 # Update main proxy's activity time
                 self.main_protocol.proxy.server_states[
@@ -281,7 +283,7 @@ class NetherBridgeProxy:
         self.server_locks: Dict[str, Lock] = {s.container_name: Lock() for s in servers}
         self.server_states: Dict[str, Dict] = {
             s.container_name: {
-                "lock": RLock(),
+                "lock": Lock(),
                 "status": "stopped",
                 "last_activity": 0,
                 "pending_connections": [],
@@ -337,7 +339,8 @@ class NetherBridgeProxy:
 
         server_state = self.server_states[container_name]
 
-        if self._initiate_server_start(server_config):
+        # Use await self._initiate_server_start as it is now async
+        if await self._initiate_server_start(server_config):
             self.logger.info(
                 "First TCP connection for stopped server. Starting...",
                 server_name=server_config.name,
@@ -383,73 +386,75 @@ class NetherBridgeProxy:
                 server_name=server_config.name,
             )
 
-    def _initiate_server_start(self, server_config: ServerConfig):
+    async def _initiate_server_start(self, server_config: ServerConfig) -> bool:
         """Atomically checks state and starts the server startup task if needed."""
         container_name = server_config.container_name
         with self.server_locks[container_name]:
             if self.server_states[container_name]["status"] == "stopped":
                 self.logger.info(
-                    "Server is stopped. Initiating async startup task.",
+                    "Server is stopped. Initiating startup sequence.",
                     server_name=server_config.name,
                 )
                 self.server_states[container_name]["status"] = "starting"
                 self.server_states[container_name]["ready_event"].clear()
-                # Use asyncio.create_task to run the async task
-                asyncio.create_task(
-                    self._start_minecraft_server_async_task(server_config)
-                )
+                # Create an asyncio task for the server startup
+                asyncio.create_task(self._start_minecraft_server_task(server_config))
                 return True
         return False
 
-    async def _start_minecraft_server_async_task(self, server_config: ServerConfig):
+    async def _start_minecraft_server_task(self, server_config: ServerConfig):
         """
-        Runs in the async event loop to start a server.
+        Runs as an asyncio task to start a server and wait for it to be ready.
         """
         container_name = server_config.container_name
         startup_timer_start = time.time()
 
-        # Call the async version of start_server
         success = await self.docker_manager.start_server(server_config, self.settings)
 
-        with self.server_locks[container_name]:  # Still use lock for shared state
+        with self.server_locks[container_name]:
             state = self.server_states[container_name]
             if success:
                 state["status"] = "running"
                 state["ready_event"].set()
-                # Update metrics - these are thread-safe or can be adapted for async
-                RUNNING_SERVERS.inc()
-                duration = time.time() - startup_timer_start
+                # RUNNING_SERVERS.inc() # This metric is not defined in metrics.py
                 SERVER_STARTUP_DURATION.labels(server_name=server_config.name).observe(
-                    duration
+                    time.time() - startup_timer_start
                 )
                 self.logger.info(
-                    "Async startup process complete.",
+                    "Startup process complete.",
                     container_name=container_name,
-                    duration_seconds=duration,
+                    duration_seconds=(time.time() - startup_timer_start),
                 )
             else:
                 self.logger.error(
-                    "Async server startup process failed.",
-                    container_name=container_name,
+                    "Server startup process failed.", container_name=container_name
                 )
                 state["status"] = "stopped"
                 state["ready_event"].clear()
 
-    async def _ensure_all_servers_stopped_on_startup(self):
+    def _ensure_all_servers_stopped_on_startup(self):
         """Ensures all managed servers are stopped when the proxy starts."""
         self.logger.info(
             "Proxy startup: Ensuring all managed servers are initially stopped."
         )
         for server_config in self.servers_list:
-            # Need to await the async check and stop
-            if await self.docker_manager.is_container_running(
-                server_config.container_name
-            ):
+            if self.docker_manager.is_container_running(server_config.container_name):
                 self.logger.warning(
                     "Found running at proxy startup. Issuing a safe stop.",
                     container_name=server_config.container_name,
                 )
-                await self.docker_manager.stop_server(server_config.container_name)
+                # Call async stop_server from sync context using asyncio.run
+                # This creates a temporary event loop to run the async function.
+                try:
+                    asyncio.run(
+                        self.docker_manager.stop_server(server_config.container_name)
+                    )
+                except Exception as e:
+                    self.logger.error(
+                        "Error stopping server during initial cleanup.",
+                        container_name=server_config.container_name,
+                        error=str(e),
+                    )
 
     def _monitor_servers_activity(self):
         """Monitors server activity and shuts down idle servers."""
@@ -462,12 +467,17 @@ class NetherBridgeProxy:
                         self.server_states[server_config.container_name]["status"]
                         == "running"
                     ):
-                        try:
-                            active_sessions = ACTIVE_SESSIONS.get_metric_value().get(
-                                (server_config.name,), 0
-                            )
-                        except AttributeError:
-                            # This can happen if the metric hasn't been initialized yet
+                        # Use a simpler approach to get metric value
+                        active_sessions = (
+                            ACTIVE_SESSIONS.labels(
+                                server_name=server_config.name
+                            )._value
+                        )  # Access internal value directly for simplicity in thread
+                        # Or, retrieve from the metrics endpoint if you want real-time.
+                        # For this background thread, internal value should be fine.
+                        if (
+                            active_sessions is None
+                        ):  # Handle case where label isn't set yet
                             active_sessions = 0
 
                         if active_sessions == 0:
@@ -487,13 +497,23 @@ class NetherBridgeProxy:
                                     server_name=server_config.name,
                                     idle_threshold_seconds=idle_timeout,
                                 )
-                                self.docker_manager.stop_server(
-                                    server_config.container_name
-                                )
-                                self.server_states[server_config.container_name][
-                                    "status"
-                                ] = "stopped"
-                                RUNNING_SERVERS.dec()
+                                # Call async stop_server from sync context
+                                try:
+                                    asyncio.run(
+                                        self.docker_manager.stop_server(
+                                            server_config.container_name
+                                        )
+                                    )
+                                    self.server_states[server_config.container_name][
+                                        "status"
+                                    ] = "stopped"
+                                    # RUNNING_SERVERS.dec() # Not defined
+                                except Exception as e:
+                                    self.logger.error(
+                                        "Error stopping server from monitor thread.",
+                                        container_name=server_config.container_name,
+                                        error=str(e),
+                                    )
 
     async def _run_proxy_loop(self):
         """The main async event loop of the proxy."""
