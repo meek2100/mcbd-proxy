@@ -1,3 +1,5 @@
+# proxy.py
+
 import asyncio
 import time
 from pathlib import Path
@@ -71,12 +73,14 @@ class NetherBridgeProxy:
         running_servers_metric,  # Prometheus metric for running servers
         bytes_transferred_metric,  # Prometheus metric for bytes transferred
         server_startup_duration_metric,  # Prometheus metric for startup duration
+        config_path: Path,  # Path for heartbeat file management
     ):
         self.settings = settings
         self.servers_list = servers_list
         self.docker_manager = docker_manager
         self.shutdown_event = shutdown_event
         self.reload_event = reload_event
+        self.config_path = config_path  # Store the config path
         self.servers_config_map = {s.listen_port: s for s in self.servers_list}
 
         # Store Prometheus metric objects
@@ -106,19 +110,6 @@ class NetherBridgeProxy:
         self.tcp_listeners = []
         self.udp_listeners = []
 
-    async def _is_server_ready_for_traffic(
-        self, server_config: ServerConfig, settings: ProxySettings
-    ) -> bool:
-        """
-        Polls a Minecraft server using mcstatus until it responds or a timeout
-        is reached, confirming it's ready for traffic.
-        """
-        return await self.docker_manager.wait_for_server_query_ready(
-            server_config,
-            settings.server_ready_max_wait_time_seconds,
-            settings.query_timeout_seconds,
-        )
-
     async def _proxy_data(self, reader, writer, session_info):
         """Forwards data between client and server, updating session activity."""
         client_addr = session_info["client_addr"]
@@ -137,11 +128,12 @@ class NetherBridgeProxy:
 
                 async with self.session_lock:
                     # Check if session still exists (might be closed by other task)
-                    if (
+                    session_key = (
                         client_addr,
                         listen_port,
                         session_info["protocol"],
-                    ) not in self.active_sessions:
+                    )
+                    if session_key not in self.active_sessions:
                         break
 
                     session_info["last_packet_time"] = time.time()
@@ -151,9 +143,10 @@ class NetherBridgeProxy:
                 # Determine direction based on writer object reference
                 is_client_to_server = writer is session_info.get("server_writer_tcp")
                 direction = "c2s" if is_client_to_server else "s2c"
-                self.bytes_transferred_metric.labels(
-                    server_name=server_config.name, direction=direction
-                ).inc(len(data))
+                if server_config:
+                    self.bytes_transferred_metric.labels(
+                        server_name=server_config.name, direction=direction
+                    ).inc(len(data))
 
                 writer.write(data)
                 await writer.drain()
@@ -180,7 +173,7 @@ class NetherBridgeProxy:
             )
         finally:
             # Ensure the writers are closed properly
-            if not writer.is_closing():
+            if writer and not writer.is_closing():
                 writer.close()
                 await writer.wait_closed()
             log.debug(
@@ -197,19 +190,23 @@ class NetherBridgeProxy:
             if session_info:
                 server_config = self.servers_config_map.get(listen_port)
                 if server_config:
-                    self.active_sessions_metric.labels(server_config.name).dec()
+                    self.active_sessions_metric.labels(
+                        server_name=server_config.name
+                    ).dec()
                 self.server_states[container_name]["sessions"] -= 1
 
                 # Cancel associated tasks
                 if "client_to_server_task" in session_info:
                     session_info["client_to_server_task"].cancel()
                     await asyncio.gather(
-                        session_info["client_to_server_task"], return_exceptions=True
+                        session_info["client_to_server_task"],
+                        return_exceptions=True,
                     )
                 if "server_to_client_task" in session_info:
                     session_info["server_to_client_task"].cancel()
                     await asyncio.gather(
-                        session_info["server_to_client_task"], return_exceptions=True
+                        session_info["server_to_client_task"],
+                        return_exceptions=True,
                     )
 
                 # Close writers
@@ -252,7 +249,7 @@ class NetherBridgeProxy:
                 )
                 if not start_success:
                     log.error(
-                        "Server failed to become ready. Closing client connection.",
+                        "Server failed to become ready.Closing client connection.",
                         client_addr=client_addr,
                         container_name=container_name,
                     )
@@ -431,7 +428,9 @@ class NetherBridgeProxy:
             if session_info:
                 server_config = self.servers_config_map.get(listen_port)
                 if server_config:
-                    self.active_sessions_metric.labels(server_config.name).dec()
+                    self.active_sessions_metric.labels(
+                        server_name=server_config.name
+                    ).dec()
                 self.server_states[container_name]["sessions"] -= 1
 
                 if (
@@ -593,11 +592,18 @@ class NetherBridgeProxy:
             sessions_to_check = list(self.active_sessions.items())
             for session_key, session_info in sessions_to_check:
                 container_name = session_info["target_container"]
+                # Get the specific idle timeout if defined for this server,
+                # else use the global one.
+                server_specific_idle_timeout = next(
+                    (
+                        s.idle_timeout_seconds
+                        for s in self.servers_list
+                        if s.listen_port == session_info["listen_port"]
+                    ),
+                    None,
+                )
                 idle_timeout = (
-                    self.servers_config_map.get(
-                        session_info["listen_port"]
-                    ).idle_timeout_seconds
-                    or self.settings.idle_timeout_seconds
+                    server_specific_idle_timeout or self.settings.idle_timeout_seconds
                 )
 
                 if current_time - session_info["last_packet_time"] > idle_timeout:
@@ -626,6 +632,7 @@ class NetherBridgeProxy:
                     state = self.server_states[container_name]
 
                     if state["status"] == "running" and state["sessions"] == 0:
+                        # Get the specific idle timeout for this server
                         idle_timeout = (
                             server_conf.idle_timeout_seconds
                             or self.settings.idle_timeout_seconds
@@ -738,7 +745,7 @@ class NetherBridgeProxy:
         monitor_task = asyncio.create_task(self._monitor_activity())
 
         # Heartbeat for health checks
-        heartbeat_file = Path("config") / "heartbeat.txt"
+        heartbeat_file = self.config_path / "heartbeat.txt"
         log.info("Heartbeat file location set.", file_path=heartbeat_file)
 
         last_heartbeat_time = time.time()
@@ -748,10 +755,9 @@ class NetherBridgeProxy:
             while not self.shutdown_event.is_set():
                 if self.reload_event.is_set():
                     log.info("Reloading configuration (proxy initiated)...")
-                    # Pass new settings/servers, actual loading happens in main.py
-                    # This implies main.py passes these to reload_configuration
-                    # when it triggers reload_event. This will be handled by
-                    # main.py which calls this method.
+                    # This signal is handled in main.py, which reloads and
+                    # calls _reload_configuration on the proxy.
+                    # Clear event here as main.py will trigger the reload method
                     self.reload_event.clear()
 
                 # Update heartbeat file
@@ -793,10 +799,6 @@ class NetherBridgeProxy:
                 await asyncio.gather(monitor_task, return_exceptions=True)
                 log.info("Monitor task terminated.")
 
-            # Close all active sessions
-            await self._shutdown_all_sessions()
-
-            # Close all listeners
-            await self._close_listeners()
-
+            # Sessions and listeners are closed by main.py's finally block
+            # after proxy.run() returns. This avoids duplicate closing logic.
             log.info("Proxy run loop finished.")

@@ -1,7 +1,8 @@
 # main.py
+
 import argparse
 import asyncio
-import json  # Added import for json
+import json
 import os
 import signal
 import sys
@@ -9,7 +10,6 @@ import time
 from pathlib import Path
 
 import structlog
-from prometheus_client import start_http_server
 from structlog.dev import ConsoleRenderer
 from structlog.processors import JSONRenderer
 from structlog.stdlib import LoggerFactory, get_logger
@@ -21,6 +21,7 @@ from metrics import (
     BYTES_TRANSFERRED,
     RUNNING_SERVERS,
     SERVER_STARTUP_DURATION,
+    start_metrics_server,  # Import the function
 )
 from proxy import NetherBridgeProxy
 
@@ -56,7 +57,9 @@ def perform_health_check(config_path: Path) -> None:
         last_modified_time = os.path.getmtime(heartbeat_file)
         current_time = time.time()
         # If the heartbeat file hasn't been updated in 60 seconds,
-        # consider it unhealthy
+        # consider it unhealthy (this threshold should ideally come from config)
+        # For simplicity, using a hardcoded value for the healthcheck here.
+        # The proxy itself will use `healthcheck_stale_threshold_seconds` from config.
         if (current_time - last_modified_time) > 60:
             log.error(
                 "Health check failed: Heartbeat is stale.",
@@ -92,21 +95,23 @@ async def main():
         base_dir = Path(sys.executable).parent
     else:
         # Running in a development environment
-        base_dir = Path(__file__).parent.parent
+        base_dir = Path(__file__).parent
 
     config_path = base_dir / "config"
+    # Ensure config directory exists for heartbeat file
     config_path.mkdir(exist_ok=True)
 
     if args.healthcheck:
         perform_health_check(config_path)  # This will exit
         return
 
-    app_config = load_application_config(base_dir)
+    # Load application config
+    proxy_settings, server_configs = load_application_config()
 
     log.info(
         "NetherBridge Proxy starting...",
-        settings=app_config.proxy_settings,
-        servers=[s.name for s in app_config.server_configs],
+        settings=proxy_settings,
+        servers=[s.name for s in server_configs],
     )
 
     # Log application build metadata if available
@@ -124,10 +129,10 @@ async def main():
     reload_event = asyncio.Event()
 
     try:
-        docker_manager = DockerManager(app_config.docker_client_timeout)
+        docker_manager = DockerManager(proxy_settings.docker_url)
         proxy = NetherBridgeProxy(
-            app_config.proxy_settings,
-            app_config.server_configs,
+            proxy_settings,
+            server_configs,
             docker_manager,
             shutdown_event,
             reload_event,
@@ -135,16 +140,14 @@ async def main():
             RUNNING_SERVERS,
             BYTES_TRANSFERRED,
             SERVER_STARTUP_DURATION,
+            config_path,  # Pass the config_path for heartbeat file management
         )
 
-        # Start Prometheus metrics server
-        start_http_server(app_config.proxy_settings.metrics_port)
-        log.info(
-            "Prometheus metrics server started.",
-            port=app_config.proxy_settings.metrics_port,
-        )
-
-        # Removed setup_metrics_middleware(proxy) as metrics are passed directly
+        # Start Prometheus metrics server if enabled
+        if proxy_settings.prometheus_enabled:
+            start_metrics_server(proxy_settings.prometheus_port)
+        else:
+            log.info("Prometheus metrics server is disabled by configuration.")
 
         # Signal handlers for graceful shutdown and reload
         loop = asyncio.get_running_loop()
@@ -162,10 +165,6 @@ async def main():
                 loop.add_signal_handler(sig, handle_signal)
             loop.add_signal_handler(signal.SIGHUP, handle_reload_signal)
         else:
-            # On Windows, SIGINT is handled by asyncio, map a custom signal
-            # or rely on Ctrl+C for graceful shutdown in development.
-            # For production on Windows, consider other shutdown mechanisms
-            # (e.g., orchestrator stopping the container).
             log.warning(
                 "Signal handlers for SIGTERM/SIGHUP are not available on Windows."
             )
@@ -173,37 +172,24 @@ async def main():
         # Main proxy task
         proxy_task = asyncio.create_task(proxy.run())
 
-        # Heartbeat for health checks
-        heartbeat_file = config_path / "heartbeat.txt"
-        log.info("Heartbeat file location set.", file_path=heartbeat_file)
-
-        # Periodically update heartbeat and handle reloads
+        # Periodically check for reload requests from signal and update heartbeat
         while not shutdown_event.is_set():
             if reload_event.is_set():
-                log.info("Reloading configuration...")
-                # Re-load application config, then pass to proxy's reload method
-                reloaded_app_config = load_application_config(base_dir)
+                log.info("Reloading configuration (main loop detected)...")
+                # Reload configuration and pass to proxy
+                reloaded_proxy_settings, reloaded_server_configs = (
+                    load_application_config()
+                )
                 await proxy._reload_configuration(
-                    reloaded_app_config.proxy_settings,
-                    reloaded_app_config.server_configs,
+                    reloaded_proxy_settings,
+                    reloaded_server_configs,
                 )
                 reload_event.clear()
                 log.info("Configuration reloaded.")
 
-            # Update heartbeat file
-            current_time = time.time()
+            # Short sleep to prevent busy-waiting if no signals
             try:
-                heartbeat_file.parent.mkdir(parents=True, exist_ok=True)
-                heartbeat_file.write_text(str(int(current_time)))
-            except Exception as e:
-                log.warning(
-                    "Could not update heartbeat file from main loop.",
-                    path=str(heartbeat_file),
-                    error=str(e),
-                )
-
-            try:
-                await asyncio.wait_for(shutdown_event.wait(), timeout=1)
+                await asyncio.wait_for(shutdown_event.wait(), timeout=0.1)
             except asyncio.TimeoutError:
                 pass  # Continue loop if no shutdown event
 
@@ -216,24 +202,26 @@ async def main():
         sys.exit(1)
     finally:
         if proxy:
-            log.info("Shutting down proxy.")
-            # Ensure proxy listeners are closed if they were started
+            log.info("Shutting down proxy gracefully (from main).")
+            # Ensure proxy listeners are closed and sessions terminated
             await proxy._close_listeners()
+            await proxy._shutdown_all_sessions()
         if docker_manager:
             log.info("Closing Docker manager client.")
             await docker_manager.close()
         log.info("NetherBridge Proxy stopped.")
-        if heartbeat_file.exists():
-            # Only unlink if it's the main process and not healthcheck
-            if not args.healthcheck:
-                heartbeat_file.unlink(missing_ok=True)  # Clean up heartbeat file
+        # Clean up heartbeat file if it was created by the main process
+        heartbeat_file_path = config_path / "heartbeat.txt"
+        if heartbeat_file_path.exists():
+            heartbeat_file_path.unlink(missing_ok=True)
+            log.info("Cleaned up heartbeat file.", path=heartbeat_file_path)
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        structlog.get_logger().info("Application interrupted by user.")
+        structlog.get_logger().info("Application interrupted by user (Ctrl+C).")
     except Exception:
         structlog.get_logger().exception("Application terminated due to error.")
         sys.exit(1)
