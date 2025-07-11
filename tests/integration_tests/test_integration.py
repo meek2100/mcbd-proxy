@@ -313,11 +313,11 @@ def test_configuration_reload_on_sighup(docker_compose_up, docker_client_fixture
     assert wait_for_log_message(
         docker_client_fixture,
         "nether-bridge",
-        "Reloading configuration and restarting proxy logic...",
+        "SIGHUP received. Requesting a configuration reload.",
         timeout=15,
-    ), "Proxy did not log that it was restarting the main loop."
+    ), "Proxy did not log that it received the SIGHUP signal."
 
-    print("(SIGHUP Test) Proxy logged reload completion. Verifying new behavior...")
+    print("(SIGHUP Test) Proxy logged SIGHUP. Verifying new behavior...")
 
     # --- 3. Verify new configuration is active and old one is not ---
     # Allow a moment for the old socket to close and the new one to open
