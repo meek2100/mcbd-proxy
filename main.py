@@ -55,15 +55,18 @@ def perform_health_check():
     if not HEARTBEAT_FILE.exists():
         logger.error("Health check failed: Heartbeat file not found.")
         sys.exit(1)
+        return  # Added return to fix test fall-through
 
     try:
         last_heartbeat = HEARTBEAT_FILE.read_text()
         if time.time() - float(last_heartbeat) > 60:
             logger.error("Health check failed: Heartbeat is stale.")
             sys.exit(1)
+            return  # Added return to fix test fall-through
     except (ValueError, FileNotFoundError):
         logger.error("Health check failed: Could not read heartbeat file.")
         sys.exit(1)
+        return  # Added return to fix test fall-through
 
     logger.info("Health check passed.")
     sys.exit(0)
