@@ -18,6 +18,249 @@ from metrics import (
 HEARTBEAT_INTERVAL_SECONDS = 30
 
 
+class NetherBridgeUDPProxyProtocol(asyncio.DatagramProtocol):
+    """
+    Handles UDP packet forwarding for Minecraft: Bedrock Edition.
+    """
+
+    def __init__(
+        self, proxy_instance: "NetherBridgeProxy", server_config: ServerConfig
+    ):
+        self.proxy = proxy_instance
+        self.server_config = server_config
+        self.transport = None  # This is the transport for the listening UDP socket
+        self.logger = structlog.get_logger(__name__).bind(
+            server_name=server_config.name, server_type=server_config.server_type
+        )
+
+        # Map (client_addr) -> (backend_transport, last_activity_time)
+        # This helps manage "sessions" for connectionless UDP
+        self.client_to_backend_info = {}
+
+    def connection_made(self, transport):
+        """Called when the listening UDP socket is ready."""
+        self.transport = transport
+        self.logger.info(
+            "UDP proxy listener started.", listen_port=self.server_config.listen_port
+        )
+
+    def datagram_received(self, data, client_addr):
+        """Called when a UDP datagram is received from a client."""
+        self.proxy.logger.debug(
+            "UDP packet received from client",
+            client_addr=client_addr,
+            packet_size=len(data),
+        )
+
+        container_name = self.server_config.container_name
+        server_state = self.proxy.server_states[container_name]
+
+        asyncio.create_task(self._handle_udp_packet(data, client_addr, server_state))
+
+    async def _handle_udp_packet(
+        self, data: bytes, client_addr: tuple, server_state: dict
+    ):
+        """Asynchronously handles a received UDP packet."""
+        container_name = self.server_config.container_name
+
+        # 1. Initiate server start if needed
+        # This will be largely similar to TCP logic, but specific to UDP needs
+        if self.proxy._initiate_server_start(self.server_config):
+            self.logger.info(
+                "First UDP packet for non-running server. Triggering async "
+                "server start.",  # Fixed line 70
+                container_name=container_name,
+            )
+
+        # 2. Wait for the server to be ready
+        # For UDP, we need to ensure the server is ready before forwarding.
+        # This might involve buffering packets for a short period.
+        try:
+            # We don't want to block the entire event loop here indefinitely if
+            # the server never starts. Use a timeout for waiting for the ready event.
+            await asyncio.wait_for(
+                server_state["ready_event"].wait(),
+                timeout=self.proxy.settings.server_ready_max_wait_time_seconds,
+            )
+            if not server_state["ready_event"].is_set():
+                # This means timeout was hit but event not set
+                self.logger.warning(
+                    "Server not ready in time for UDP packet, dropping.",
+                    container_name=container_name,
+                )
+                return
+        except asyncio.TimeoutError:
+            self.logger.error(
+                "Server did not become ready for UDP packet within timeout. "
+                "Packet dropped.",
+                container_name=container_name,
+            )
+            return
+        except Exception as e:
+            self.logger.error(
+                "Error waiting for server readiness for UDP packet. Packet dropped.",
+                container_name=container_name,
+                error=str(e),
+            )
+            return
+
+        # 3. Forward packet to backend server
+        try:
+            backend_transport = self.client_to_backend_info.get(client_addr)
+
+            if not backend_transport:
+                # Create a new UDP endpoint to the backend server for this client
+                # session
+                self.logger.debug(
+                    "Creating new UDP backend connection for client.",
+                    client_addr=client_addr,
+                )
+                loop = asyncio.get_running_loop()
+                _, protocol = await loop.create_datagram_endpoint(
+                    lambda: NetherBridgeUDPRemoteProtocol(self, client_addr),
+                    remote_addr=(
+                        self.server_config.container_name,
+                        self.server_config.internal_port,
+                    ),
+                )
+                backend_transport = protocol.transport
+                self.client_to_backend_info[client_addr] = (
+                    backend_transport,
+                    time.time(),
+                )
+                ACTIVE_SESSIONS.labels(server_name=self.server_config.name).inc()
+
+            backend_transport.sendto(data)
+            BYTES_TRANSFERRED.labels(
+                server_name=self.server_config.name, direction="c2s"
+            ).inc(len(data))
+            self.proxy.server_states[container_name]["last_activity"] = time.time()
+            self.client_to_backend_info[client_addr] = (
+                backend_transport,
+                time.time(),
+            )  # Update last activity for this client
+
+        except Exception as e:
+            self.logger.error(
+                "Error forwarding UDP packet to backend server.",
+                client_addr=client_addr,
+                error=str(e),
+                exc_info=True,
+            )
+            # Consider closing the backend transport for this client if there's a
+            # permanent error
+            if client_addr in self.client_to_backend_info:
+                try:
+                    self.client_to_backend_info[client_addr][0].close()
+                except Exception as close_e:
+                    self.logger.warning(
+                        "Error closing backend UDP transport.",
+                        client_addr=client_addr,
+                        error=str(close_e),
+                    )
+                finally:
+                    del self.client_to_backend_info[client_addr]
+                    ACTIVE_SESSIONS.labels(server_name=self.server_config.name).dec()
+
+    def error_received(self, exc):
+        """Called when a send or receive operation raises an OSError."""
+        self.logger.error("UDP listener error received", error=str(exc), exc_info=True)
+
+    def connection_lost(self, exc):
+        """Called when the listening socket is closed or loses connection."""
+        self.logger.info("UDP proxy listener connection lost.", exc=str(exc))
+        # No need to explicitly close client backend transports here, as they're
+        # managed per packet/session.
+
+
+class NetherBridgeUDPRemoteProtocol(asyncio.DatagramProtocol):
+    """
+    Handles UDP packet forwarding from the backend server back to the client.
+    Each instance represents a connection from a client to the backend server.
+    """
+
+    def __init__(self, main_protocol: NetherBridgeUDPProxyProtocol, client_addr: tuple):
+        self.main_protocol = main_protocol
+        self.client_addr = client_addr
+        self.transport = None  # This is the transport for the backend server socket
+        self.logger = structlog.get_logger(__name__).bind(
+            server_name=main_protocol.server_config.name, client_addr=client_addr
+        )
+
+    def connection_made(self, transport):
+        """Called when the UDP socket to the backend server is ready."""
+        self.transport = transport
+        self.logger.debug(
+            "UDP backend connection made to server.",
+            remote_addr=transport.get_extra_info("peername"),
+        )
+
+    def datagram_received(self, data, server_addr):
+        """Called when a datagram is received from the backend server."""
+        self.logger.debug(
+            "UDP packet received from backend server",
+            server_addr=server_addr,
+            packet_size=len(data),
+        )
+
+        # Forward the data back to the original client
+        try:
+            if self.main_protocol.transport:
+                self.main_protocol.transport.sendto(data, self.client_addr)
+                BYTES_TRANSFERRED.labels(
+                    server_name=self.main_protocol.server_config.name, direction="s2c"
+                ).inc(len(data))
+                # Update main proxy's activity time
+                self.main_protocol.proxy.server_states[
+                    self.main_protocol.server_config.container_name
+                ]["last_activity"] = time.time()
+            else:
+                self.logger.warning(
+                    "Main UDP listener transport not available to send data back to"
+                    " client."
+                )
+        except Exception as e:
+            self.logger.error(
+                "Error sending UDP packet back to client.",
+                client_addr=self.client_addr,
+                error=str(e),
+                exc_info=True,
+            )
+
+    def error_received(self, exc):
+        """Called when a send or receive operation on the backend socket raises an
+        OSError.
+        """
+        self.logger.error("UDP backend error received", error=str(exc), exc_info=True)
+        # Consider cleaning up the client's backend info in the main protocol
+        if self.client_addr in self.main_protocol.client_to_backend_info:
+            try:
+                self.main_protocol.client_to_backend_info[self.client_addr][0].close()
+            except Exception as close_e:
+                self.logger.warning(
+                    "Error closing remote backend UDP transport after error.",
+                    error=str(close_e),
+                )
+            finally:
+                del self.main_protocol.client_to_backend_info[self.client_addr]
+                ACTIVE_SESSIONS.labels(
+                    server_name=self.main_protocol.server_config.name
+                ).dec()
+
+    def connection_lost(self, exc):
+        """Called when the UDP socket to the backend server is closed or loses
+        connection.
+        """
+        self.logger.info("UDP backend connection lost.", exc=str(exc))
+        # When the backend connection to the server is lost, we should
+        # invalidate the client's mapping
+        if self.client_addr in self.main_protocol.client_to_backend_info:
+            del self.main_protocol.client_to_backend_info[self.client_addr]
+            ACTIVE_SESSIONS.labels(
+                server_name=self.main_protocol.server_config.name
+            ).dec()
+
+
 class NetherBridgeProxy:
     """
     A proxy server that dynamically manages Docker containers for Minecraft servers.
@@ -46,6 +289,8 @@ class NetherBridgeProxy:
             }
             for s in servers
         }
+        self.udp_transports = {}  # To hold active UDP transports
+        self.udp_protocols = {}  # To hold active UDP protocols
 
     def signal_handler(self, sig, frame):
         """Handles signals for graceful shutdown and configuration reloads."""
@@ -251,6 +496,8 @@ class NetherBridgeProxy:
         self.logger.info("Starting main proxy packet forwarding loop.")
 
         server_tasks = []
+        loop = asyncio.get_running_loop()
+
         for srv_cfg in self.servers_list:
             if srv_cfg.server_type == "java":
                 server = await asyncio.start_server(
@@ -258,16 +505,40 @@ class NetherBridgeProxy:
                 )
                 server_tasks.append(asyncio.create_task(server.serve_forever()))
                 self.logger.info(
-                    "Proxy listening for TCP server", server_name=srv_cfg.name
+                    "Proxy listening for TCP server",
+                    server_name=srv_cfg.name,
+                    port=srv_cfg.listen_port,
                 )
-            # UDP handling would need a different approach with asyncio.Protocol
-            # For now, focusing on the TCP part that was causing issues.
+            elif srv_cfg.server_type == "bedrock":
+                # === NEW UDP LISTENER FOR BEDROCK ===
+                transport, protocol = await loop.create_datagram_endpoint(
+                    lambda: NetherBridgeUDPProxyProtocol(self, srv_cfg),
+                    local_addr=("0.0.0.0", srv_cfg.listen_port),
+                )
+                # Store transport and protocol to keep references
+                self.udp_transports[srv_cfg.name] = transport
+                self.udp_protocols[srv_cfg.name] = protocol
+
+                # Unlike TCP servers, UDP endpoints don't have a serve_forever()
+                # method. The protocol itself handles the incoming datagrams.
+                # We just need to ensure the event loop keeps running.
+                self.logger.info(
+                    "Proxy listening for UDP server",
+                    server_name=srv_cfg.name,
+                    port=srv_cfg.listen_port,
+                )
 
         await self._shutdown_event.wait()
 
+        # Graceful shutdown for TCP servers
         for task in server_tasks:
             task.cancel()
         await asyncio.gather(*server_tasks, return_exceptions=True)
+
+        # Graceful shutdown for UDP transports
+        for name, transport in self.udp_transports.items():
+            self.logger.info("Closing UDP transport for server.", server_name=name)
+            transport.close()
 
         self.logger.info("Proxy loop is exiting.")
         return self._reload_requested
