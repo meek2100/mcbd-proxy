@@ -1,9 +1,8 @@
 # tests/test_proxy.py
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from requests import patch
 
 from proxy import NetherBridgeProxy
 
@@ -51,21 +50,16 @@ async def test_handle_connection_starts_stopped_server(
     """
     Tests that a connection to a stopped server triggers a startup.
     """
-    # Arrange
     reader, writer = AsyncMock(), AsyncMock()
     proxy.server_states[mock_server_config.container_name]["status"] = "stopped"
     mock_docker_manager.start_server.return_value = True
-
-    # Mock the proxy data forwarding to prevent it from running forever
     proxy._proxy_data = AsyncMock()
-    # Mock open_connection to avoid real network calls
+
+    # Use unittest.mock.patch to avoid namespace conflicts
     with patch("asyncio.open_connection", new_callable=AsyncMock) as mock_open:
         mock_open.return_value = (AsyncMock(), AsyncMock())
-
-        # Act
         await proxy._handle_connection(reader, writer, mock_server_config)
 
-        # Assert
         mock_docker_manager.start_server.assert_awaited_once_with(
             mock_server_config, proxy.settings
         )
@@ -79,20 +73,14 @@ async def test_monitor_stops_idle_server(
     """
     Tests that the activity monitor shuts down an idle server.
     """
-    # Arrange
-    # Set server state to running, but with 0 sessions and old activity
     state = proxy.server_states[mock_server_config.container_name]
     state["status"] = "running"
     state["sessions"] = 0
-    state["last_activity"] = 0  # Way in the past
+    state["last_activity"] = 0
 
-    # Make the monitor loop run only once
-    proxy._shutdown_event.is_set.side_effect = [False, True]
-
-    # Act
-    await proxy._monitor_activity()
-
-    # Assert
-    mock_docker_manager.stop_server.assert_awaited_once_with(
-        mock_server_config.container_name
-    )
+    # Patch the is_set method on the specific event instance
+    with patch.object(proxy._shutdown_event, "is_set", side_effect=[False, True]):
+        await proxy._monitor_activity()
+        mock_docker_manager.stop_server.assert_awaited_once_with(
+            mock_server_config.container_name
+        )

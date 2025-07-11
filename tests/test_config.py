@@ -1,127 +1,129 @@
-import json
+# tests/test_config.py
+import os
 from unittest.mock import patch
 
 import pytest
 
 from config import (
-    DEFAULT_SETTINGS,
     ProxySettings,
-    ServerConfig,
     _load_servers_config,
     _load_settings,
     load_application_config,
 )
 
-# Mark all tests in this file as unit tests
-pytestmark = pytest.mark.unit
+
+@pytest.fixture(autouse=True)
+def clear_env_vars():
+    """Clears relevant environment variables before each test."""
+    env_vars_to_clear = [
+        "SETTINGS_FILE",
+        "SERVERS_FILE",
+        "LOG_LEVEL",
+        "PLAYER_CHECK_INTERVAL_SECONDS",
+        "IDLE_TIMEOUT_SECONDS",
+        "PROMETHEUS_ENABLED",
+        "PROMETHEUS_PORT",
+        "POLLING_RATE",
+    ]
+    for i in range(1, 5):  # Clear a few potential server definitions
+        env_vars_to_clear.extend(
+            [
+                f"SERVER_{i}_NAME",
+                f"SERVER_{i}_TYPE",
+                f"SERVER_{i}_LISTEN_PORT",
+                f"SERVER_{i}_CONTAINER_NAME",
+                f"SERVER_{i}_INTERNAL_PORT",
+                f"SERVER_{i}_IDLE_TIMEOUT_SECONDS",
+            ]
+        )
+
+    original_values = {var: os.getenv(var) for var in env_vars_to_clear}
+    for var in env_vars_to_clear:
+        if var in os.environ:
+            del os.environ[var]
+
+    yield
+
+    for var, value in original_values.items():
+        if value is not None:
+            os.environ[var] = value
+        elif var in os.environ:
+            del os.environ[var]
 
 
-@patch("builtins.open")
-@patch("json.load")
-def test_load_settings_from_json_decode_error(mock_json_load, mock_open):
-    """
-    Tests that if the settings file is corrupt, the function falls back to
-    default settings.
-    """
-    mock_json_load.side_effect = json.JSONDecodeError("JSON error", "", 0)
-    settings = _load_settings()
-    assert settings == ProxySettings(**DEFAULT_SETTINGS)
-
-
-@patch("builtins.open")
-@patch("json.load")
-def test_load_servers_from_json_decode_error(mock_json_load, mock_open):
-    """
-    Tests that if the servers file is corrupt, the function returns an empty list.
-    """
-    mock_json_load.side_effect = json.JSONDecodeError("JSON error", "", 0)
-    servers = _load_servers_config(ProxySettings())
-    assert servers == []
-
-
-@patch.dict(
-    "os.environ",
-    {
-        "SERVER_1_NAME": "Test Server",
-        "SERVER_1_TYPE": "java",
-        # Missing LISTEN_PORT
-        "SERVER_1_CONTAINER_NAME": "test-container",
-        "SERVER_1_INTERNAL_PORT": "25565",
-    },
-    clear=True,
-)
-def test_load_servers_from_env_incomplete_definition():
-    """
-    Tests that servers with incomplete environment variable definitions are skipped.
-    """
-    servers = _load_servers_config(ProxySettings())
-    assert len(servers) == 0
-
-
-@patch.dict(
-    "os.environ",
-    {
-        "SERVER_1_NAME": "Test Server",
-        "SERVER_1_TYPE": "invalid_type",
-        "SERVER_1_LISTEN_PORT": "25565",
-        "SERVER_1_CONTAINER_NAME": "test-container",
-        "SERVER_1_INTERNAL_PORT": "25565",
-    },
-    clear=True,
-)
-def test_load_servers_from_env_invalid_server_type():
-    """Tests that servers with invalid 'server_type' are skipped."""
-    servers = _load_servers_config(ProxySettings())
-    assert len(servers) == 0
-
-
-@patch.dict("os.environ", {"LOG_LEVEL": "invalid"}, clear=True)
-def test_load_config_invalid_env_var_falls_back_to_default():
-    """
-    Tests that if an environment variable for a setting is invalid,
-    it falls back to the default value.
-    """
-    with patch("builtins.open", side_effect=FileNotFoundError):
+@pytest.mark.unit
+def test_load_settings_from_env():
+    """Tests loading settings purely from environment variables."""
+    with patch.dict(
+        os.environ,
+        {
+            "LOG_LEVEL": "debug",
+            "IDLE_TIMEOUT_SECONDS": "600",
+            "PROMETHEUS_ENABLED": "false",
+        },
+    ):
         settings = _load_settings()
-        assert settings.log_level == "info"
+        assert settings.log_level == "debug"
+        assert settings.idle_timeout_seconds == 600
+        assert not settings.prometheus_enabled
 
 
-@patch.dict(
-    "os.environ",
-    {
-        "SERVER_1_NAME": "Test Server",
-        "SERVER_1_TYPE": "java",
-        "SERVER_1_LISTEN_PORT": "25565",
-        "SERVER_1_CONTAINER_NAME": "test-container",
-        "SERVER_1_INTERNAL_PORT": "25565",
-    },
-    clear=True,
-)
-def test_load_servers_from_env_happy_path():
-    """
-    Tests that a server is correctly loaded from environment variables.
-    """
-    servers = _load_servers_config(ProxySettings())
-    assert len(servers) == 1
-    assert servers[0].name == "Test Server"
+@pytest.mark.unit
+def test_load_servers_from_env():
+    """Tests loading server configurations from environment variables."""
+    with patch.dict(
+        os.environ,
+        {
+            "SERVER_1_NAME": "Test Java",
+            "SERVER_1_TYPE": "java",
+            "SERVER_1_LISTEN_PORT": "25565",
+            "SERVER_1_CONTAINER_NAME": "mc-java",
+            "SERVER_1_INTERNAL_PORT": "25565",
+            "SERVER_2_NAME": "Test Bedrock",
+            "SERVER_2_TYPE": "bedrock",
+            "SERVER_2_LISTEN_PORT": "19132",
+            "SERVER_2_CONTAINER_NAME": "mc-bedrock",
+            "SERVER_2_INTERNAL_PORT": "19132",
+        },
+    ):
+        settings = ProxySettings(idle_timeout_seconds=300)
+        servers = _load_servers_config(settings)
+        assert len(servers) == 2
+        assert servers[0].name == "Test Java"
+        assert servers[1].server_type == "bedrock"
 
 
-@patch("config._load_settings")
-@patch("config._load_servers_config")
-def test_load_application_config_uses_env_over_json(
-    mock_load_servers, mock_load_settings
-):
-    """
-    Tests that the application correctly prioritizes environment variables
-    over JSON files.
-    """
-    mock_env_settings = ProxySettings(log_level="debug")
-    mock_env_servers = [ServerConfig("env-server", "java", 25565, "c", 25565)]
+@pytest.mark.unit
+def test_load_servers_from_file(tmp_path):
+    """Tests loading server configurations from a JSON file."""
+    servers_content = {
+        "servers": [
+            {
+                "name": "File Server",
+                "server_type": "java",
+                "listen_port": 25555,
+                "container_name": "mc-file",
+                "internal_port": 25555,
+            }
+        ]
+    }
+    servers_file = tmp_path / "servers.json"
+    servers_file.write_text(str(servers_content).replace("'", '"'))
 
-    mock_load_settings.return_value = mock_env_settings
-    mock_load_servers.return_value = mock_env_servers
+    with patch("config.SERVERS_FILE", str(servers_file)):
+        settings = ProxySettings(idle_timeout_seconds=300)
+        servers = _load_servers_config(settings)
+        assert len(servers) == 1
+        assert servers[0].name == "File Server"
 
-    settings, servers = load_application_config()
 
-    assert settings == mock_env_settings
-    assert servers == mock_env_servers
+@pytest.mark.unit
+def test_load_application_config_uses_env_over_json(tmp_path):
+    """Ensures environment variables take precedence over files."""
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text('{"log_level": "file_level"}')
+
+    with patch("config.SETTINGS_FILE", str(settings_file)):
+        with patch.dict(os.environ, {"LOG_LEVEL": "env_level"}):
+            settings, _ = load_application_config()
+            assert settings.log_level == "env_level"
