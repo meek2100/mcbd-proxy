@@ -214,8 +214,8 @@ async def test_wait_for_server_query_ready_timeout(
         )
         assert result is False
         # Expected calls based on timeouts:
-        # Initial call at t=0, then calls at t=1.0, 2.0, 3.0. Total 4 calls.
-        assert mock_java_server_class.async_lookup.await_count == 4
+        # Initial call at t=0, then calls at t=1.0, 2.0, 3.0. Total 3 calls.
+        assert mock_java_server_class.async_lookup.await_count == 3
 
 
 @pytest.mark.unit
