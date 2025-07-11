@@ -42,6 +42,7 @@ class NetherBridgeProxy:
                 "status": "stopped",
                 "last_activity": 0,
                 "pending_connections": [],
+                "ready_event": asyncio.Event(),
             }
             for s in servers
         }
@@ -89,12 +90,21 @@ class NetherBridgeProxy:
             "New TCP connection", client_addr=client_addr, server=server_config.name
         )
 
-        if self._initiate_server_start(server_config):
-            # Wait for server to be ready
-            while self.server_states[container_name]["status"] == "starting":
-                await asyncio.sleep(1)
+        server_state = self.server_states[container_name]
 
-        if self.server_states[container_name]["status"] != "running":
+        if self._initiate_server_start(server_config):
+            self.logger.info(
+                "First TCP connection for stopped server. Starting...",
+                server_name=server_config.name,
+            )
+            # Wait for the server to be ready using the asyncio.Event
+            await server_state["ready_event"].wait()
+            self.logger.info(
+                "Server reported as ready. Proceeding with connection.",
+                server_name=server_config.name,
+            )
+
+        if server_state["status"] != "running":
             self.logger.error("Server is not running. Closing connection.")
             client_writer.close()
             return
@@ -138,6 +148,7 @@ class NetherBridgeProxy:
                     server_name=server_config.name,
                 )
                 self.server_states[container_name]["status"] = "starting"
+                self.server_states[container_name]["ready_event"].clear()
                 thread = Thread(
                     target=self._start_minecraft_server_task,
                     args=(server_config,),
@@ -160,6 +171,7 @@ class NetherBridgeProxy:
             state = self.server_states[container_name]
             if success:
                 state["status"] = "running"
+                state["ready_event"].set()
                 RUNNING_SERVERS.inc()
                 duration = time.time() - startup_timer_start
                 SERVER_STARTUP_DURATION.labels(server_name=server_config.name).observe(
@@ -175,6 +187,7 @@ class NetherBridgeProxy:
                     "Server startup process failed.", container_name=container_name
                 )
                 state["status"] = "stopped"
+                state["ready_event"].clear()
 
     def _ensure_all_servers_stopped_on_startup(self):
         """Ensures all managed servers are stopped when the proxy starts."""

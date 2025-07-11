@@ -108,18 +108,19 @@ def test_stop_server_api_error(
 
 
 @pytest.mark.unit
-@patch("docker_manager.time.sleep")
-@patch("docker_manager.BedrockServer.lookup", side_effect=Exception("Query failed"))
-def test_wait_for_server_query_ready_timeout(
-    mock_lookup, mock_sleep, docker_manager_instance, mock_server_config
+@pytest.mark.asyncio
+@patch("mcstatus.BedrockServer.lookup", side_effect=Exception("Query failed"))
+async def test_wait_for_server_query_ready_timeout(
+    mock_lookup, docker_manager_instance, mock_server_config
 ):
     """
     Tests that the readiness probe correctly times out and returns False
     if the target server never responds.
     """
-    result = docker_manager_instance.wait_for_server_query_ready(
-        mock_server_config, max_wait_seconds=0.2, query_timeout_seconds=0.1
-    )
-    assert result is False
-    # Verify that the logic attempted to query the server at least once.
-    mock_lookup.assert_called()
+    with patch("asyncio.sleep") as mock_sleep:
+        result = await docker_manager_instance.wait_for_server_query_ready(
+            mock_server_config, max_wait_seconds=0.2, query_timeout_seconds=0.1
+        )
+        assert result is False
+        mock_lookup.assert_called()
+        mock_sleep.assert_called()

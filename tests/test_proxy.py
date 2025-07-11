@@ -1,4 +1,4 @@
-# tests/test_proxy.py
+import asyncio
 import signal
 import sys
 import time
@@ -65,6 +65,11 @@ def test_proxy_initialization(proxy_instance, mock_settings, mock_servers_config
     assert proxy_instance.servers_list == mock_servers_config
     assert 19132 in proxy_instance.servers_config_map
     assert 25565 in proxy_instance.servers_config_map
+    # Check that ready_event is an asyncio.Event
+    assert isinstance(
+        proxy_instance.server_states["test-mc-bedrock"]["ready_event"],
+        asyncio.Event,
+    )
 
 
 @pytest.mark.skipif(
@@ -86,7 +91,11 @@ def test_signal_handler_sigint(proxy_instance):
     assert proxy_instance._shutdown_event.is_set()
 
 
-def test_start_minecraft_server_task_success(proxy_instance, mock_servers_config):
+@patch("proxy.Thread")
+@patch("proxy.asyncio.run")
+def test_start_minecraft_server_task_success(
+    mock_asyncio_run, mock_thread, proxy_instance, mock_servers_config
+):
     """
     Tests the proxy's background start task. It should delegate to the
     DockerManager and update its internal state on success.
@@ -95,16 +104,19 @@ def test_start_minecraft_server_task_success(proxy_instance, mock_servers_config
     container_name = server_config.container_name
 
     proxy_instance.docker_manager.start_server.return_value = True
+    # Simulate the thread execution by calling the target method directly
     proxy_instance._start_minecraft_server_task(server_config)
 
     proxy_instance.docker_manager.start_server.assert_called_once_with(
         server_config, proxy_instance.settings
     )
     assert proxy_instance.server_states[container_name]["status"] == "running"
+    assert proxy_instance.server_states[container_name]["ready_event"].is_set()
 
 
+@patch("proxy.time.sleep")
 def test_monitor_servers_activity_stops_idle_server(
-    proxy_instance, mock_servers_config
+    mock_sleep, proxy_instance, mock_servers_config
 ):
     """
     Tests that the server monitoring thread correctly identifies and stops
@@ -123,10 +135,10 @@ def test_monitor_servers_activity_stops_idle_server(
         proxy_instance._shutdown_event, "is_set", side_effect=side_effect
     ):
         with patch("proxy.ACTIVE_SESSIONS") as mock_active_sessions:
-            # Mock the metric to return 0 active sessions
-            mock_metric = MagicMock()
-            mock_metric.get.return_value = 0
-            mock_active_sessions.get_metric_value.return_value = mock_metric
+            # Mock get_metric_value to return a dict, or a mock that acts like a dict
+            mock_active_sessions.get_metric_value.return_value = {
+                (server_config.name,): 0
+            }
 
             proxy_instance._monitor_servers_activity()
 
@@ -141,5 +153,21 @@ def test_monitor_servers_activity_stops_idle_server(
 async def test_run_proxy_loop_shuts_down_on_event(proxy_instance):
     """Tests that the main proxy loop exits when the shutdown event is set."""
     proxy_instance._shutdown_event.set()  # Set event to exit immediately
-    await proxy_instance._run_proxy_loop()
-    # The test passes if the await completes without timing out
+
+    # Mock asyncio.start_server to prevent it from actually trying to bind ports
+    with patch("asyncio.start_server") as mock_start_server:
+        mock_server_instance = MagicMock()
+
+        # Configure serve_forever to be an awaitable mock using AsyncMock
+        # It will complete immediately when awaited.
+        # Ensure that `from unittest.mock import AsyncMock` is imported if not already.
+        # For simplicity, we can just assign a basic awaitable.
+        async def mock_serve_forever():
+            pass  # This coroutine does nothing and finishes immediately
+
+        mock_server_instance.serve_forever.return_value = mock_serve_forever()
+
+        mock_start_server.return_value = mock_server_instance
+
+        await proxy_instance._run_proxy_loop()
+        mock_start_server.assert_called()

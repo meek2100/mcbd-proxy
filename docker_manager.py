@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import time
 
@@ -78,10 +79,13 @@ class DockerManager:
             )
             time.sleep(settings.server_startup_delay_seconds)
 
-            return self.wait_for_server_query_ready(
-                server_config,
-                settings.server_ready_max_wait_time_seconds,
-                settings.query_timeout_seconds,
+            # Execute the async wait_for_server_query_ready using asyncio.run()
+            return asyncio.run(
+                self.wait_for_server_query_ready(
+                    server_config,
+                    settings.server_ready_max_wait_time_seconds,
+                    settings.query_timeout_seconds,
+                )
             )
         except docker.errors.NotFound:
             self.logger.error(
@@ -141,7 +145,7 @@ class DockerManager:
             )
             return False
 
-    def wait_for_server_query_ready(
+    async def wait_for_server_query_ready(
         self,
         server_config: ServerConfig,
         max_wait_seconds: int,
@@ -149,7 +153,7 @@ class DockerManager:
     ) -> bool:
         """
         Polls a Minecraft server using mcstatus until it responds or a timeout
-        is reached.
+        is reached. This is an asynchronous function.
         """
         container_name = server_config.container_name
         target_ip = container_name
@@ -193,7 +197,7 @@ class DockerManager:
                     container_name=container_name,
                     error=str(e),
                 )
-            time.sleep(query_timeout_seconds)
+            await asyncio.sleep(query_timeout_seconds)
 
         self.logger.error(
             f"Timeout: Server did not respond after {max_wait_seconds} seconds. "
