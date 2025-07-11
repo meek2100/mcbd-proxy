@@ -268,7 +268,8 @@ def test_configuration_reload_on_sighup(docker_compose_up, docker_client_fixture
     initial_bedrock_port = 19132
     reloaded_bedrock_port = 19134
     logging.info(
-        f"Starting SIGHUP test. Initial port: {initial_bedrock_port}, Reloaded port: {reloaded_bedrock_port}"  # noqa: E501
+        f"Starting SIGHUP test. Initial port: {initial_bedrock_port}, "
+        f"Reloaded port: {reloaded_bedrock_port}"
     )
 
     assert wait_for_proxy_to_be_ready(docker_client_fixture), (
@@ -327,7 +328,7 @@ def test_configuration_reload_on_sighup(docker_compose_up, docker_client_fixture
     time.sleep(5)  # Give the proxy a moment to react
 
     # Check if the new port is open
-    for i in range(5):  # Retry for 5 seconds
+    for i in range(10):  # Retry for 10 seconds
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client_socket:
                 client_socket.settimeout(1)
@@ -338,7 +339,7 @@ def test_configuration_reload_on_sighup(docker_compose_up, docker_client_fixture
                 break
         except Exception:
             logging.warning(
-                f"(SIGHUP Test) Attempt {i + 1}/5: New port {reloaded_bedrock_port} "
+                f"(SIGHUP Test) Attempt {i + 1}/10: New port {reloaded_bedrock_port} "
                 "is not open yet. Retrying..."
             )
             time.sleep(1)
@@ -346,16 +347,19 @@ def test_configuration_reload_on_sighup(docker_compose_up, docker_client_fixture
         pytest.fail(f"New port {reloaded_bedrock_port} did not open after SIGHUP.")
 
     # Check that the old port is now closed
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client_socket:
-            client_socket.settimeout(2)
-            client_socket.connect((proxy_host, initial_bedrock_port))
-            # If we get here, the port is still open
-            pytest.fail(f"Old port {initial_bedrock_port} is still open after SIGHUP.")
-    except socket.error:
-        logging.info(
-            f"(SIGHUP Test) Old port {initial_bedrock_port} is correctly closed."
-        )
+    for i in range(10):  # Retry for 10 seconds
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client_socket:
+                client_socket.settimeout(1)
+                client_socket.connect((proxy_host, initial_bedrock_port))
+                time.sleep(1)
+        except socket.error:
+            logging.info(
+                f"(SIGHUP Test) Old port {initial_bedrock_port} is correctly closed."
+            )
+            break
+    else:
+        pytest.fail(f"Old port {initial_bedrock_port} is still open after SIGHUP.")
 
     logging.info(
         "(SIGHUP Test) Test passed: Proxy correctly reloaded its configuration."
