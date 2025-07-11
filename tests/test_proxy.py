@@ -556,3 +556,235 @@ async def test_reload_configuration(
         assert proxy_instance.server_states["new-mc-bedrock"]["status"] == "stopped"
 
         mock_start_listeners.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_proxy_data_forwarding_and_metrics(
+    proxy_instance, mock_servers_config, mock_metrics
+):
+    """
+    Tests that _proxy_data correctly forwards data and increments bytes
+    transferred metrics in both client-to-server and server-to-client directions.
+    """
+    java_server_config = next(s for s in mock_servers_config if s.server_type == "java")
+    client_addr = ("127.0.0.1", 12345)
+    container_name = java_server_config.container_name
+    listen_port = java_server_config.listen_port
+
+    mock_client_reader = AsyncMock()
+    mock_client_writer = AsyncMock()
+    mock_server_reader = AsyncMock()
+    mock_server_writer = AsyncMock()
+
+    # Data to simulate forwarding
+    data_c2s = b"client_to_server_data"
+    data_s2c = b"server_to_client_data"
+
+    session_info = {
+        "client_addr": client_addr,
+        "listen_port": listen_port,
+        "protocol": "tcp",
+        "target_container": container_name,
+        "last_packet_time": time.time(),
+        "client_writer": mock_client_writer,
+        "server_writer_tcp": mock_server_writer,
+    }
+    # Manually add session to active_sessions for the test
+    session_key = (client_addr, listen_port, "tcp")
+    async with proxy_instance.session_lock:
+        proxy_instance.active_sessions[session_key] = session_info
+
+    # Test client-to-server forwarding
+    mock_client_reader.read.side_effect = [data_c2s, b""]  # First read data, then EOF
+    await proxy_instance._proxy_data(
+        mock_client_reader, mock_server_writer, session_info
+    )
+    mock_server_writer.write.assert_called_once_with(data_c2s)
+    mock_server_writer.drain.assert_awaited_once()
+    mock_metrics["bytes_transferred"].labels.assert_any_call(
+        server_name=java_server_config.name, direction="c2s"
+    )
+    mock_metrics["bytes_transferred"].labels.return_value.inc.assert_called_once_with(
+        len(data_c2s)
+    )
+
+    # Reset mocks for server-to-client test
+    mock_client_writer.reset_mock()
+    mock_server_reader.reset_mock()
+    mock_metrics["bytes_transferred"].labels.return_value.inc.reset_mock()
+
+    # Test server-to-client forwarding
+    mock_server_reader.read.side_effect = [data_s2c, b""]  # First read data, then EOF
+    await proxy_instance._proxy_data(
+        mock_server_reader, mock_client_writer, session_info
+    )
+    mock_client_writer.write.assert_called_once_with(data_s2c)
+    mock_client_writer.drain.assert_awaited_once()
+    mock_metrics["bytes_transferred"].labels.assert_any_call(
+        server_name=java_server_config.name, direction="s2c"
+    )
+    mock_metrics["bytes_transferred"].labels.return_value.inc.assert_called_once_with(
+        len(data_s2c)
+    )
+
+    # Ensure writers are closed
+    mock_client_writer.close.assert_awaited_once()
+    mock_client_writer.wait_closed.assert_awaited_once()
+    mock_server_writer.close.assert_awaited_once()
+    mock_server_writer.wait_closed.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_proxy_data_handles_connection_reset(proxy_instance, mock_servers_config):
+    """
+    Tests that _proxy_data handles ConnectionResetError gracefully.
+    """
+    java_server_config = next(s for s in mock_servers_config if s.server_type == "java")
+    client_addr = ("127.0.0.1", 12345)
+    container_name = java_server_config.container_name
+    listen_port = java_server_config.listen_port
+
+    mock_client_reader = AsyncMock()
+    mock_server_writer = AsyncMock()
+    mock_server_writer.is_closing.return_value = False
+
+    session_info = {
+        "client_addr": client_addr,
+        "listen_port": listen_port,
+        "protocol": "tcp",
+        "target_container": container_name,
+        "last_packet_time": time.time(),
+        "client_writer": MagicMock(),  # Not used in this specific test path
+        "server_writer_tcp": mock_server_writer,
+    }
+    session_key = (client_addr, listen_port, "tcp")
+    async with proxy_instance.session_lock:
+        proxy_instance.active_sessions[session_key] = session_info
+
+    mock_client_reader.read.side_effect = ConnectionResetError("Client reset")
+
+    # _proxy_data uses log.info for ConnectionResetError, no SystemExit
+    with patch("proxy.log") as mock_log:
+        await proxy_instance._proxy_data(
+            mock_client_reader, mock_server_writer, session_info
+        )
+        mock_log.info.assert_called_with(
+            "Connection reset during data forwarding. Client disconnected.",
+            client_addr=client_addr,
+            container_name=container_name,
+        )
+    mock_server_writer.close.assert_awaited_once()
+    mock_server_writer.wait_closed.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cleanup_tcp_session(proxy_instance, mock_servers_config, mock_metrics):
+    """
+    Tests that _cleanup_tcp_session correctly removes a TCP session,
+    cancels associated tasks, closes writers, and decrements metrics.
+    """
+    java_server_config = next(s for s in mock_servers_config if s.server_type == "java")
+    client_addr = ("127.0.0.1", 12345)
+    container_name = java_server_config.container_name
+    listen_port = java_server_config.listen_port
+
+    mock_client_writer = AsyncMock()
+    mock_server_writer = AsyncMock()
+
+    # Set up initial state with an active TCP session
+    session_key = (client_addr, listen_port, "tcp")
+    proxy_instance.active_sessions[session_key] = {
+        "client_addr": client_addr,
+        "listen_port": listen_port,
+        "protocol": "tcp",
+        "target_container": container_name,
+        "last_packet_time": time.time(),
+        "client_writer": mock_client_writer,
+        "server_writer_tcp": mock_server_writer,
+        "client_to_server_task": MagicMock(spec=asyncio.Task),
+        "server_to_client_task": MagicMock(spec=asyncio.Task),
+    }
+    proxy_instance.server_states[container_name]["sessions"] = 1
+    mock_metrics["active_sessions"].labels.return_value.inc.assert_not_called()
+    mock_metrics["active_sessions"].labels.return_value.dec.reset_mock()
+
+    with patch("asyncio.gather", new=AsyncMock(return_value=[])):
+        await proxy_instance._cleanup_tcp_session(
+            client_addr, listen_port, container_name
+        )
+
+    # Verify session removed
+    async with proxy_instance.session_lock:
+        assert session_key not in proxy_instance.active_sessions
+    assert proxy_instance.server_states[container_name]["sessions"] == 0
+
+    # Verify writers closed
+    mock_client_writer.close.assert_awaited_once()
+    mock_client_writer.wait_closed.assert_awaited_once()
+    mock_server_writer.close.assert_awaited_once()
+    mock_server_writer.wait_closed.assert_awaited_once()
+
+    # Verify tasks cancelled
+    proxy_instance.active_sessions[session_key][
+        "client_to_server_task"
+    ].cancel.assert_called_once()
+    proxy_instance.active_sessions[session_key][
+        "server_to_client_task"
+    ].cancel.assert_called_once()
+
+    # Verify metric decremented
+    mock_metrics["active_sessions"].labels.assert_called_with(
+        server_name=java_server_config.name
+    )
+    mock_metrics["active_sessions"].labels.return_value.dec.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cleanup_udp_session(proxy_instance, mock_servers_config, mock_metrics):
+    """
+    Tests that _cleanup_udp_session correctly removes a UDP session,
+    closes its transport, and decrements metrics.
+    """
+    bedrock_server_config = next(
+        s for s in mock_servers_config if s.server_type == "bedrock"
+    )
+    client_addr = "127.0.0.1"
+    listen_port = bedrock_server_config.listen_port
+    container_name = bedrock_server_config.container_name
+
+    mock_transport = AsyncMock()
+    mock_transport.is_closing.return_value = False
+
+    # Set up initial state with an active UDP session
+    session_key = (client_addr, listen_port, "udp")
+    proxy_instance.active_sessions[session_key] = {
+        "client_addr": client_addr,
+        "listen_port": listen_port,
+        "protocol": "udp",
+        "target_container": container_name,
+        "last_packet_time": time.time(),
+        "transport": mock_transport,
+    }
+    proxy_instance.server_states[container_name]["sessions"] = 1
+    mock_metrics["active_sessions"].labels.return_value.inc.assert_not_called()
+    mock_metrics["active_sessions"].labels.return_value.dec.reset_mock()
+
+    await proxy_instance._cleanup_udp_session(client_addr, listen_port, container_name)
+
+    # Verify session removed
+    async with proxy_instance.session_lock:
+        assert session_key not in proxy_instance.active_sessions
+    assert proxy_instance.server_states[container_name]["sessions"] == 0
+
+    # Verify transport closed
+    mock_transport.close.assert_called_once()
+
+    # Verify metric decremented
+    mock_metrics["active_sessions"].labels.assert_called_with(
+        server_name=bedrock_server_config.name
+    )
+    mock_metrics["active_sessions"].labels.return_value.dec.assert_called_once()
