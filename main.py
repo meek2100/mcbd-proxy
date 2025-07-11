@@ -14,14 +14,14 @@ from structlog.dev import ConsoleRenderer
 from structlog.processors import JSONRenderer
 from structlog.stdlib import LoggerFactory, get_logger
 
-from config import load_application_config
+from config import ProxySettings, load_application_config
 from docker_manager import DockerManager
 from metrics import (
     ACTIVE_SESSIONS,
     BYTES_TRANSFERRED,
     RUNNING_SERVERS,
     SERVER_STARTUP_DURATION,
-    start_metrics_server,  # Import the function
+    start_metrics_server,
 )
 from proxy import NetherBridgeProxy
 
@@ -41,10 +41,10 @@ structlog.configure(
 log = get_logger()
 
 
-def perform_health_check(config_path: Path) -> None:
+def perform_health_check(config_path: Path, proxy_settings: ProxySettings) -> None:
     """
     Performs a health check by checking the last modified time of a heartbeat
-    file.
+    file against the configured threshold.
     """
     heartbeat_file = config_path / "heartbeat.txt"
     if not heartbeat_file.exists():
@@ -56,15 +56,14 @@ def perform_health_check(config_path: Path) -> None:
     try:
         last_modified_time = os.path.getmtime(heartbeat_file)
         current_time = time.time()
-        # If the heartbeat file hasn't been updated in 60 seconds,
-        # consider it unhealthy (this threshold should ideally come from config)
-        # For simplicity, using a hardcoded value for the healthcheck here.
-        # The proxy itself will use `healthcheck_stale_threshold_seconds` from config.
-        if (current_time - last_modified_time) > 60:
+        stale_threshold = proxy_settings.healthcheck_stale_threshold_seconds
+
+        if (current_time - last_modified_time) > stale_threshold:
             log.error(
                 "Health check failed: Heartbeat is stale.",
                 last_modified=last_modified_time,
                 current_time=current_time,
+                stale_threshold=stale_threshold,
             )
             sys.exit(1)
         else:
@@ -101,12 +100,12 @@ async def main():
     # Ensure config directory exists for heartbeat file
     config_path.mkdir(exist_ok=True)
 
-    if args.healthcheck:
-        perform_health_check(config_path)  # This will exit
-        return
-
-    # Load application config
+    # Load application config regardless of healthcheck flag
     proxy_settings, server_configs = load_application_config()
+
+    if args.healthcheck:
+        perform_health_check(config_path, proxy_settings)  # Pass settings
+        return
 
     log.info(
         "NetherBridge Proxy starting...",

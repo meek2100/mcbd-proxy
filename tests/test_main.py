@@ -12,20 +12,30 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Imports from the module being tested
+from config import ProxySettings
 from main import main, perform_health_check
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 @patch("main.sys.argv", ["main.py", "--healthcheck"])
+@patch("main.load_application_config")
 @patch("main.perform_health_check")
-async def test_main_runs_health_check(mock_perform_health):
+async def test_main_runs_health_check(
+    mock_perform_health, mock_load_application_config
+):
     """
     Tests that the main function correctly calls perform_health_check
     when the '--healthcheck' argument is provided.
     """
+    # Configure load_application_config to return mock settings
+    mock_settings = MagicMock(spec=ProxySettings)
+    mock_load_application_config.return_value = (mock_settings, [])
+
     await main()
-    mock_perform_health.assert_called_once()
+    mock_perform_health.assert_called_once_with(
+        Path("config"), mock_settings
+    )  # Assert config_path and settings are passed
 
 
 @pytest.mark.unit
@@ -61,7 +71,7 @@ async def test_main_execution_flow(
     and the app runs.
     """
     # Setup mocks
-    mock_settings = MagicMock()
+    mock_settings = MagicMock(spec=ProxySettings)
     mock_settings.log_level = "INFO"
     mock_settings.log_formatter = "console"
     mock_settings.prometheus_enabled = False
@@ -127,11 +137,9 @@ async def test_main_execution_flow(
 
 @pytest.mark.unit
 @patch("main.Path")  # Patch Path for file system operations
-@patch(
-    "main.load_application_config", return_value=(MagicMock(), [MagicMock()])
-)  # Mock config loading
+@patch("main.os.path.exists", return_value=False)  # Mock file existence
 def test_health_check_fails_if_file_missing(
-    mock_load_config,
+    mock_os_path_exists,
     MockPath,  # Renamed for clarity
 ):
     """
@@ -147,75 +155,81 @@ def test_health_check_fails_if_file_missing(
     )
 
     mock_heartbeat_file_instance.exists.return_value = False  # File does not exist
+    mock_settings = MagicMock(
+        spec=ProxySettings, healthcheck_stale_threshold_seconds=60
+    )
 
     with pytest.raises(SystemExit) as e:
-        perform_health_check(mock_config_path)
+        perform_health_check(mock_config_path, mock_settings)
     assert e.value.code == 1
     mock_heartbeat_file_instance.exists.assert_called_once()
-    # read_text should NOT be called if file doesn't exist
-    mock_heartbeat_file_instance.read_text.assert_not_called()
 
 
 @pytest.mark.unit
 @patch("main.Path")  # Patch Path for file system operations
+@patch("main.os.path.getmtime")  # Patch os.path.getmtime
 @patch("time.time")
+@patch("main.os.path.exists", return_value=True)  # Ensure file is found
 def test_health_check_fails_if_heartbeat_is_stale(
+    mock_os_path_exists,
     mock_time,
+    mock_getmtime,
     MockPath,  # Renamed for clarity
 ):
     """
     Tests that the health check fails with exit code 1 if the heartbeat
     file is older than the configured threshold.
     """
-    mock_settings = MagicMock(healthcheck_stale_threshold_seconds=60)
-    mock_load_config_return = (mock_settings, [MagicMock()])
+    mock_settings = MagicMock(
+        spec=ProxySettings, healthcheck_stale_threshold_seconds=60
+    )
 
-    with patch("main.load_application_config", return_value=mock_load_config_return):
-        mock_config_path = MockPath.return_value
-        mock_heartbeat_file_instance = MagicMock(
-            spec=Path
-        )  # Specific mock for the file
-        mock_config_path.__truediv__.return_value = (
-            mock_heartbeat_file_instance  # Make __truediv__ return it
-        )
+    mock_config_path = MockPath.return_value
+    mock_heartbeat_file_instance = MagicMock(spec=Path)  # Specific mock for the file
+    mock_config_path.__truediv__.return_value = (
+        mock_heartbeat_file_instance  # Make __truediv__ return it
+    )
 
-        mock_heartbeat_file_instance.exists.return_value = True  # File exists
-        mock_time.return_value = 1000  # Current time
-        mock_heartbeat_file_instance.read_text.return_value = "900"  # Stale timestamp
+    mock_time.return_value = 1000  # Current time
+    mock_getmtime.return_value = 900  # Stale timestamp (1000 - 900 = 100 > 60)
 
-        with pytest.raises(SystemExit) as e:
-            perform_health_check(mock_config_path)
-        assert e.value.code == 1
-        mock_heartbeat_file_instance.exists.assert_called_once()
-        mock_heartbeat_file_instance.read_text.assert_called_once()
+    with pytest.raises(SystemExit) as e:
+        perform_health_check(mock_config_path, mock_settings)
+    assert e.value.code == 1
+    mock_os_path_exists.assert_called_once()
+    mock_getmtime.assert_called_once_with(mock_heartbeat_file_instance)
 
 
 @pytest.mark.unit
 @patch("main.Path")  # Patch Path for file system operations
+@patch("main.os.path.getmtime")  # Patch os.path.getmtime
 @patch("time.time")
-def test_health_check_succeeds(mock_time, MockPath):  # Renamed for clarity
+@patch("main.os.path.exists", return_value=True)  # Ensure file is found
+def test_health_check_succeeds(
+    mock_os_path_exists,
+    mock_time,
+    mock_getmtime,
+    MockPath,  # Renamed for clarity
+):
     """
     Tests that the health check succeeds if the heartbeat file is fresh.
     """
-    mock_settings = MagicMock(healthcheck_stale_threshold_seconds=60)
-    mock_load_config_return = (mock_settings, [MagicMock()])
+    mock_settings = MagicMock(
+        spec=ProxySettings, healthcheck_stale_threshold_seconds=60
+    )
 
-    with patch("main.load_application_config", return_value=mock_load_config_return):
-        mock_config_path = MockPath.return_value
-        mock_heartbeat_file_instance = MagicMock(
-            spec=Path
-        )  # Specific mock for the file
-        mock_config_path.__truediv__.return_value = (
-            mock_heartbeat_file_instance  # Make __truediv__ return it
-        )
+    mock_config_path = MockPath.return_value
+    mock_heartbeat_file_instance = MagicMock(spec=Path)  # Specific mock for the file
+    mock_config_path.__truediv__.return_value = (
+        mock_heartbeat_file_instance  # Make __truediv__ return it
+    )
 
-        mock_heartbeat_file_instance.exists.return_value = True  # File exists
-        mock_time.return_value = 1000  # Current time
-        # Timestamp just slightly less than current, within 60s threshold
-        mock_heartbeat_file_instance.read_text.return_value = "950"
+    mock_time.return_value = 1000  # Current time
+    # Timestamp just slightly less than current, within 60s threshold
+    mock_getmtime.return_value = 950  # (1000 - 950 = 50 < 60)
 
-        with pytest.raises(SystemExit) as e:
-            perform_health_check(mock_config_path)
-        assert e.value.code == 0
-        mock_heartbeat_file_instance.exists.assert_called_once()
-        mock_heartbeat_file_instance.read_text.assert_called_once()
+    with pytest.raises(SystemExit) as e:
+        perform_health_check(mock_config_path, mock_settings)
+    assert e.value.code == 0
+    mock_os_path_exists.assert_called_once()
+    mock_getmtime.assert_called_once_with(mock_heartbeat_file_instance)
