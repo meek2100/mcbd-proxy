@@ -1,4 +1,3 @@
-# metrics.py
 import structlog
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
@@ -32,7 +31,7 @@ SERVER_STARTUP_DURATION = Histogram(
 # server-to-client).
 BYTES_TRANSFERRED = Counter(
     "netherbridge_bytes_transferred_total",
-    ("Total bytes transferred through the proxy"),  # Corrected line continuation
+    ("Total bytes transferred through the proxy"),
     ["server_name", "direction"],
 )
 
@@ -51,28 +50,5 @@ def start_metrics_server(port: int = 8000):
         # Depending on criticality, you might want to re-raise or handle differently
 
 
-def setup_metrics_middleware(proxy) -> None:
-    """
-    Configures the given proxy instance to update Prometheus metrics.
-
-    Args:
-        proxy: The NetherBridgeProxy instance to configure.
-    """
-    # This is a placeholder. Actual implementation would involve
-    # making the proxy update metrics.
-    # For example, by passing metric objects to the proxy,
-    # or by setting up periodic tasks to read proxy state and update metrics.
-    logger.info("Setting up metrics middleware for proxy (placeholder).")
-    # Example:
-    # proxy.active_sessions_metric = ACTIVE_SESSIONS
-    # proxy.bytes_transferred_metric = BYTES_TRANSFERRED
-    # Or, if proxy already has internal methods to register callbacks:
-    # proxy.register_session_start_callback(
-    #     lambda server_name: ACTIVE_SESSIONS.labels(server_name).inc()
-    # )
-    # proxy.register_bytes_transferred_callback(
-    #     lambda server_name, direction, count:
-    #         BYTES_TRANSFERRED.labels(server_name, direction).inc(count)
-    # )
-    # The actual implementation depends on how proxy class is designed to
-    # interact with metrics.
+# The setup_metrics_middleware function has been removed as metrics are now
+# passed directly to the proxy constructor.

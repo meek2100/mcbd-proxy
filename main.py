@@ -1,6 +1,7 @@
 # main.py
 import argparse
 import asyncio
+import json  # Added import for json
 import os
 import signal
 import sys
@@ -15,7 +16,12 @@ from structlog.stdlib import LoggerFactory, get_logger
 
 from config import load_application_config
 from docker_manager import DockerManager
-from metrics import setup_metrics_middleware
+from metrics import (
+    ACTIVE_SESSIONS,
+    BYTES_TRANSFERRED,
+    RUNNING_SERVERS,
+    SERVER_STARTUP_DURATION,
+)
 from proxy import NetherBridgeProxy
 
 # Setup structlog for consistent logging
@@ -103,6 +109,15 @@ async def main():
         servers=[s.name for s in app_config.server_configs],
     )
 
+    # Log application build metadata if available
+    app_metadata = os.environ.get("APP_IMAGE_METADATA")
+    if app_metadata:
+        try:
+            meta = json.loads(app_metadata)
+            log.info("Application build metadata", **meta)
+        except json.JSONDecodeError:
+            log.warning("Could not parse APP_IMAGE_METADATA", metadata=app_metadata)
+
     docker_manager = None
     proxy = None
     shutdown_event = asyncio.Event()
@@ -116,6 +131,10 @@ async def main():
             docker_manager,
             shutdown_event,
             reload_event,
+            ACTIVE_SESSIONS,  # Pass metric objects
+            RUNNING_SERVERS,
+            BYTES_TRANSFERRED,
+            SERVER_STARTUP_DURATION,
         )
 
         # Start Prometheus metrics server
@@ -125,8 +144,7 @@ async def main():
             port=app_config.proxy_settings.metrics_port,
         )
 
-        # Start metrics middleware for proxy
-        setup_metrics_middleware(proxy)
+        # Removed setup_metrics_middleware(proxy) as metrics are passed directly
 
         # Signal handlers for graceful shutdown and reload
         loop = asyncio.get_running_loop()
@@ -157,27 +175,35 @@ async def main():
 
         # Heartbeat for health checks
         heartbeat_file = config_path / "heartbeat.txt"
-        with open(heartbeat_file, "w") as f:
-            f.write(str(time.time()))
-        log.info("Heartbeat file created/updated.", file_path=heartbeat_file)
+        log.info("Heartbeat file location set.", file_path=heartbeat_file)
 
         # Periodically update heartbeat and handle reloads
         while not shutdown_event.is_set():
             if reload_event.is_set():
                 log.info("Reloading configuration...")
-                app_config = load_application_config(base_dir)
-                proxy.reload_configuration(
-                    app_config.proxy_settings, app_config.server_configs
+                # Re-load application config, then pass to proxy's reload method
+                reloaded_app_config = load_application_config(base_dir)
+                await proxy._reload_configuration(
+                    reloaded_app_config.proxy_settings,
+                    reloaded_app_config.server_configs,
                 )
                 reload_event.clear()
                 log.info("Configuration reloaded.")
 
             # Update heartbeat file
-            with open(heartbeat_file, "w") as f:
-                f.write(str(time.time()))
+            current_time = time.time()
+            try:
+                heartbeat_file.parent.mkdir(parents=True, exist_ok=True)
+                heartbeat_file.write_text(str(int(current_time)))
+            except Exception as e:
+                log.warning(
+                    "Could not update heartbeat file from main loop.",
+                    path=str(heartbeat_file),
+                    error=str(e),
+                )
 
             try:
-                await asyncio.wait_for(shutdown_event.wait(), timeout=5)
+                await asyncio.wait_for(shutdown_event.wait(), timeout=1)
             except asyncio.TimeoutError:
                 pass  # Continue loop if no shutdown event
 
@@ -198,7 +224,9 @@ async def main():
             await docker_manager.close()
         log.info("NetherBridge Proxy stopped.")
         if heartbeat_file.exists():
-            heartbeat_file.unlink()  # Clean up heartbeat file
+            # Only unlink if it's the main process and not healthcheck
+            if not args.healthcheck:
+                heartbeat_file.unlink(missing_ok=True)  # Clean up heartbeat file
 
 
 if __name__ == "__main__":
