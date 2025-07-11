@@ -30,7 +30,7 @@ class ProxySettings:
     server_ready_max_wait_time_seconds: int = 120
     docker_url: str = "unix://var/run/docker.sock"
     log_level: str = "INFO"
-    log_format: str = "json"
+    log_formatter: str = "json"
 
 
 def _load_settings_from_env() -> dict:
@@ -50,8 +50,12 @@ def _load_settings_from_env() -> dict:
         settings["docker_url"] = os.environ["DOCKER_URL"]
     if "LOG_LEVEL" in os.environ:
         settings["log_level"] = os.environ["LOG_LEVEL"].upper()
-    if "LOG_FORMAT" in os.environ:
-        settings["log_format"] = os.environ["LOG_FORMAT"].lower()
+
+    # Prioritize NB_LOG_FORMATTER, fall back to LOG_FORMAT for compatibility
+    if "NB_LOG_FORMATTER" in os.environ:
+        settings["log_formatter"] = os.environ["NB_LOG_FORMATTER"].lower()
+    elif "LOG_FORMAT" in os.environ:
+        settings["log_formatter"] = os.environ["LOG_FORMAT"].lower()
     return settings
 
 
@@ -121,7 +125,8 @@ def load_application_config() -> Tuple[ProxySettings, List[ServerConfig]]:
 
     if not servers_list:
         logger.warning(
-            "🚨 No servers were loaded. Check your configuration (servers.json or environment variables)."  # noqa: E501
+            "🚨 No servers were loaded. Check your configuration "
+            "(servers.json or environment variables)."
         )
 
     return proxy_settings, servers_list

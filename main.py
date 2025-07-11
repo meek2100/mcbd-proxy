@@ -4,19 +4,13 @@ import sys
 import time
 
 import structlog
+from structlog.processors import ConsoleRenderer, JSONRenderer
 
 from config import ProxySettings, load_application_config
 from docker_manager import DockerManager
 from proxy import HEARTBEAT_FILE, NetherBridgeProxy
 
-structlog.configure(
-    processors=[
-        structlog.contextvars.merge_contextvars,
-        structlog.processors.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.JSONRenderer(),
-    ]
-)
+# Initial logger setup, to be reconfigured after loading settings
 logger = structlog.get_logger(__name__)
 
 
@@ -44,6 +38,28 @@ async def perform_health_check(settings: ProxySettings):
 
 async def main():
     settings, servers = load_application_config()
+
+    # Reconfigure structlog based on loaded settings
+    processors = [
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+    ]
+    if settings.log_formatter == "console":
+        processors.append(ConsoleRenderer())
+    else:  # Default to json
+        processors.append(JSONRenderer())
+
+    structlog.configure(
+        processors=processors,
+        wrapper_class=structlog.make_filtering_bound_logger(
+            min_level=settings.log_level
+        ),
+        cache_logger_on_first_use=True,
+    )
+    # Re-get logger after configuration to ensure it uses the new settings
+    global logger
+    logger = structlog.get_logger(__name__)
 
     if "--healthcheck" in sys.argv:
         await perform_health_check(settings)
