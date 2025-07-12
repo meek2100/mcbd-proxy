@@ -1,8 +1,8 @@
 # main.py
 
-import argparse
 import asyncio
 import json
+import logging
 import os
 import signal
 import sys
@@ -10,217 +10,279 @@ import time
 from pathlib import Path
 
 import structlog
-from structlog.dev import ConsoleRenderer
-from structlog.processors import JSONRenderer
-from structlog.stdlib import LoggerFactory, get_logger
+from prometheus_client import start_http_server
 
-from config import ProxySettings, load_application_config
-from docker_manager import DockerManager
-from metrics import (
-    ACTIVE_SESSIONS,
-    BYTES_TRANSFERRED,
-    RUNNING_SERVERS,
-    SERVER_STARTUP_DURATION,
-    start_metrics_server,
-)
+# Import the refactored modules
+from config import load_application_config
 from proxy import NetherBridgeProxy
 
-# Setup structlog for consistent logging
-structlog.configure(
-    processors=[
+# The heartbeat file constant remains at the application level
+HEARTBEAT_FILE = Path("proxy_heartbeat.tmp")
+
+
+def configure_logging(log_level: str, log_formatter: str):
+    """Configures logging for the application using structlog."""
+    logging.basicConfig(
+        format="%(message)s",
+        stream=sys.stdout,
+        level=log_level.upper(),
+    )
+
+    shared_processors = [
+        structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
         structlog.processors.TimeStamper(fmt="iso"),
-        ConsoleRenderer()
-        if os.getenv("NB_LOG_FORMATTER") == "console"
-        else JSONRenderer(),
-    ],
-    logger_factory=LoggerFactory(),
-    cache_logger_on_first_use=True,
-)
-log = get_logger()
+        structlog.stdlib.PositionalArgumentsFormatter(),
+    ]
+
+    if log_formatter == "json":
+        processors = shared_processors + [
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.processors.JSONRenderer(),
+        ]
+    else:  # "console" or any other value
+        processors = shared_processors + [
+            structlog.dev.ConsoleRenderer(colors=True),
+        ]
+
+    structlog.configure(
+        processors=processors,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
 
 
-def perform_health_check(config_path: Path, proxy_settings: ProxySettings) -> None:
-    """
-    Performs a health check by checking the last modified time of a heartbeat
-    file against the configured threshold.
-    """
-    heartbeat_file = config_path / "heartbeat.txt"
-    if not heartbeat_file.exists():
-        log.error(
-            "Health check failed: Heartbeat file not found.", file_path=heartbeat_file
+def perform_health_check():
+    """Performs a self-sufficient two-stage health check."""
+    logger = structlog.get_logger(__name__)
+    try:
+        # We still need to load settings to get the threshold.
+        # It's okay if the healthcheck process itself doesn't find servers.
+        settings, _ = load_application_config()
+        logger.debug("Health Check Stage 1 (Configuration) OK.")
+    except Exception as e:
+        logger.error(
+            "Health Check FAIL: Error loading configuration.",
+            error=str(e),
+            exc_info=True,
         )
         sys.exit(1)
 
+    if not HEARTBEAT_FILE.is_file():
+        logger.error("Health Check FAIL: Heartbeat file not found.")
+        sys.exit(1)
     try:
-        last_modified_time = os.path.getmtime(heartbeat_file)
-        current_time = time.time()
-        stale_threshold = proxy_settings.healthcheck_stale_threshold_seconds
-
-        if (current_time - last_modified_time) > stale_threshold:
-            log.error(
-                "Health check failed: Heartbeat is stale.",
-                last_modified=last_modified_time,
-                current_time=current_time,
-                stale_threshold=stale_threshold,
-            )
-            sys.exit(1)
-        else:
-            log.info("Health check successful: Heartbeat is fresh.")
+        age = int(time.time()) - int(HEARTBEAT_FILE.read_text())
+        if age < settings.healthcheck_stale_threshold_seconds:
+            logger.info("Health Check OK", age_seconds=age)
             sys.exit(0)
+        else:
+            logger.error("Health Check FAIL: Heartbeat is stale.", age_seconds=age)
+            sys.exit(1)
     except Exception as e:
-        log.error("Health check failed: An error occurred.", error=str(e))
+        logger.error(
+            "Health Check FAIL: Could not read or parse heartbeat file.",
+            error=str(e),
+            exc_info=True,
+        )
         sys.exit(1)
 
 
-async def main():
+async def run_app(proxy: NetherBridgeProxy):
     """
-    Main asynchronous function to start and manage the NetherBridge proxy.
+    Starts all services and runs the main proxy loop asynchronously.
     """
-    parser = argparse.ArgumentParser(
-        description="NetherBridge - Minecraft On-Demand Proxy"
-    )
-    parser.add_argument(
-        "--healthcheck",
-        action="store_true",
-        help="Run health check and exit.",
-    )
-    args = parser.parse_args()
+    logger = structlog.get_logger(__name__)
+    logger.info("--- Starting Nether-bridge On-Demand Proxy ---")
 
-    # Determine base directory for configuration files
-    if getattr(sys, "frozen", False):
-        # Running in a PyInstaller bundle
-        base_dir = Path(sys.executable).parent
+    # Set up asyncio signal handlers
+    # This must be done inside an async function where an event loop is running.
+    loop = asyncio.get_running_loop()
+    if hasattr(signal, "SIGHUP"):
+        loop.add_signal_handler(
+            signal.SIGHUP,
+            lambda: asyncio.create_task(proxy.handle_reload_signal()),
+        )
+    loop.add_signal_handler(
+        signal.SIGINT,
+        lambda: asyncio.create_task(proxy.handle_shutdown_signal()),
+    )
+    loop.add_signal_handler(
+        signal.SIGTERM,
+        lambda: asyncio.create_task(proxy.handle_shutdown_signal()),
+    )
+    logger.info("Signal handlers registered for graceful shutdown/reload.")
+
+    if proxy.settings.prometheus_enabled:
+        try:
+            logger.info(
+                "Starting Prometheus metrics server...",
+                port=proxy.settings.prometheus_port,
+            )
+            start_http_server(proxy.settings.prometheus_port)
+            logger.info("Prometheus metrics server started.")
+        except Exception as e:
+            logger.error("Could not start Prometheus metrics server.", error=str(e))
     else:
-        # Running in a development environment
-        base_dir = Path(__file__).parent
+        logger.info("Prometheus metrics server is disabled by configuration.")
 
-    config_path = base_dir / "config"
-    # Ensure config directory exists for heartbeat file
-    config_path.mkdir(exist_ok=True)
-
-    # Load application config regardless of healthcheck flag
-    proxy_settings, server_configs = load_application_config()
-
-    if args.healthcheck:
-        perform_health_check(config_path, proxy_settings)  # Pass settings
-        return
-
-    log.info(
-        "NetherBridge Proxy starting...",
-        settings=proxy_settings,
-        servers=[s.name for s in server_configs],
-    )
-
-    # Log application build metadata if available
     app_metadata = os.environ.get("APP_IMAGE_METADATA")
     if app_metadata:
         try:
             meta = json.loads(app_metadata)
-            log.info("Application build metadata", **meta)
+            logger.info("Application build metadata", **meta)
         except json.JSONDecodeError:
-            log.warning("Could not parse APP_IMAGE_METADATA", metadata=app_metadata)
+            logger.warning("Could not parse APP_IMAGE_METADATA", metadata=app_metadata)
 
-    docker_manager = None
-    proxy = None
-    shutdown_event = asyncio.Event()
-    reload_event = asyncio.Event()
+    if HEARTBEAT_FILE.exists():
+        try:
+            # unlink is typically synchronous and fast, but for robustness
+            # in a purely async context, it could be run in a thread pool.
+            # For this simple case, direct call is fine.
+            HEARTBEAT_FILE.unlink()
+            logger.info("Removed stale heartbeat file.", path=str(HEARTBEAT_FILE))
+        except OSError as e:
+            logger.warning("Could not remove stale heartbeat file.", error=str(e))
+
+    # DockerManager is already initialized in NetherBridgeProxy's __init__
+    # So, no need for the problematic proxy.docker_manager_init call.
+
+    # Run startup tasks
+    await proxy._ensure_all_servers_stopped_on_startup()
+
+    # Create and start listener tasks
+    listener_tasks = []
+    for srv_cfg in proxy.servers_list:
+        try:
+            # _create_listening_socket returns the asyncio.Server or
+            # DatagramTransport instance, which needs to be added to tasks.
+            # proxy._create_listening_socket now returns a coroutine.
+            listener = await proxy._create_listening_socket(srv_cfg)
+            # For TCP, start_serving needs to be awaited.
+            # For UDP, the transport is already created.
+            if hasattr(listener, "start_serving"):
+                await listener.start_serving()
+            listener_tasks.append(listener)
+        except OSError as e:
+            logger.critical(
+                "FATAL: Could not bind to port. Exiting.",
+                port=srv_cfg.listen_port,
+                error=str(e),
+                exc_info=True,
+            )
+            # Ensure cleanup before exiting, if possible
+            for task in listener_tasks:
+                if not task.done():
+                    task.cancel()
+            # If listeners are still running as tasks, gather them to finish
+            # their cleanup.
+            await asyncio.gather(*listener_tasks, return_exceptions=True)
+            await proxy.docker_manager.close()  # Ensure docker client is closed
+            sys.exit(1)
+
+    # Start the background monitoring task
+    monitor_task = asyncio.create_task(proxy._monitor_activity())
+
+    logger.info("Nether-bridge proxy is fully operational.")
 
     try:
-        docker_manager = DockerManager(proxy_settings.docker_url)
-        proxy = NetherBridgeProxy(
-            proxy_settings,
-            server_configs,
-            docker_manager,
-            shutdown_event,
-            reload_event,
-            ACTIVE_SESSIONS,  # Pass metric objects
-            RUNNING_SERVERS,
-            BYTES_TRANSFERRED,
-            SERVER_STARTUP_DURATION,
-            config_path,  # Pass the config_path for heartbeat file management
-        )
-
-        # Start Prometheus metrics server if enabled
-        if proxy_settings.prometheus_enabled:
-            start_metrics_server(proxy_settings.prometheus_port)
-        else:
-            log.info("Prometheus metrics server is disabled by configuration.")
-
-        # Signal handlers for graceful shutdown and reload
-        loop = asyncio.get_running_loop()
-
-        def handle_signal():
-            log.info("Shutdown signal received.")
-            shutdown_event.set()
-
-        def handle_reload_signal():
-            log.info("Reload signal received.")
-            reload_event.set()
-
-        if os.name != "nt":  # Windows does not support SIGTERM/SIGHUP directly
-            for sig in (signal.SIGTERM, signal.SIGINT):
-                loop.add_signal_handler(sig, handle_signal)
-            loop.add_signal_handler(signal.SIGHUP, handle_reload_signal)
-        else:
-            log.warning(
-                "Signal handlers for SIGTERM/SIGHUP are not available on Windows."
-            )
-
-        # Main proxy task
-        proxy_task = asyncio.create_task(proxy.run())
-
-        # Periodically check for reload requests from signal and update heartbeat
-        while not shutdown_event.is_set():
-            if reload_event.is_set():
-                log.info("Reloading configuration (main loop detected)...")
-                # Reload configuration and pass to proxy
-                reloaded_proxy_settings, reloaded_server_configs = (
-                    load_application_config()
-                )
-                await proxy._reload_configuration(
-                    reloaded_proxy_settings,
-                    reloaded_server_configs,
-                )
-                reload_event.clear()
-                log.info("Configuration reloaded.")
-
-            # Short sleep to prevent busy-waiting if no signals
-            try:
-                await asyncio.wait_for(shutdown_event.wait(), timeout=0.1)
-            except asyncio.TimeoutError:
-                pass  # Continue loop if no shutdown event
-
-        await proxy_task  # Wait for the proxy to finish its shutdown routine
-
+        # Keep the application running indefinitely, waiting for tasks
+        # to complete or cancellation.
+        # This will block until the event loop is stopped, e.g., by a signal.
+        await asyncio.Future()
     except asyncio.CancelledError:
-        log.info("Application tasks cancelled.")
-    except Exception as e:
-        log.exception("An unhandled error occurred in main.", error=str(e))
-        sys.exit(1)
+        logger.info("Application cancelled, initiating graceful shutdown.")
     finally:
-        if proxy:
-            log.info("Shutting down proxy gracefully (from main).")
-            # Ensure proxy listeners are closed and sessions terminated
-            await proxy._close_listeners()
-            await proxy._shutdown_all_sessions()
-        if docker_manager:
-            log.info("Closing Docker manager client.")
-            await docker_manager.close()
-        log.info("NetherBridge Proxy stopped.")
-        # Clean up heartbeat file if it was created by the main process
-        heartbeat_file_path = config_path / "heartbeat.txt"
-        if heartbeat_file_path.exists():
-            heartbeat_file_path.unlink(missing_ok=True)
-            log.info("Cleaned up heartbeat file.", path=heartbeat_file_path)
+        # --- SHUTDOWN SEQUENCE STARTS HERE ---
+        logger.info("Graceful shutdown initiated.")
+
+        # 1. Cancel the monitor task
+        if not monitor_task.done():
+            monitor_task.cancel()
+            # Await the task to ensure it processes cancellation
+            await asyncio.shield(monitor_task)
+        logger.info("Monitor task terminated.")
+
+        # 2. Close all active player sessions immediately
+        await proxy._shutdown_all_sessions()
+        logger.info("All active sessions closed.")
+
+        # 3. Stop all listening sockets/transports
+        # For TCP, call close on the server. For UDP, close the transport.
+        for listener in listener_tasks:
+            if hasattr(listener, "close"):  # For TCP asyncio.Server
+                listener.close()
+                await listener.wait_closed()
+            elif hasattr(listener, "abort"):  # For UDP DatagramTransport
+                listener.abort()
+        # No need to gather tasks as they are already managed by the listeners.
+        logger.info("All listening sockets/transports closed.")
+
+        # 4. Close Docker client
+        await proxy.docker_manager.close()
+        logger.info("Docker client closed.")
+
+        logger.info("Shutdown complete. Exiting.")
+
+
+def main():
+    """The main entrypoint for the Nether-bridge application."""
+    # Early configuration for healthcheck and initial logs.
+    early_log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+    early_log_formatter = os.environ.get("NB_LOG_FORMATTER", "console")
+    configure_logging(early_log_level, early_log_formatter)
+
+    if "--healthcheck" in sys.argv:
+        perform_health_check()
+        return
+
+    try:
+        settings, servers = load_application_config()
+    except Exception as e:
+        # Catch critical config loading errors
+        logger = structlog.get_logger(__name__)
+        logger.critical(
+            "FATAL: A critical error occurred during configuration loading.",
+            error=str(e),
+        )
+        sys.exit(1)
+
+    # Reconfigure with final settings from files/env
+    configure_logging(settings.log_level, settings.log_formatter)
+    logger = structlog.get_logger(__name__)
+    logger.info(
+        "Log level and formatter set to final values.",
+        log_level=settings.log_level,
+        log_formatter=settings.log_formatter,
+    )
+
+    if not servers:
+        # load_application_config logs the critical error, so we just exit.
+        sys.exit(1)
+
+    # Initialize proxy (DockerManager is now initialized within proxy)
+    proxy = NetherBridgeProxy(settings, servers)
+
+    try:
+        # asyncio.run handles loop creation, running the coroutine,
+        # and closing the loop. It should be the single entry point.
+        asyncio.run(run_app(proxy))
+    except KeyboardInterrupt:
+        logger.info("Application interrupted by user (Ctrl+C).")
+    except SystemExit:
+        # Allow SystemExit from inside run_app to pass through for healthcheck
+        # or fatal config errors.
+        pass
+    except Exception as e:
+        logger.critical(
+            "Unhandled exception in main application.", error=str(e), exc_info=True
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        structlog.get_logger().info("Application interrupted by user (Ctrl+C).")
-    except Exception:
-        structlog.get_logger().exception("Application terminated due to error.")
-        sys.exit(1)
+    main()
+
