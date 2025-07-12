@@ -1,9 +1,11 @@
+# main.py
+
+import asyncio
 import json
 import logging
 import os
 import signal
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -89,13 +91,30 @@ def perform_health_check():
         sys.exit(1)
 
 
-def run_app(proxy: NetherBridgeProxy):
+async def run_app(proxy: NetherBridgeProxy):
     """
-    Starts all services and runs the main proxy loop.
-    This was previously the `run` method on the proxy class.
+    Starts all services and runs the main proxy loop asynchronously.
     """
     logger = structlog.get_logger(__name__)
     logger.info("--- Starting Nether-bridge On-Demand Proxy ---")
+
+    # Set up asyncio signal handlers
+    # This must be done inside an async function where an event loop is running.
+    loop = asyncio.get_running_loop()
+    if hasattr(signal, "SIGHUP"):
+        loop.add_signal_handler(
+            signal.SIGHUP,
+            lambda: asyncio.create_task(proxy.handle_reload_signal()),
+        )
+    loop.add_signal_handler(
+        signal.SIGINT,
+        lambda: asyncio.create_task(proxy.handle_shutdown_signal()),
+    )
+    loop.add_signal_handler(
+        signal.SIGTERM,
+        lambda: asyncio.create_task(proxy.handle_shutdown_signal()),
+    )
+    logger.info("Signal handlers registered for graceful shutdown/reload.")
 
     if proxy.settings.prometheus_enabled:
         try:
@@ -120,49 +139,93 @@ def run_app(proxy: NetherBridgeProxy):
 
     if HEARTBEAT_FILE.exists():
         try:
+            # unlink is typically synchronous and fast, but for robustness
+            # in a purely async context, it could be run in a thread pool.
+            # For this simple case, direct call is fine.
             HEARTBEAT_FILE.unlink()
             logger.info("Removed stale heartbeat file.", path=str(HEARTBEAT_FILE))
         except OSError as e:
             logger.warning("Could not remove stale heartbeat file.", error=str(e))
 
-    # Connect the Docker manager
-    proxy.docker_manager.connect()
+    # DockerManager is already initialized in NetherBridgeProxy's __init__
+    # So, no need for the problematic proxy.docker_manager_init call.
 
     # Run startup tasks
-    proxy._ensure_all_servers_stopped_on_startup()
+    await proxy._ensure_all_servers_stopped_on_startup()
 
+    # Create and start listener tasks
+    listener_tasks = []
     for srv_cfg in proxy.servers_list:
         try:
-            proxy._create_listening_socket(srv_cfg)
-        except OSError:
-            # If a socket fails to bind on startup, it's a fatal error.
+            # _create_listening_socket returns the asyncio.Server or
+            # DatagramTransport instance, which needs to be added to tasks.
+            # proxy._create_listening_socket now returns a coroutine.
+            listener = await proxy._create_listening_socket(srv_cfg)
+            # For TCP, start_serving needs to be awaited.
+            # For UDP, the transport is already created.
+            if hasattr(listener, "start_serving"):
+                await listener.start_serving()
+            listener_tasks.append(listener)
+        except OSError as e:
+            logger.critical(
+                "FATAL: Could not bind to port. Exiting.",
+                port=srv_cfg.listen_port,
+                error=str(e),
+                exc_info=True,
+            )
+            # Ensure cleanup before exiting, if possible
+            for task in listener_tasks:
+                if not task.done():
+                    task.cancel()
+            # If listeners are still running as tasks, gather them to finish
+            # their cleanup.
+            await asyncio.gather(*listener_tasks, return_exceptions=True)
+            await proxy.docker_manager.close()  # Ensure docker client is closed
             sys.exit(1)
 
-    monitor_thread = threading.Thread(
-        target=proxy._monitor_servers_activity, daemon=True
-    )
-    monitor_thread.start()
+    # Start the background monitoring task
+    monitor_task = asyncio.create_task(proxy._monitor_activity())
 
-    # Pass the main module to the loop for access to configure_logging on reload
-    proxy._run_proxy_loop(sys.modules[__name__])
+    logger.info("Nether-bridge proxy is fully operational.")
 
-    # --- SHUTDOWN SEQUENCE STARTS HERE ---
-    # The _run_proxy_loop has exited, which means a shutdown was requested.
+    try:
+        # Keep the application running indefinitely, waiting for tasks
+        # to complete or cancellation.
+        # This will block until the event loop is stopped, e.g., by a signal.
+        await asyncio.Future()
+    except asyncio.CancelledError:
+        logger.info("Application cancelled, initiating graceful shutdown.")
+    finally:
+        # --- SHUTDOWN SEQUENCE STARTS HERE ---
+        logger.info("Graceful shutdown initiated.")
 
-    logger.info("Graceful shutdown initiated.")
+        # 1. Cancel the monitor task
+        if not monitor_task.done():
+            monitor_task.cancel()
+            # Await the task to ensure it processes cancellation
+            await asyncio.shield(monitor_task)
+        logger.info("Monitor task terminated.")
 
-    # 1. Terminate all active player sessions immediately.
-    proxy._shutdown_all_sessions()
+        # 2. Close all active player sessions immediately
+        await proxy._shutdown_all_sessions()
+        logger.info("All active sessions closed.")
 
-    # 2. Wait for the background monitor thread to finish its last loop.
-    logger.info("Waiting for monitor thread to terminate...")
-    monitor_thread.join(timeout=5.0)  # Add a timeout for safety
-    if monitor_thread.is_alive():
-        logger.warning("Monitor thread did not terminate in time.")
-    else:
-        logger.info("Monitor thread has terminated.")
+        # 3. Stop all listening sockets/transports
+        # For TCP, call close on the server. For UDP, close the transport.
+        for listener in listener_tasks:
+            if hasattr(listener, "close"):  # For TCP asyncio.Server
+                listener.close()
+                await listener.wait_closed()
+            elif hasattr(listener, "abort"):  # For UDP DatagramTransport
+                listener.abort()
+        # No need to gather tasks as they are already managed by the listeners.
+        logger.info("All listening sockets/transports closed.")
 
-    logger.info("Shutdown complete. Exiting.")
+        # 4. Close Docker client
+        await proxy.docker_manager.close()
+        logger.info("Docker client closed.")
+
+        logger.info("Shutdown complete. Exiting.")
 
 
 def main():
@@ -200,16 +263,26 @@ def main():
         # load_application_config logs the critical error, so we just exit.
         sys.exit(1)
 
+    # Initialize proxy (DockerManager is now initialized within proxy)
     proxy = NetherBridgeProxy(settings, servers)
 
-    # Set the signal handlers to point to the method on the proxy instance
-    if hasattr(signal, "SIGHUP"):
-        signal.signal(signal.SIGHUP, proxy.signal_handler)
-    signal.signal(signal.SIGINT, proxy.signal_handler)
-    signal.signal(signal.SIGTERM, proxy.signal_handler)
-
-    run_app(proxy)
+    try:
+        # asyncio.run handles loop creation, running the coroutine,
+        # and closing the loop. It should be the single entry point.
+        asyncio.run(run_app(proxy))
+    except KeyboardInterrupt:
+        logger.info("Application interrupted by user (Ctrl+C).")
+    except SystemExit:
+        # Allow SystemExit from inside run_app to pass through for healthcheck
+        # or fatal config errors.
+        pass
+    except Exception as e:
+        logger.critical(
+            "Unhandled exception in main application.", error=str(e), exc_info=True
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":
     main()
+

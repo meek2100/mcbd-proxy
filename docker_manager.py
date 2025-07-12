@@ -1,214 +1,164 @@
-import sys
+# docker_manager.py
+
+import asyncio
 import time
 
-import docker
+import aiodocker
+import aiodocker.exceptions
 import structlog
 from mcstatus import BedrockServer, JavaServer
 
 from config import ProxySettings, ServerConfig
 
+logger = structlog.get_logger(__name__)
+
 
 class DockerManager:
-    """Handles all direct interactions with the Docker daemon."""
+    """Manages interactions with the Docker daemon to control server
+    containers.
+    """
 
-    def __init__(self):
-        """Initializes the DockerManager."""
-        self.logger = structlog.get_logger(__name__)
-        self.client = None
-
-    def connect(self):
-        """Connects to the Docker daemon via the mounted socket."""
+    def __init__(self, docker_url: str):
         try:
-            self.client = docker.from_env()
-            self.client.ping()
-            self.logger.info("Successfully connected to the Docker daemon.")
+            self.client = aiodocker.Docker(url=docker_url)
         except Exception as e:
-            self.logger.critical(
-                "FATAL: Could not connect to Docker daemon. "
-                "Is /var/run/docker.sock mounted?",
+            logger.error(
+                "Failed to connect to Docker daemon. Is Docker running?",
+                docker_url=docker_url,
                 error=str(e),
             )
-            sys.exit(1)
+            raise
 
-    def is_container_running(self, container_name: str) -> bool:
-        """Checks if a Docker container's status is 'running'."""
+    async def is_container_running(self, container_name: str) -> bool:
+        """Checks if a given Docker container is currently running."""
         try:
-            container = self.client.containers.get(container_name)
-            return container.status == "running"
-        except docker.errors.NotFound:
-            # This is an expected condition, so debug level is appropriate
-            self.logger.debug(
-                "Container not found, assuming not running.",
-                container_name=container_name,
+            container = await self.client.containers.get(container_name)
+            info = await container.show()
+            return info["State"]["Running"]
+        except aiodocker.exceptions.DockerError as e:
+            if e.status == 404:
+                # Container not found, so it's definitely not running
+                return False
+            logger.error(
+                "Docker error checking container status.",
+                container=container_name,
+                status=e.status,
+                message=e.message,
             )
-            return False
-        except docker.errors.APIError as e:
-            # An API error is unexpected and should be logged as an error
-            self.logger.error(
-                "API error checking container status.",
-                container_name=container_name,
-                error=str(e),
-            )
-            return False
+            raise  # Re-raise unexpected Docker errors
         except Exception as e:
-            # Catch any other unexpected exceptions
-            self.logger.error(
-                "Unexpected error checking container status.",
-                container_name=container_name,
-                error=str(e),
-                exc_info=True,  # Add full stack trace for unexpected errors
-            )
-            return False
-
-    def start_server(
-        self, server_config: ServerConfig, settings: ProxySettings
-    ) -> bool:
-        """
-        Starts a given Minecraft server container and waits for it to become ready.
-
-        Returns:
-            bool: True if the server was started and became ready, False otherwise.
-        """
-        container_name = server_config.container_name
-        self.logger.info(
-            "Attempting to start Minecraft server container...",
-            container_name=container_name,
-        )
-        try:
-            container = self.client.containers.get(container_name)
-            container.start()
-            self.logger.info(
-                "Docker 'start' command issued.", container_name=container_name
-            )
-
-            # Wait a few seconds for the server process to initialize
-            time.sleep(settings.server_startup_delay_seconds)
-
-            # Wait for the server to respond to status pings and return its result
-            return self.wait_for_server_query_ready(
-                server_config,
-                settings.server_ready_max_wait_time_seconds,
-                settings.query_timeout_seconds,
-            )
-        except docker.errors.NotFound:
-            self.logger.error(
-                "Docker container not found. Cannot start.",
-                container_name=container_name,
-            )
-            return False
-        except docker.errors.APIError as e:
-            self.logger.error(
-                "Docker API error during start.",
-                container_name=container_name,
+            logger.error(
+                "An unexpected error occurred while checking container status.",
+                container=container_name,
                 error=str(e),
             )
-            return False
-        except Exception as e:
-            self.logger.error(
-                "Unexpected error during server startup.",
-                container_name=container_name,
-                error=str(e),
-            )
-            return False
+            raise
 
-    def stop_server(self, container_name: str) -> bool:
-        """
-        Stops a given Minecraft server container.
-
-        Returns:
-            bool: True if the stop command succeeded or container was not running.
-        """
-        try:
-            container = self.client.containers.get(container_name)
-            if container.status == "running":
-                self.logger.info(
-                    "Attempting to stop Minecraft server container...",
-                    container_name=container_name,
-                )
-                container.stop()
-                self.logger.info(
-                    "Server stopped successfully.", container_name=container_name
-                )
-            return True
-        except docker.errors.NotFound:
-            self.logger.debug(
-                "Container not found, assuming already stopped.",
-                container_name=container_name,
-            )
-            return True  # If it doesn't exist, it's considered stopped.
-        except docker.errors.APIError as e:
-            self.logger.error(
-                "Docker API error during stop.",
-                container_name=container_name,
-                error=str(e),
-            )
-            return False
-        except Exception as e:
-            self.logger.error(
-                "Unexpected error during server stop.",
-                container_name=container_name,
-                error=str(e),
-            )
-            return False
-
-    def wait_for_server_query_ready(
+    async def wait_for_server_query_ready(
         self,
         server_config: ServerConfig,
-        max_wait_seconds: int,
-        query_timeout_seconds: int,
+        max_wait_time: int,
+        query_timeout: int,
     ) -> bool:
         """
         Polls a Minecraft server using mcstatus until it responds or a timeout
-        is reached. This is used to ensure a server is fully loaded before
-        forwarding traffic.
+        is reached, confirming it's ready for traffic.
         """
-        container_name = server_config.container_name
-        target_ip = container_name
-        target_port = server_config.internal_port
-        server_type = server_config.server_type
-
-        self.logger.info(
-            "Waiting for server to respond to query",
-            container_name=container_name,
-            target=f"{target_ip}:{target_port}",
-            max_wait_seconds=max_wait_seconds,
-        )
         start_time = time.time()
+        server_address = f"127.0.0.1:{server_config.internal_port}"
 
-        while time.time() - start_time < max_wait_seconds:
+        ServerClass = None
+        if server_config.server_type == "java":
+            ServerClass = JavaServer
+        elif server_config.server_type == "bedrock":
+            ServerClass = BedrockServer
+        else:
+            logger.warning(
+                "Unsupported server type for readiness check",
+                server_type=server_config.server_type,
+            )
+            await asyncio.sleep(query_timeout)  # Use query_timeout for sleep
+            return False
+
+        while time.time() - start_time < max_wait_time:
             try:
-                status = None
-                if server_type == "bedrock":
-                    server = BedrockServer.lookup(
-                        f"{target_ip}:{target_port}",
-                        timeout=query_timeout_seconds,
-                    )
-                    status = server.status()
-                elif server_type == "java":
-                    server = JavaServer.lookup(
-                        f"{target_ip}:{target_port}",
-                        timeout=query_timeout_seconds,
-                    )
-                    status = server.status()
-
-                if status:
-                    self.logger.info(
-                        "Server responded to query. Ready!",
-                        container_name=container_name,
-                        latency_ms=status.latency,
-                    )
-                    return True
+                server = await ServerClass.async_lookup(
+                    server_address, timeout=query_timeout
+                )
+                await server.async_status()
+                logger.info("Server is ready.", server=server_config.name)
+                return True
             except Exception as e:
-                self.logger.debug(
-                    "Query failed, retrying...",
-                    container_name=container_name,
+                logger.debug(
+                    "Server not ready yet, retrying...",
+                    server=server_config.name,
                     error=str(e),
                 )
-            time.sleep(query_timeout_seconds)
-
-        self.logger.error(
-            f"Timeout: Server did not respond after {max_wait_seconds} seconds. "
-            "Proceeding anyway.",
-            container_name=container_name,
+                await asyncio.sleep(query_timeout)
+        logger.error(
+            "Server did not become query-ready in time.", server=server_config.name
         )
         return False
+
+    async def start_server(
+        self, server_config: ServerConfig, settings: ProxySettings
+    ) -> bool:
+        """Starts a server container and waits for it to become ready."""
+        logger.info("Attempting to start server...", server=server_config.name)
+        try:
+            container = await self.client.containers.get(server_config.container_name)
+            await container.start()
+            logger.info(
+                "Container started, waiting for server...", server=server_config.name
+            )
+
+            if not await self.wait_for_server_query_ready(
+                server_config,
+                settings.server_ready_max_wait_time_seconds,
+                settings.query_timeout_seconds,
+            ):
+                return False
+            return True
+        except aiodocker.exceptions.DockerError as e:
+            logger.error(
+                "Docker error while starting server.",
+                server=server_config.name,
+                status=e.status,
+                message=e.message,
+            )
+            return False
+        except Exception as e:
+            logger.error(
+                "An unexpected error occurred during server startup.",
+                server=server_config.name,
+                error=str(e),
+            )
+            return False
+
+    async def stop_server(self, container_name: str) -> bool:
+        """Stops a server container."""
+        logger.info("Attempting to stop container...", container=container_name)
+        try:
+            container = await self.client.containers.get(container_name)
+            await container.stop()
+            logger.info("Container stopped successfully.", container=container_name)
+            return True
+        except aiodocker.exceptions.DockerError as e:
+            logger.error(
+                "Docker error while stopping server.",
+                container=container_name,
+                status=e.status,
+                message=e.message,
+            )
+            return False
+        except Exception as e:
+            logger.error(
+                "An unexpected error occurred during server shutdown.",
+                container=container_name,
+                error=str(e),
+            )
+            return False
+
+    async def close(self):
+        """Closes the connection to the Docker daemon."""
+        await self.client.close()

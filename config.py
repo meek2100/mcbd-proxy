@@ -1,3 +1,5 @@
+# config.py
+
 import json
 import os
 from dataclasses import dataclass
@@ -23,6 +25,7 @@ DEFAULT_SETTINGS = {
     "max_concurrent_sessions": -1,  # -1 for unlimited
     "prometheus_enabled": True,
     "prometheus_port": 8000,
+    "docker_url": "unix://var/run/docker.sock",  # Default Docker URL
 }
 
 
@@ -57,6 +60,7 @@ class ProxySettings:
     max_concurrent_sessions: int
     prometheus_enabled: bool
     prometheus_port: int
+    docker_url: str  # Add docker_url to proxy settings
 
 
 def _load_settings_from_json(file_path: Path) -> dict:
@@ -151,7 +155,9 @@ def load_application_config() -> tuple[ProxySettings, List[ServerConfig]]:
             "player_check_interval_seconds": "NB_PLAYER_CHECK_INTERVAL",
             "query_timeout_seconds": "NB_QUERY_TIMEOUT",
             "server_ready_max_wait_time_seconds": "NB_SERVER_READY_MAX_WAIT",
-            "initial_boot_ready_max_wait_time_seconds": "NB_INITIAL_BOOT_READY_MAX_WAIT",  # noqa: E501
+            "initial_boot_ready_max_wait_time_seconds": (
+                "NB_INITIAL_BOOT_READY_MAX_WAIT"
+            ),
             "server_startup_delay_seconds": "NB_SERVER_STARTUP_DELAY",
             "initial_server_query_delay_seconds": "NB_INITIAL_SERVER_QUERY_DELAY",
             "log_level": "LOG_LEVEL",
@@ -162,9 +168,11 @@ def load_application_config() -> tuple[ProxySettings, List[ServerConfig]]:
             "max_concurrent_sessions": "NB_MAX_SESSIONS",
             "prometheus_enabled": "NB_PROMETHEUS_ENABLED",
             "prometheus_port": "NB_PROMETHEUS_PORT",
+            "docker_url": "DOCKER_HOST",  # Map to DOCKER_HOST env var
         }
-        env_var_name = env_map.get(key, key.upper())
-        env_val = os.environ.get(env_var_name)
+        env_var_name = env_map.get(key)  # Use .get() to avoid KeyError
+        env_val = os.environ.get(env_var_name) if env_var_name else None
+
         if env_val is not None:
             try:
                 if isinstance(default_val, bool):
@@ -178,6 +186,7 @@ def load_application_config() -> tuple[ProxySettings, List[ServerConfig]]:
                 else:
                     final_settings[key] = env_val
             except ValueError:
+                # Fallback to JSON or default if env var value is invalid type
                 final_settings[key] = settings_from_json.get(key, default_val)
         else:
             final_settings[key] = settings_from_json.get(key, default_val)

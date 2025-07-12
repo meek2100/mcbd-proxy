@@ -1,12 +1,15 @@
+# metrics.py
+
 """
-Centralized Prometheus metrics definitions for the Nether-bridge application.
+Centralized Prometheus metrics definitions and server startup for the
+Nether-bridge application.
 
 By defining these in a separate module, we ensure they are created as singletons
 only once when this module is first imported by any part of the application,
 preventing "Duplicated timeseries" errors during testing.
 """
 
-from prometheus_client import Counter, Gauge, Histogram
+from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
 # A gauge to track the number of active player sessions.
 # Labeled by server name to allow for per-server monitoring.
@@ -37,3 +40,10 @@ BYTES_TRANSFERRED = Counter(
     "Total bytes transferred through the proxy",
     ["server_name", "direction"],
 )
+
+
+def start_metrics_server(port: int):
+    """
+    Starts the Prometheus HTTP server to expose metrics.
+    """
+    start_http_server(port)

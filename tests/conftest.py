@@ -1,10 +1,12 @@
 # tests/conftest.py
+
+import asyncio
 import os
 import subprocess
 import time
 from pathlib import Path
 
-import docker
+import aiodocker  # Import aiodocker
 import pytest
 from dotenv import load_dotenv
 
@@ -91,9 +93,12 @@ def docker_compose_project_name():
 
 
 @pytest.fixture(scope="session")
-def docker_compose_up(docker_compose_project_name, pytestconfig, request, env_config):
+async def docker_compose_up(
+    docker_compose_project_name, pytestconfig, request, env_config
+):
     """
     Starts Docker Compose services before tests and tears them down afterwards.
+    This fixture is now an async fixture to allow aiodocker calls.
     """
     if os.environ.get("CI_MODE"):
         print("CI_MODE detected. Skipping Docker Compose management from conftest.")
@@ -138,38 +143,50 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request, env_co
     print(f"Using compose files: {[str(f) for f in compose_files_to_use]}")
 
     # Preemptively find and remove any containers from previous, failed test runs.
-    # We use a unique project name (`netherbridge_test_...`) and filter by it
-    # to ensure we don't accidentally remove containers from other projects.
-    # The hardcoded names are a secondary safeguard.
     print("Performing aggressive pre-cleanup of any stale test containers...")
+    aiodocker_client_for_cleanup = None
     try:
-        hardcoded_names_to_remove = [
+        aiodocker_client_for_cleanup = aiodocker.Docker(url=env_vars.get("DOCKER_HOST"))
+        # List containers that match the project name OR hardcoded test names
+        all_containers = await aiodocker_client_for_cleanup.containers.list(all=True)
+        stale_container_ids = []
+        hardcoded_names_to_check = [
             "nether-bridge",
             "mc-bedrock",
             "mc-java",
             "nb-tester",
         ]
-        list_cmd = ["docker", "ps", "-aq", "--filter", "name=netherbridge_test_"]
-        for name in hardcoded_names_to_remove:
-            list_cmd.extend(["--filter", f"name={name}"])
 
-        result = subprocess.run(
-            list_cmd, capture_output=True, encoding="utf-8", check=False, env=env_vars
-        )
-        stale_ids = result.stdout.strip().splitlines()
-        if stale_ids:
+        for container in all_containers:
+            container_info = await container.show()
+            labels = container_info["Config"]["Labels"]
+            # Check by project name label or hardcoded names
+            if labels.get(
+                "com.docker.compose.project"
+            ) == docker_compose_project_name or any(
+                name in container_info["Name"] for name in hardcoded_names_to_check
+            ):  #
+                stale_container_ids.append(container_info["Id"])
+
+        if stale_container_ids:
             print(
-                f"Found stale containers: {', '.join(stale_ids)}. Forcibly removing..."
+                f"Found stale containers: {', '.join(stale_container_ids)}. "
+                "Forcibly removing..."
             )
-            subprocess.run(
-                ["docker", "rm", "-f"] + stale_ids,
-                check=False,
-                capture_output=True,
-                encoding="utf-8",
-                env=env_vars,
-            )
+            # aiodocker doesn't have a bulk remove. Loop through and remove.
+            for container_id in stale_container_ids:
+                try:
+                    container_to_remove = (
+                        await aiodocker_client_for_cleanup.containers.get(container_id)
+                    )
+                    await container_to_remove.remove(force=True)
+                except aiodocker.exceptions.DockerError as e:
+                    print(f"Warning: Could not remove container {container_id}: {e}")
+        await aiodocker_client_for_cleanup.close()
     except Exception as e:
         print(f"Warning during aggressive pre-cleanup: {e}")
+        if aiodocker_client_for_cleanup:
+            await aiodocker_client_for_cleanup.close()
 
     try:
         print("Bringing up test environment with build step...")
@@ -190,31 +207,28 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request, env_co
         print("Docker Compose 'up' command completed.")
 
         print("Waiting for nether-bridge container to become healthy...")
-        client = docker.from_env(environment=env_vars)
+        # Use aiodocker client for health check
+        health_check_client = aiodocker.Docker(url=env_vars.get("DOCKER_HOST"))
         try:
-            container = client.containers.get("nether-bridge")
+            container = await health_check_client.containers.get("nether-bridge")
             timeout = 120
             start_time = time.time()
             while time.time() - start_time < timeout:
-                container.reload()
-                health_status = (
-                    container.attrs.get("State", {}).get("Health", {}).get("Status")
-                )
+                info = await container.show()
+                health_status = info.get("State", {}).get("Health", {}).get("Status")
                 if health_status == "healthy":
                     print("Nether-bridge is healthy.")
                     break
-                time.sleep(2)
+                await asyncio.sleep(2)
             else:
-                health_log = (
-                    container.attrs.get("State", {}).get("Health", {}).get("Log")
-                )
+                health_log = info.get("State", {}).get("Health", {}).get("Log")
                 last_log = health_log[-1] if health_log else "No health log."
                 raise Exception(
                     "Timeout waiting for nether-bridge container to become healthy. "
                     f"Last status: {health_status}. Last log: {last_log}"
                 )
         finally:
-            client.close()
+            await health_check_client.close()
 
     except subprocess.CalledProcessError as e:
         print(f"Error during Docker Compose setup: {e.stderr}")
@@ -260,8 +274,9 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request, env_co
         print(f"An unexpected error occurred during Docker Compose setup: {e}")
         raise
 
-    yield
+    yield  # Yield control to the tests
 
+    # Teardown after tests
     if request.session.testsfailed > 0:
         print(
             (
@@ -312,21 +327,25 @@ def docker_compose_up(docker_compose_project_name, pytestconfig, request, env_co
 
 
 @pytest.fixture(scope="session")
-def docker_client_fixture(env_config):
-    """Provides a Docker client instance for integration tests."""
+async def docker_client_fixture(env_config):
+    """
+    Provides an asynchronous aiodocker client instance for integration tests.
+    """
     client = None
     docker_host_url = env_config.get("DOCKER_HOST")
     try:
         if docker_host_url:
-            client = docker.DockerClient(base_url=docker_host_url)
-            print(f"\nConnecting Docker client to remote: {docker_host_url}")
+            client = aiodocker.Docker(url=docker_host_url)
+            print(f"\nConnecting aiodocker client to remote: {docker_host_url}")
         else:
-            client = docker.from_env()
-            print("\nConnecting Docker client using default (local or CI) environment.")
+            client = aiodocker.Docker()
+            print(
+                "\nConnecting aiodocker client using default (local or CI) environment."
+            )
 
-        client.ping()
-        print("Successfully connected to Docker daemon for Docker client fixture.")
-    except docker.errors.DockerException as e:
+        await client.ping()
+        print("Successfully connected to Docker daemon for aiodocker client fixture.")
+    except aiodocker.exceptions.DockerError as e:
         pytest.fail(
             f"Could not connect to Docker daemon for client fixture. Error: {e}"
         )
@@ -334,4 +353,4 @@ def docker_client_fixture(env_config):
     yield client
 
     if client:
-        client.close()
+        await client.close()
