@@ -29,7 +29,6 @@ def configure_logging(log_level: str, log_formatter: str):
         stream=sys.stdout,
         level=log_level.upper(),
     )
-    # ... (rest of the function is unchanged)
     shared_processors = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_logger_name,
@@ -59,12 +58,10 @@ def configure_logging(log_level: str, log_formatter: str):
 
 def perform_health_check(config_path: Path):
     """Performs a self-sufficient two-stage health check."""
-    # ... (function is unchanged)
     logger = structlog.get_logger(__name__)
     heartbeat_file = config_path / "heartbeat.txt"
 
     try:
-        # Stage 1: Ensure configuration can be loaded without errors.
         settings, servers_list = load_application_config()
         if not servers_list:
             logger.error("Health Check FAIL: No servers configured.")
@@ -78,7 +75,6 @@ def perform_health_check(config_path: Path):
         )
         sys.exit(1)
 
-    # Stage 2: Check if the main process heartbeat is recent.
     if not heartbeat_file.is_file():
         logger.error("Health Check FAIL: Heartbeat file not found.")
         sys.exit(1)
@@ -101,7 +97,6 @@ def perform_health_check(config_path: Path):
 
 async def main():
     """The main entrypoint for the Nether-bridge application."""
-    # ... (initial logging config is unchanged)
     early_log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
     early_log_formatter = os.environ.get("NB_LOG_FORMATTER", "console")
     configure_logging(early_log_level, early_log_formatter)
@@ -115,8 +110,6 @@ async def main():
     reload_event = asyncio.Event()
 
     loop = asyncio.get_running_loop()
-
-    # Add signal handlers only on non-Windows platforms
     if sys.platform != "win32":
         for signame in ("SIGINT", "SIGTERM"):
             loop.add_signal_handler(
@@ -155,6 +148,9 @@ async def main():
         server_startup_duration_metric=SERVER_STARTUP_DURATION,
         config_path=CONFIG_PATH,
     )
+
+    # Restore the pre-warm startup check
+    await proxy.ensure_all_servers_stopped_on_startup()
 
     if settings.prometheus_enabled:
         try:

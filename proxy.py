@@ -45,6 +45,42 @@ class NetherBridgeProxy:
         self._sessions = set()
         self.logger = structlog.get_logger(__name__)
 
+    async def ensure_all_servers_stopped_on_startup(self):
+        """
+        Ensures all managed servers are stopped when the proxy starts.
+        This is an async version of the original pre-warm logic.
+        """
+        self.logger.info(
+            "Proxy startup: Ensuring all managed servers are initially stopped."
+        )
+        for port, server_config in self.servers.items():
+            container_name = server_config.docker_container_name
+            try:
+                is_running = await self.docker_manager.is_container_running(
+                    container_name
+                )
+                if is_running:
+                    self.logger.warning(
+                        "Server found running at startup. Issuing stop command.",
+                        container_name=container_name,
+                    )
+                    await self.docker_manager.stop_server(container_name)
+                    self.logger.info(
+                        "Server confirmed to be stopped.",
+                        container_name=container_name,
+                    )
+                else:
+                    self.logger.info(
+                        "Server is confirmed to be stopped.",
+                        container_name=container_name,
+                    )
+            except Exception as e:
+                self.logger.error(
+                    "Error during startup check for server.",
+                    container_name=container_name,
+                    error=str(e),
+                )
+
     async def run(self):
         """Starts the proxy, listens for connections, and handles events."""
         for port, server_config in self.servers.items():
@@ -56,10 +92,10 @@ class NetherBridgeProxy:
                 )
                 self._listeners.append(listener)
                 self.logger.info(
-                    "Proxy listening",
+                    "Proxy listening for connections",
                     server_name=server_config.server_name,
-                    host=server_config.listen_host,
-                    port=port,
+                    listen_host=server_config.listen_host,
+                    listen_port=port,
                 )
             except OSError as e:
                 self.logger.error(
@@ -93,7 +129,6 @@ class NetherBridgeProxy:
     async def _handle_client(self, client_reader, client_writer, server_config: Server):
         """
         Handles a single client connection from start to finish.
-        This involves starting the server if needed and proxying data.
         """
         client_addr = client_writer.get_extra_info("peername")
         self.logger.info(
@@ -110,7 +145,6 @@ class NetherBridgeProxy:
                 server_config.docker_container_name
             )
             duration = time.monotonic() - start_time
-            # FIX: Use .set() for Gauges, not .observe()
             self.server_startup_duration_metric.set(duration)
 
             if not server_ip:
