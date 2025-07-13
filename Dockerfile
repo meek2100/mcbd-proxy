@@ -13,12 +13,13 @@ ENV VIRTUAL_ENV=/app/.venv
 RUN python3 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
-# Install all dependencies, including development and testing tools.
-COPY --chown=appuser:appuser pyproject.toml poetry.lock* ./
+# Install all dependencies from pyproject.toml.
+COPY --chown=appuser:appuser pyproject.toml ./
 RUN pip install --no-cache-dir .[dev]
 
-# ---- Testing Stage ----
-# This stage is specifically for running integration tests.
+# ---- Testing Stage (Restored) ----
+# This stage is specifically for running tests from within a container,
+# ensuring a consistent test environment everywhere.
 FROM builder as testing
 
 # Copy the application source code into the testing stage.
@@ -38,9 +39,8 @@ RUN useradd --create-home --shell /bin/bash appuser
 RUN apt-get update && apt-get install -y --no-install-recommends gosu \
   && rm -rf /var/lib/apt/lists/*
 
-# Copy the installed dependencies from the builder stage.
+# Copy the installed dependencies and the application code.
 COPY --from=builder /app/.venv /app/.venv
-# Copy the application code.
 COPY --chown=appuser:appuser . /app
 
 # Set correct ownership for the entire application directory.
@@ -49,7 +49,6 @@ RUN chown -R appuser:appuser /app
 USER appuser
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Expose the default Minecraft server ports.
 EXPOSE 25565 19132
 
 ENTRYPOINT ["/app/entrypoint.sh"]

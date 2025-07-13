@@ -1,65 +1,58 @@
-import asyncio
-import random
+import os
 from pathlib import Path
 
+import docker
 import pytest
-import pytest_asyncio
 from dotenv import load_dotenv
 
 
-@pytest_asyncio.fixture(scope="session")
-async def docker_compose_up(pytestconfig):
+@pytest.fixture(scope="session")
+def env_config(pytestconfig):
     """
-    Manages the Docker Compose test environment asynchronously.
+    Loads test environment configuration from 'tests/.env' and the shell,
+    returning the configuration as a dict. This fixture is the single source
+    of truth for test configuration.
     """
-    env_path = Path(__file__).parent / ".env"
-    load_dotenv(dotenv_path=env_path)
+    print("--- Loading Test Environment Configuration ---")
+    config = {}
 
-    project_name = f"netherbridge_test_{random.randint(1, 1000)}"
-    compose_file = str(Path(__file__).parent / "docker-compose.tests.yml")
+    root_path = Path(str(pytestconfig.rootdir))
+    env_file_path = root_path / "tests" / ".env"
 
-    up_command = [
-        "docker",
-        "compose",
-        "-p",
-        project_name,
-        "-f",
-        compose_file,
-        "up",
-        "--build",
-        "--force-recreate",
-        "-d",
-    ]
+    if env_file_path.is_file():
+        print(f"Found environment file at: {env_file_path}")
+        load_dotenv(dotenv_path=env_file_path, override=True)
 
+    # Populate the config dictionary from the environment
+    config["DOCKER_HOST"] = os.environ.get("DOCKER_HOST")
+    config["DOCKER_HOST_IP"] = os.environ.get("DOCKER_HOST_IP")
+
+    mode_description = "Local Mode (using default Docker context)"
+    if os.environ.get("CI_MODE"):
+        mode_description = "CI Mode (driven by GitHub Actions workflow)"
+    elif config.get("DOCKER_HOST"):
+        mode_description = f"Remote Mode (connecting to {config['DOCKER_HOST']})"
+
+    print("\n==================================================")
+    print(f" Test Environment Profile: {mode_description}")
+    print("==================================================")
+
+    return config
+
+
+@pytest.fixture(scope="session")
+def docker_client_fixture(env_config):
+    """
+    Provides a Docker client instance configured to connect to the correct
+    Docker daemon (local, remote, or CI).
+    """
     try:
-        process = await asyncio.create_subprocess_exec(
-            *up_command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await process.communicate()
-
-        if process.returncode != 0:
-            pytest.fail(
-                f"Docker Compose failed to start:\n{stderr.decode()}", pytrace=False
-            )
-
-        # Wait a few seconds for services to stabilize
-        await asyncio.sleep(5)
-        yield
-
+        client = docker.from_env()
+        client.ping()
+        print("Successfully connected to Docker daemon.")
+        yield client
+    except docker.errors.DockerException as e:
+        pytest.fail(f"Could not connect to Docker daemon. Is it running? Error: {e}")
     finally:
-        down_command = [
-            "docker",
-            "compose",
-            "-p",
-            project_name,
-            "-f",
-            compose_file,
-            "down",
-            "-v",
-        ]
-        process = await asyncio.create_subprocess_exec(
-            *down_command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await process.communicate()
+        if "client" in locals() and client:
+            client.close()
