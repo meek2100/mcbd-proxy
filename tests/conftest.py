@@ -1,8 +1,11 @@
+import asyncio
 import os
+import random
 from pathlib import Path
 
 import docker
 import pytest
+import pytest_asyncio
 from dotenv import load_dotenv
 
 
@@ -11,7 +14,7 @@ def env_config(pytestconfig):
     """
     Loads test environment configuration from 'tests/.env', dynamically builds the
     DOCKER_HOST connection string, and returns the configuration as a dict.
-    This fixture is the single source of truth for test configuration.
+    This preserves the original, correct logic for multi-environment testing.
     """
     print("--- Loading Test Environment Configuration ---")
     config = {}
@@ -23,7 +26,6 @@ def env_config(pytestconfig):
         print(f"Found environment file at: {env_file_path}")
         load_dotenv(dotenv_path=env_file_path, override=True)
 
-    # Restore the original logic to build the DOCKER_HOST URL
     host_ip = os.environ.get("DOCKER_HOST_IP")
     conn_type = os.environ.get("DOCKER_CONNECTION_TYPE", "").lower()
     conn_port = os.environ.get("DOCKER_CONNECTION_PORT")
@@ -38,12 +40,12 @@ def env_config(pytestconfig):
                 docker_host_url = f"ssh://{ssh_user}@{host_ip}:{conn_port}"
             else:
                 pytest.fail("DOCKER_SSH_USER must be set for SSH connections.")
-
         if docker_host_url:
-            print(f"Dynamically constructed DOCKER_HOST: {docker_host_url}")
             os.environ["DOCKER_HOST"] = docker_host_url
 
-    # Populate the config dictionary for other fixtures
+    if host_ip:
+        os.environ["DOCKER_HOST_IP"] = host_ip
+
     config["DOCKER_HOST"] = os.environ.get("DOCKER_HOST")
     config["DOCKER_HOST_IP"] = os.environ.get("DOCKER_HOST_IP")
 
@@ -60,16 +62,84 @@ def env_config(pytestconfig):
     return config
 
 
+@pytest_asyncio.fixture(scope="session")
+async def docker_compose_session(env_config):
+    """
+    Manages the Docker Compose test environment for the entire session.
+    It performs pre-cleanup, starts services, and tears them down.
+    """
+    project_name = f"netherbridge_test_{random.randint(1, 1000)}"
+    compose_file = str(Path(__file__).parent / "docker-compose.tests.yml")
+
+    # Aggressive pre-cleanup
+    print("\n--- Performing aggressive pre-cleanup of any stale test containers... ---")
+    try:
+        find_stale_cmd = [
+            "docker",
+            "ps",
+            "-aq",
+            "--filter",
+            "name=netherbridge_test_",
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *find_stale_cmd, stdout=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await proc.communicate()
+        stale_ids = stdout.decode().strip().splitlines()
+        if stale_ids:
+            print(
+                f"Found stale containers: {', '.join(stale_ids)}. Forcibly removing..."
+            )
+            await asyncio.create_subprocess_exec("docker", "rm", "-f", *stale_ids)
+    except Exception as e:
+        print(f"Warning during pre-cleanup: {e}")
+
+    # Docker Compose commands
+    up_command = [
+        "docker",
+        "compose",
+        "-p",
+        project_name,
+        "-f",
+        compose_file,
+        "up",
+        "--build",
+        "-d",
+    ]
+    down_command = [
+        "docker",
+        "compose",
+        "-p",
+        project_name,
+        "-f",
+        compose_file,
+        "down",
+        "-v",
+    ]
+
+    try:
+        print("--- Bringing up test environment... ---")
+        up_process = await asyncio.create_subprocess_exec(*up_command)
+        await up_process.wait()
+        if up_process.returncode != 0:
+            pytest.fail("Docker Compose failed to start.", pytrace=False)
+
+        await asyncio.sleep(10)  # Wait for services to stabilize
+        yield
+
+    finally:
+        print("\n--- Tearing down Docker Compose environment... ---")
+        down_process = await asyncio.create_subprocess_exec(*down_command)
+        await down_process.wait()
+        print("Teardown complete.")
+
+
 @pytest.fixture(scope="session")
 def docker_client_fixture(env_config):
-    """
-    Provides a Docker client instance configured to connect to the correct
-    Docker daemon (local, remote, or CI).
-    """
+    """Provides a Docker client instance for integration tests."""
     try:
         client = docker.from_env()
         client.ping()
-        print("Successfully connected to Docker daemon.")
         yield client
     except docker.errors.DockerException as e:
         pytest.fail(f"Could not connect to Docker daemon. Is it running? Error: {e}")
