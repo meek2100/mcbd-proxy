@@ -46,11 +46,13 @@ def mock_dependencies():
         mock_docker_instance = mock_docker_class.return_value
         mock_proxy_instance = mock_proxy_class.return_value
 
-        # Ensure that any methods we await in the main loop are AsyncMocks
+        # Ensure that ALL methods we await in the main loop are AsyncMocks
         mock_docker_instance.close = AsyncMock()
         mock_proxy_instance.run = AsyncMock()
         mock_proxy_instance._shutdown_all_sessions = AsyncMock()
         mock_proxy_instance._close_listeners = AsyncMock()
+        # FIX: Add the missing mock for the pre-warm startup check
+        mock_proxy_instance.ensure_all_servers_stopped_on_startup = AsyncMock()
 
         yield {
             "docker_manager": mock_docker_instance,
@@ -74,7 +76,10 @@ async def test_main_startup_and_shutdown(mock_config, mock_dependencies):
         shutdown_event.set()
         await main_task
 
-    # Assert that shutdown procedures on the MOCK INSTANCES were called
+    # Assert that all startup and shutdown procedures were called
+    mock_dependencies[
+        "proxy"
+    ].ensure_all_servers_stopped_on_startup.assert_awaited_once()
     mock_dependencies["proxy"]._shutdown_all_sessions.assert_awaited_once()
     mock_dependencies["proxy"]._close_listeners.assert_awaited_once()
     mock_dependencies["docker_manager"].close.assert_awaited_once()
