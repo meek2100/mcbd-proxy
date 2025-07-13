@@ -2,7 +2,7 @@
 [project]
 name = "nether-bridge"
 version = "1.0.0"
-description = "An intelligent, on-demand proxy for Minecraft servers running in Docker."
+description = "An intelligent, on-demand proxy for Minecraft servers in Docker."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -25,6 +25,7 @@ dependencies = [
     "prometheus-client==0.22.1",
     "structlog==25.4.0",
     "colorama==0.4.6",
+    "pydantic==2.8.2",  # Added pydantic dependency
 ]
 
 [project.urls]
@@ -33,7 +34,6 @@ Homepage = "https://github.com/meek2100/mcbd-proxy"
 
 [project.optional-dependencies]
 dev = [
-    # Pinned to match original requirements-dev.txt
     "pytest==8.4.1",
     "pytest-mock==3.14.1",
     "pytest-cov==6.2.1",
