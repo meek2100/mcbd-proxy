@@ -9,9 +9,9 @@ from dotenv import load_dotenv
 @pytest.fixture(scope="session")
 def env_config(pytestconfig):
     """
-    Loads test environment configuration from 'tests/.env' and the shell,
-    returning the configuration as a dict. This fixture is the single source
-    of truth for test configuration.
+    Loads test environment configuration from 'tests/.env', dynamically builds the
+    DOCKER_HOST connection string, and returns the configuration as a dict.
+    This fixture is the single source of truth for test configuration.
     """
     print("--- Loading Test Environment Configuration ---")
     config = {}
@@ -23,7 +23,27 @@ def env_config(pytestconfig):
         print(f"Found environment file at: {env_file_path}")
         load_dotenv(dotenv_path=env_file_path, override=True)
 
-    # Populate the config dictionary from the environment
+    # Restore the original logic to build the DOCKER_HOST URL
+    host_ip = os.environ.get("DOCKER_HOST_IP")
+    conn_type = os.environ.get("DOCKER_CONNECTION_TYPE", "").lower()
+    conn_port = os.environ.get("DOCKER_CONNECTION_PORT")
+    ssh_user = os.environ.get("DOCKER_SSH_USER")
+    docker_host_url = None
+
+    if host_ip and conn_type and conn_port:
+        if conn_type == "tcp":
+            docker_host_url = f"tcp://{host_ip}:{conn_port}"
+        elif conn_type == "ssh":
+            if ssh_user:
+                docker_host_url = f"ssh://{ssh_user}@{host_ip}:{conn_port}"
+            else:
+                pytest.fail("DOCKER_SSH_USER must be set for SSH connections.")
+
+        if docker_host_url:
+            print(f"Dynamically constructed DOCKER_HOST: {docker_host_url}")
+            os.environ["DOCKER_HOST"] = docker_host_url
+
+    # Populate the config dictionary for other fixtures
     config["DOCKER_HOST"] = os.environ.get("DOCKER_HOST")
     config["DOCKER_HOST_IP"] = os.environ.get("DOCKER_HOST_IP")
 
