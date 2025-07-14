@@ -1,227 +1,125 @@
+# proxy.py
 import asyncio
-import time
-from pathlib import Path
 
 import structlog
-from prometheus_client import Gauge
 
-from config import AppSettings, Server
+from config import AppConfig
 from docker_manager import DockerManager
+from metrics import MetricsManager
 
 
-class NetherBridgeProxy:
+class Proxy:
     """
-    The main proxy class that orchestrates listening for connections, starting
-    Minecraft servers, and proxying data between clients and servers.
+    A TCP proxy server that handles Minecraft client connections and routes them
+    to the appropriate backend server, managed by DockerManager.
     """
 
     def __init__(
         self,
-        settings: AppSettings,
-        servers_list: list[Server],
+        config: AppConfig,
         docker_manager: DockerManager,
-        shutdown_event: asyncio.Event,
-        reload_event: asyncio.Event,
-        active_sessions_metric: Gauge,
-        running_servers_metric: Gauge,
-        bytes_transferred_metric: Gauge,
-        server_startup_duration_metric: Gauge,
-        config_path: Path,
+        metrics_manager: MetricsManager,
     ):
-        self.settings = settings
-        self.servers = {server.listen_port: server for server in servers_list}
+        self.config = config
         self.docker_manager = docker_manager
-        self.shutdown_event = shutdown_event
-        self.reload_event = reload_event
-        self.config_path = config_path
-
-        # Prometheus Metrics
-        self.active_sessions_metric = active_sessions_metric
-        self.running_servers_metric = running_servers_metric
-        self.bytes_transferred_metric = bytes_transferred_metric
-        self.server_startup_duration_metric = server_startup_duration_metric
-
-        self._listeners = []
-        self._sessions = set()
+        self.metrics_manager = metrics_manager
         self.logger = structlog.get_logger(__name__)
+        self.server = None  # To hold the asyncio server instance
 
-    async def ensure_all_servers_stopped_on_startup(self):
+    async def handle_client(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ):
         """
-        Ensures all managed servers are stopped when the proxy starts.
-        This is an async version of the original pre-warm logic.
+        Handles an incoming client connection and proxies it to the
+        Minecraft server.
         """
-        self.logger.info(
-            "Proxy startup: Ensuring all managed servers are initially stopped."
+        client_addr = writer.get_extra_info("peername")
+        self.logger.info("Client connected.", client_addr=client_addr)
+        self.metrics_manager.connections_total.inc()
+
+        backend_ip = await self.docker_manager.ensure_server_running(
+            self.config.mc_container_name
         )
-        for port, server_config in self.servers.items():
-            container_name = server_config.docker_container_name
-            try:
-                is_running = await self.docker_manager.is_container_running(
-                    container_name
-                )
-                if is_running:
-                    self.logger.warning(
-                        "Server found running at startup. Issuing stop command.",
-                        container_name=container_name,
-                    )
-                    await self.docker_manager.stop_server(container_name)
-                    self.logger.info(
-                        "Server confirmed to be stopped.",
-                        container_name=container_name,
-                    )
-                else:
-                    self.logger.info(
-                        "Server is confirmed to be stopped.",
-                        container_name=container_name,
-                    )
-            except Exception as e:
-                self.logger.error(
-                    "Error during startup check for server.",
-                    container_name=container_name,
-                    error=str(e),
-                )
 
-    async def run(self):
-        """Starts the proxy, listens for connections, and handles events."""
-        for port, server_config in self.servers.items():
-            try:
-                listener = await asyncio.start_server(
-                    lambda r, w: self._accept_client(r, w, server_config),
-                    host=server_config.listen_host,
-                    port=port,
-                )
-                self._listeners.append(listener)
-                self.logger.info(
-                    "Proxy listening for connections",
-                    server_name=server_config.server_name,
-                    listen_host=server_config.listen_host,
-                    listen_port=port,
-                )
-            except OSError as e:
-                self.logger.error(
-                    "Failed to start listener",
-                    server_name=server_config.server_name,
-                    error=str(e),
-                )
-        if not self._listeners:
-            self.logger.critical("No listeners started. Shutting down.")
-            self.shutdown_event.set()
+        if not backend_ip:
+            self.logger.error(
+                "Could not get backend IP. Closing connection.",
+                client_addr=client_addr,
+            )
+            writer.close()
+            await writer.wait_closed()
+            self.metrics_manager.connections_failed.inc()
             return
 
-        heartbeat_task = asyncio.create_task(self._heartbeat())
-
-        while not self.shutdown_event.is_set():
-            await asyncio.sleep(0.5)
-
-        self.logger.info("Shutdown event received. Closing proxy.")
-        heartbeat_task.cancel()
-        await self._shutdown_all_sessions()
-        await self._close_listeners()
-
-    async def _accept_client(self, reader, writer, server_config: Server):
-        """Accepts a client and starts a new session to handle it."""
-        session_task = asyncio.create_task(
-            self._handle_client(reader, writer, server_config)
-        )
-        self._sessions.add(session_task)
-        session_task.add_done_callback(self._sessions.discard)
-
-    async def _handle_client(self, client_reader, client_writer, server_config: Server):
-        """
-        Handles a single client connection from start to finish.
-        """
-        client_addr = client_writer.get_extra_info("peername")
-        self.logger.info(
-            "Accepted connection",
-            client_ip=client_addr[0],
-            server_name=server_config.server_name,
-        )
-        self.active_sessions_metric.inc()
-
-        server_reader, server_writer = None, None
         try:
-            start_time = time.monotonic()
-            server_ip = await self.docker_manager.ensure_server_running(
-                server_config.docker_container_name
-            )
-            duration = time.monotonic() - start_time
-            self.server_startup_duration_metric.set(duration)
-
-            if not server_ip:
-                self.logger.error(
-                    "Failed to get server IP.",
-                    container=server_config.docker_container_name,
-                )
-                return
-
+            (
+                backend_reader,
+                backend_writer,
+            ) = await asyncio.open_connection(backend_ip, self.config.mc_server_port)
             self.logger.info(
-                "Server is running",
-                container=server_config.docker_container_name,
-                ip=server_ip,
-                startup_time=f"{duration:.2f}s",
+                "Proxy connection established.",
+                client_addr=client_addr,
+                backend_addr=(backend_ip, self.config.mc_server_port),
+            )
+            self.metrics_manager.connections_proxied.inc()
+
+            # Create tasks to shuttle data between client and backend
+            client_to_backend = asyncio.create_task(
+                self.shuttle_data(reader, backend_writer, "C->S")
+            )
+            backend_to_client = asyncio.create_task(
+                self.shuttle_data(backend_reader, writer, "S->C")
             )
 
-            server_reader, server_writer = await asyncio.open_connection(
-                server_ip, server_config.target_port
-            )
-            self.logger.info(
-                "Connected to target server",
-                server=server_config.server_name,
-            )
+            # Wait for either side to close the connection
+            await asyncio.gather(client_to_backend, backend_to_client)
 
-            await self._proxy_data(
-                client_reader, client_writer, server_reader, server_writer
-            )
+        except ConnectionRefusedError:
+            self.logger.error("Backend connection refused.", backend_ip=backend_ip)
+            self.metrics_manager.connections_failed.inc()
         except Exception as e:
-            self.logger.error("Error in client handler", error=str(e), exc_info=True)
+            self.logger.error("Proxy error.", error=str(e), exc_info=True)
         finally:
-            self.logger.info("Closing connection", client_ip=client_addr[0])
-            if server_writer:
-                server_writer.close()
-                await server_writer.wait_closed()
-            if client_writer:
-                client_writer.close()
-                await client_writer.wait_closed()
-            self.active_sessions_metric.dec()
+            self.logger.info("Closing connection.", client_addr=client_addr)
+            writer.close()
+            await writer.wait_closed()
 
-    async def _proxy_data(self, client_r, client_w, server_r, server_w):
-        """Proxies data in both directions between client and server."""
+    async def shuttle_data(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        direction: str,
+    ):
+        """Reads data from the reader and writes it to the writer."""
+        try:
+            while not reader.at_eof():
+                data = await reader.read(4096)
+                if not data:
+                    break
+                writer.write(data)
+                await writer.drain()
+        except asyncio.CancelledError:
+            pass  # Task was cancelled, expected during shutdown
+        except Exception as e:
+            self.logger.error("Data shuttle error.", direction=direction, error=e)
+        finally:
+            writer.close()
+            await writer.wait_closed()
 
-        async def _pipe(reader, writer):
-            try:
-                while not reader.at_eof():
-                    data = await reader.read(4096)
-                    if not data:
-                        break
-                    writer.write(data)
-                    await writer.drain()
-                    self.bytes_transferred_metric.inc(len(data))
-            finally:
-                writer.close()
+    async def start(self):
+        """Starts the TCP proxy server."""
+        self.server = await asyncio.start_server(
+            self.handle_client,
+            self.config.proxy_host,
+            self.config.proxy_port,
+        )
+        addr = self.server.sockets[0].getsockname()
+        self.logger.info("Proxy server started.", addr=addr)
+        await self.server.serve_forever()
 
-        await asyncio.gather(_pipe(client_r, server_w), _pipe(server_r, client_w))
-
-    async def _heartbeat(self):
-        """Periodically writes a timestamp for health checks."""
-        heartbeat_file = self.config_path / "heartbeat.txt"
-        while not self.shutdown_event.is_set():
-            try:
-                heartbeat_file.write_text(str(int(time.time())))
-            except Exception as e:
-                self.logger.warning("Could not write heartbeat file", error=str(e))
-            await asyncio.sleep(10)
-
-    async def _shutdown_all_sessions(self):
-        """Gracefully shuts down all active proxy sessions."""
-        if self._sessions:
-            self.logger.info(f"Closing {len(self._sessions)} active session(s)...")
-            for session in list(self._sessions):
-                session.cancel()
-            await asyncio.gather(*self._sessions, return_exceptions=True)
-
-    async def _close_listeners(self):
-        """Closes all server listeners."""
-        self.logger.info("Closing all network listeners...")
-        for listener in self._listeners:
-            listener.close()
-            await listener.wait_closed()
+    async def stop(self):
+        """Stops the TCP proxy server."""
+        if self.server:
+            self.server.close()
+            await self.server.wait_closed()
+            self.logger.info("Proxy server stopped.")
