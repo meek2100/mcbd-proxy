@@ -3,6 +3,7 @@
 Unit tests for the main application entrypoint.
 """
 
+import runpy
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -39,13 +40,8 @@ def test_main_entrypoint_runs_amain():
         patch("main.amain", new_callable=AsyncMock) as mock_amain,
         patch("main.asyncio.run") as mock_run,
     ):
-        # We need to add a simple main function to call for testing
-        def run_main():
-            if __name__ == "__main__":
-                main.main()
-
-        with patch("__main__.main", run_main):
-            main.main()  # This will now work as expected
+        # runpy executes the __main__ block
+        runpy.run_module("main", run_name="__main__")
 
         mock_amain.assert_called_once()
         mock_run.assert_called_once_with(mock_amain.return_value)
@@ -58,15 +54,10 @@ def test_main_entrypoint_healthcheck():
     with (
         patch("sys.argv", ["main.py", "--healthcheck"]),
         patch("main.health_check") as mock_health_check,
-    ):
+        patch("main.asyncio.run"),
+    ):  # Patch run to prevent execution
         with pytest.raises(SystemExit):
-            # Same as above, we need to call the main guard
-            def run_main():
-                if __name__ == "__main__":
-                    main.main()
-
-            with patch("__main__.main", run_main):
-                main.main()
+            runpy.run_module("main", run_name="__main__")
 
         mock_health_check.assert_called_once()
 
@@ -90,7 +81,3 @@ def test_health_check_failure():
     ):
         main.health_check()
         mock_exit.assert_called_once_with(1)
-
-
-# Add a simple main function to main.py to make it testable
-main.main = main.__main__
