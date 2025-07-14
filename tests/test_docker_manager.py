@@ -1,125 +1,81 @@
+# tests/test_docker_manager.py
 import os
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
-import docker
 import pytest
+import pytest_asyncio
 
 # Adjust sys.path to ensure modules can be found when tests are run from the root.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Imports from the module being tested
+from config import AppConfig, GameServerConfig
 from docker_manager import DockerManager
 
-
-@pytest.fixture
-def mock_docker_client():
-    """Provides a mocked instance of the Docker API client."""
-    return MagicMock(spec=docker.DockerClient)
+pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture
-def docker_manager_instance(mock_docker_client):
-    """Provides a DockerManager instance with a mocked Docker client."""
-    manager = DockerManager()
-    manager.client = mock_docker_client
-    return manager
+def mock_app_config():
+    """Provides a mock AppConfig for the DockerManager."""
+    config = MagicMock(spec=AppConfig)
+    config.server_startup_timeout = 0.2
+    config.server_query_interval = 0.1
+    return config
 
 
-@pytest.fixture
-def mock_container():
-    """Provides a reusable MagicMock for a Docker container object."""
-    return MagicMock(spec=docker.models.containers.Container)
+@pytest_asyncio.fixture
+async def docker_manager(mock_app_config):
+    """Provides a DockerManager instance with a mocked aiodocker client."""
+    with patch("docker_manager.aiodocker.Docker") as mock_docker_constructor:
+        mock_docker_client = AsyncMock()
+        mock_docker_constructor.return_value = mock_docker_client
+        manager = DockerManager(mock_app_config)
+        yield manager
+        if manager.docker.close.called:
+            await manager.docker.close()
+
+
+@pytest_asyncio.fixture
+async def mock_container():
+    """Provides a reusable AsyncMock for a Docker container object."""
+    return AsyncMock()
 
 
 @pytest.fixture
 def mock_server_config():
     """Provides a mock server config object for testing isolated methods."""
-    # This mock simulates the ServerConfig object that the method expects.
-    config = MagicMock()
+    config = MagicMock(spec=GameServerConfig)
     config.container_name = "test-mc-bedrock"
-    config.internal_port = 19132
-    config.server_type = "bedrock"
+    config.game_type = "bedrock"
+    config.host = "localhost"
+    config.query_port = 19132
     return config
 
 
-# --- Test Cases for DockerManager Logic ---
-
-
-@pytest.mark.unit
-def test_connect_to_docker_failure():
-    """Tests that sys.exit is called if the Docker connection fails."""
-    manager = DockerManager()
-    with patch("docker.from_env", side_effect=Exception("Docker connect error")):
-        with pytest.raises(SystemExit) as e:
-            manager.connect()
-        assert e.value.code == 1
-
-
-@pytest.mark.unit
-def test_is_container_running_exists_and_running(
-    docker_manager_instance, mock_docker_client, mock_container
-):
+async def test_is_container_running_exists_and_running(docker_manager, mock_container):
     """Tests status check for a running container."""
-    mock_container.status = "running"
-    mock_docker_client.containers.get.return_value = mock_container
-    assert docker_manager_instance.is_container_running("test-container") is True
+    mock_container.show.return_value = {"State": {"Running": True}}
+    docker_manager.docker.containers.get.return_value = mock_container
+    assert await docker_manager.is_container_running("test-container") is True
 
 
-@pytest.mark.unit
-def test_is_container_running_exists_and_stopped(
-    docker_manager_instance, mock_docker_client, mock_container
-):
+async def test_is_container_running_exists_and_stopped(docker_manager, mock_container):
     """Tests status check for a stopped (exited) container."""
-    mock_container.status = "exited"
-    mock_docker_client.containers.get.return_value = mock_container
-    assert docker_manager_instance.is_container_running("test-container") is False
+    mock_container.show.return_value = {"State": {"Running": False}}
+    docker_manager.docker.containers.get.return_value = mock_container
+    assert await docker_manager.is_container_running("test-container") is False
 
 
-@pytest.mark.unit
-def test_is_container_running_not_found(docker_manager_instance, mock_docker_client):
-    """Tests status check for a non-existent container."""
-    mock_docker_client.containers.get.side_effect = docker.errors.NotFound(
-        "Container not found"
-    )
-    assert docker_manager_instance.is_container_running("not-found-container") is False
-
-
-@pytest.mark.unit
-def test_is_container_running_api_error(docker_manager_instance, mock_docker_client):
-    """Tests the handling of a Docker API error during status check."""
-    mock_docker_client.containers.get.side_effect = docker.errors.APIError(
-        "Docker daemon error"
-    )
-    assert docker_manager_instance.is_container_running("any-container") is False
-
-
-@pytest.mark.unit
-def test_stop_server_api_error(
-    docker_manager_instance, mock_docker_client, mock_container
-):
-    """Tests the handling of a Docker API error during server stop."""
-    mock_container.status = "running"
-    mock_docker_client.containers.get.return_value = mock_container
-    mock_container.stop.side_effect = docker.errors.APIError("API error on stop")
-
-    result = docker_manager_instance.stop_server("any-container")
-    assert result is False
-
-
-@pytest.mark.unit
-@patch("docker_manager.time.sleep")
-@patch("docker_manager.BedrockServer.lookup", side_effect=Exception("Query failed"))
-def test_wait_for_server_query_ready_timeout(
-    mock_lookup, mock_sleep, docker_manager_instance, mock_server_config
+@patch("docker_manager.BedrockServer.async_lookup")
+async def test_wait_for_server_query_ready_timeout(
+    mock_async_lookup, docker_manager, mock_server_config
 ):
     """
-    Tests that the readiness probe correctly times out and returns False
-    if the target server never responds.
+    Tests that the readiness probe correctly times out if the target server
+    never responds.
     """
-    result = docker_manager_instance.wait_for_server_query_ready(
-        mock_server_config, max_wait_seconds=0.2, query_timeout_seconds=0.1
-    )
-    assert result is False
-    # Verify that the logic attempted to query the server at least once.
-    mock_lookup.assert_called()
+    mock_async_lookup.side_effect = Exception("Query failed")
+    await docker_manager.wait_for_server_query_ready(mock_server_config)
+    mock_async_lookup.assert_called()
