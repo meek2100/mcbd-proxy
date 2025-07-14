@@ -2,7 +2,7 @@
 [project]
 name = "nether-bridge"
 version = "1.0.0"
-description = "An intelligent, on-demand proxy for Minecraft servers running in Docker."
+description = "An intelligent, on-demand proxy for Minecraft servers in Docker."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -19,12 +19,13 @@ classifiers = [
 ]
 
 dependencies = [
-    # Pinned to match original requirements.txt for production stability
+    "aiodocker==0.21.0",
     "docker==7.1.0",
     "mcstatus==12.0.2",
     "prometheus-client==0.22.1",
     "structlog==25.4.0",
     "colorama==0.4.6",
+    "pydantic==2.8.2",
 ]
 
 [project.urls]
@@ -33,13 +34,13 @@ Homepage = "https://github.com/meek2100/mcbd-proxy"
 
 [project.optional-dependencies]
 dev = [
-    # Pinned to match original requirements-dev.txt
     "pytest==8.4.1",
     "pytest-mock==3.14.1",
     "pytest-cov==6.2.1",
     "ruff==0.12.2",
     "python-dotenv==1.1.1",
     "requests==2.32.4",
+    "pytest-asyncio==1.0.0",
 ]
 
 # Explicitly list your modules for setuptools to handle the "flat-layout"
@@ -72,3 +73,4 @@ markers = [
     "unit: marks tests as unit tests that do not require external services.",
     "integration: marks tests as integration tests that require Docker Compose.",
 ]
+asyncio_mode = "auto"
