@@ -17,7 +17,6 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 COPY --chown=naeus:naeus pyproject.toml ./
 RUN pip install --no-cache-dir .[dev]
 
-
 # ---- Testing Stage ----
 # This stage is specifically for running tests from within a container.
 FROM builder as testing
