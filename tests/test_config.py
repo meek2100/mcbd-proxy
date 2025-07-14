@@ -1,3 +1,8 @@
+# tests/test_config.py
+"""
+Unit tests for the configuration loading module.
+"""
+
 import json
 import os
 import sys
