@@ -43,7 +43,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends gosu \
 COPY --from=builder /app/.venv /app/.venv
 COPY --chown=naeus:naeus . /app
 
-# FIX: Make the entrypoint script executable.
+# FIX: Make the entrypoint script executable and ensure correct ownership.
 RUN chown -R naeus:naeus /app && chmod +x /app/entrypoint.sh
 
 USER naeus
