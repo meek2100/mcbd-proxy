@@ -96,7 +96,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - NB_TEST_MODE=container
-    command: /bin/bash -c "while true; do sleep 1; done"
+    command: tail -f /dev/null
 
 networks:
   mc-network:

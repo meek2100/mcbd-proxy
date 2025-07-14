@@ -63,15 +63,21 @@ def env_config(pytestconfig):
 
 
 @pytest_asyncio.fixture(scope="session")
-async def docker_compose_session(env_config):
+async def docker_compose_session(pytestconfig):
     """
     Manages the Docker Compose test environment for the entire session.
     It performs pre-cleanup, starts services, and tears them down.
     """
+    # --- Environment Loading ---
+    env_path = Path(__file__).parent / ".env"
+    if env_path.is_file():
+        load_dotenv(dotenv_path=env_path, override=True)
+        print(f"Loaded environment variables from: {env_path}")
+
     project_name = f"netherbridge_test_{random.randint(1, 1000)}"
     compose_file = str(Path(__file__).parent / "docker-compose.tests.yml")
 
-    # Aggressive pre-cleanup
+    # --- Restored: Aggressive Pre-Cleanup Logic ---
     print("\n--- Performing aggressive pre-cleanup of any stale test containers... ---")
     try:
         find_stale_cmd = [
@@ -82,15 +88,29 @@ async def docker_compose_session(env_config):
             "name=netherbridge_test_",
         ]
         proc = await asyncio.create_subprocess_exec(
-            *find_stale_cmd, stdout=asyncio.subprocess.PIPE
+            *find_stale_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await proc.communicate()
+        stdout, stderr = await proc.communicate()
         stale_ids = stdout.decode().strip().splitlines()
+
         if stale_ids:
             print(
                 f"Found stale containers: {', '.join(stale_ids)}. Forcibly removing..."
             )
-            await asyncio.create_subprocess_exec("docker", "rm", "-f", *stale_ids)
+            rm_proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "rm",
+                "-f",
+                *stale_ids,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await rm_proc.communicate()
+        else:
+            print("No stale containers found.")
+
     except Exception as e:
         print(f"Warning during pre-cleanup: {e}")
 
@@ -135,14 +155,14 @@ async def docker_compose_session(env_config):
 
 
 @pytest.fixture(scope="session")
-def docker_client_fixture(env_config):
+def docker_client_fixture():
     """Provides a Docker client instance for integration tests."""
     try:
         client = docker.from_env()
         client.ping()
         yield client
     except docker.errors.DockerException as e:
-        pytest.fail(f"Could not connect to Docker daemon. Is it running? Error: {e}")
+        pytest.fail(f"Could not connect to Docker daemon. Error: {e}")
     finally:
         if "client" in locals() and client:
             client.close()
