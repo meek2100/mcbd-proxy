@@ -1,55 +1,62 @@
-# ---- Builder Stage ----
-# This stage installs all project dependencies, including for development.
-FROM python:3.11-slim-bookworm as builder
+# Dockerfile
+# --- Base Stage ---
+# Use an official lightweight Python image.
+# Using a specific version tag ensures builds are reproducible.
+FROM python:3.11-slim as base
 
+# Set environment variables to prevent Python from writing .pyc files and to
+# run in unbuffered mode, which is better for logging.
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+
+# --- Builder Stage ---
+# This stage installs the Python dependencies.
+FROM base as builder
+
+# Set the working directory
 WORKDIR /app
 
-# Create a non-root user for security.
-RUN useradd --create-home --shell /bin/bash naeus
-USER naeus
+# Install build tools
+RUN pip install --no-cache-dir --upgrade pip wheel
 
-# Set up and activate a virtual environment.
-ENV VIRTUAL_ENV=/app/.venv
-RUN python3 -m venv $VIRTUAL_ENV
-ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+# Copy only the necessary files for dependency installation
+# This leverages Docker's layer caching. If these files don't change,
+# Docker won't re-run the pip install step.
+COPY pyproject.toml poetry.lock* ./
 
-# Install all dependencies from pyproject.toml.
-COPY --chown=naeus:naeus pyproject.toml ./
-RUN pip install --no-cache-dir .[dev]
+# Install application dependencies
+# Using --no-cache-dir keeps the image size smaller.
+RUN pip install --no-cache-dir .
 
-# ---- Testing Stage ----
-# This stage is specifically for running tests from within a container.
-FROM builder as testing
+# --- Final Stage ---
+# This is the final, clean image that will be used to run the application.
+FROM base as final
 
-# Copy the application source code into the testing stage.
-COPY --chown=naeus:naeus . /app
-USER naeus
+# Create a non-root user and group for security
+RUN addgroup --system app && adduser --system --group app
 
-
-# ---- Final Stage ----
-# This is the lean, production-ready image.
-FROM python:3.11-slim-bookworm as final
-
+# Set the working directory
 WORKDIR /app
 
-# Create a non-root user.
-RUN useradd --create-home --shell /bin/bash naeus
+# Copy the installed dependencies from the builder stage
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
 
-# Install gosu for easy user-switching.
-RUN apt-get update && apt-get install -y --no-install-recommends gosu \
-  && rm -rf /var/lib/apt/lists/*
+# Copy the application source code
+COPY . .
 
-# Copy the installed dependencies and application code.
-COPY --from=builder /app/.venv /app/.venv
-COPY --chown=naeus:naeus . /app
+# Change ownership of the app directory to the non-root user
+RUN chown -R app:app /app
 
-# FIX: Make the entrypoint script executable and ensure correct ownership.
-RUN chown -R naeus:naeus /app && chmod +x /app/entrypoint.sh
+# Switch to the non-root user
+USER app
 
-USER naeus
-ENV PATH="/app/.venv/bin:$PATH"
+# Expose the default Minecraft Java, Bedrock, and metrics ports.
+# The Bedrock port requires UDP, which is specified here.
+EXPOSE 25565
+EXPOSE 19132/udp
+EXPOSE 8000
 
-EXPOSE 25565 19132
-
-ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["python", "main.py"]
+# Define the entry point for the container. This command will be run when
+# the container starts.
+ENTRYPOINT ["python", "-m", "main"]

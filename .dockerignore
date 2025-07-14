@@ -1,43 +1,37 @@
-# Git and IDE files
+# .dockerignore
+
+# Git files
 .git
-.vscode
-.idea
+.gitignore
 
-# Python virtual environments
-.venv
-venv
-env
+# VS Code settings
+.vscode/
 
-# Python bytecode and cache
+# Python virtual environment
+.venv/
+venv/
+env/
+
+# Python cache
 __pycache__/
 *.pyc
-*.pyd
 *.pyo
+*.pyd
 
-# Test artifacts and cache
-.pytest_cache
+# Test files and cache
+tests/
+.pytest_cache/
+coverage.xml
 .coverage
 
-# Local data and log files
-data/
-logs/
-*.log
-
-# Optional Additions for Future-Proofing a Python project
-*.egg-info/
+# Build artifacts
 build/
 dist/
+*.egg-info/
 
-# Local test environment files
-tests/server_files/
-tests/.env
-tests/local_env.py
-docker-compose.tests.temp_*.yml
+# Docker files
+Dockerfile
+.dockerignore
 
-# Local docker-compose environment files
+# Local environment files
 .env
-
-# OS-specific files
-.DS_Store
-Thumbs.db
-desktop.ini
