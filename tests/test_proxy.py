@@ -32,6 +32,7 @@ def mock_app_config():
 
     config = MagicMock(spec=AppConfig)
     config.game_servers = [server_java, server_bedrock]
+    config.is_prometheus_enabled = False  # Explicitly set for mock
     return config
 
 
@@ -65,7 +66,6 @@ async def test_startup_orchestration(proxy):
 
         assert mock_listener.call_count == 2
         mock_monitor.assert_awaited_once()
-        # Only the java server is configured to pre-warm
         mock_ensure.assert_awaited_once_with(proxy.app_config.game_servers[0])
 
 
@@ -102,21 +102,17 @@ async def test_handle_tcp_connection(mock_open_conn, proxy):
     Tests the end-to-end handling of a single TCP client connection,
     including data proxying.
     """
-    # Mocks for client and server streams
     mock_client_reader, mock_client_writer = AsyncMock(), AsyncMock()
     mock_server_reader, mock_server_writer = AsyncMock(), AsyncMock()
     mock_open_conn.return_value = (mock_server_reader, mock_server_writer)
 
-    # Mock the proxy_data helper to prevent infinite loops in the test
     with patch.object(proxy, "_proxy_data", new_callable=AsyncMock) as mock_proxy:
         server_config = proxy.app_config.game_servers[0]
         await proxy._handle_tcp_connection(
             mock_client_reader, mock_client_writer, server_config
         )
 
-        # Verify a connection to the backend was opened
         mock_open_conn.assert_awaited_once_with(server_config.host, server_config.port)
-        # Verify that data proxying was set up in both directions
         assert mock_proxy.call_count == 2
 
 
@@ -129,7 +125,6 @@ async def test_bedrock_protocol_datagram_received(proxy):
     protocol = BedrockProtocol(proxy, server_config)
     protocol.transport = AsyncMock()
 
-    # Mock the backend connection creation
     with patch.object(
         protocol, "_create_backend_connection", new_callable=AsyncMock
     ) as mock_create_backend:
@@ -137,5 +132,4 @@ async def test_bedrock_protocol_datagram_received(proxy):
         test_data = b"test_packet"
         protocol.datagram_received(test_data, client_addr)
 
-        # Verify it attempts to create a backend connection for the new client
         mock_create_backend.assert_awaited_once_with(client_addr, test_data)

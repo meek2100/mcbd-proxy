@@ -1,4 +1,5 @@
 # tests/test_docker_manager.py
+import asyncio
 import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -9,7 +10,6 @@ import pytest_asyncio
 # Adjust sys.path to ensure modules can be found when tests are run from the root.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-# Imports from the module being tested
 from config import AppConfig, GameServerConfig
 from docker_manager import DockerManager
 
@@ -22,6 +22,17 @@ def mock_app_config():
     config = MagicMock(spec=AppConfig)
     config.server_startup_timeout = 0.2
     config.server_query_interval = 0.1
+    return config
+
+
+@pytest.fixture
+def mock_server_config():
+    """Provides a mock server config object for testing isolated methods."""
+    config = MagicMock(spec=GameServerConfig)
+    config.container_name = "test-mc-bedrock"
+    config.host = "localhost"
+    config.query_port = 19132
+    config.game_type = "bedrock"
     return config
 
 
@@ -43,17 +54,6 @@ async def mock_container():
     return AsyncMock()
 
 
-@pytest.fixture
-def mock_server_config():
-    """Provides a mock server config object for testing isolated methods."""
-    config = MagicMock(spec=GameServerConfig)
-    config.container_name = "test-mc-bedrock"
-    config.game_type = "bedrock"
-    config.host = "localhost"
-    config.query_port = 19132
-    return config
-
-
 async def test_is_container_running_exists_and_running(docker_manager, mock_container):
     """Tests status check for a running container."""
     mock_container.show.return_value = {"State": {"Running": True}}
@@ -68,7 +68,7 @@ async def test_is_container_running_exists_and_stopped(docker_manager, mock_cont
     assert await docker_manager.is_container_running("test-container") is False
 
 
-@patch("docker_manager.BedrockServer.async_lookup")
+@patch("docker_manager.BedrockServer.async_lookup", new_callable=AsyncMock)
 async def test_wait_for_server_query_ready_timeout(
     mock_async_lookup, docker_manager, mock_server_config
 ):
@@ -76,6 +76,7 @@ async def test_wait_for_server_query_ready_timeout(
     Tests that the readiness probe correctly times out if the target server
     never responds.
     """
-    mock_async_lookup.side_effect = Exception("Query failed")
-    await docker_manager.wait_for_server_query_ready(mock_server_config)
+    mock_async_lookup.side_effect = asyncio.TimeoutError("Query failed")
+    result = await docker_manager.wait_for_server_query_ready(mock_server_config)
+    assert result is None
     mock_async_lookup.assert_called()

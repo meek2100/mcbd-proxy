@@ -3,42 +3,57 @@
 Unit tests for the main application entrypoint.
 """
 
-from unittest.mock import MagicMock, patch
+import runpy
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 import main
 
-pytestmark = pytest.mark.asyncio
 
-
-async def test_main_entrypoint_runs_amain():
-    """
-    Tests that when the script is run normally, it calls asyncio.run
-    with the amain function.
-    """
+@pytest.mark.asyncio
+async def test_amain_happy_path():
+    """Tests the main async function runs without errors."""
     with (
-        patch("main.asyncio.run") as mock_run,
-        patch("main.sys.argv", ["main.py"]),
-        patch("main.amain") as mock_amain,
+        patch("main.load_app_config") as mock_load_config,
+        patch("main.configure_logging"),
+        patch("main.DockerManager") as mock_docker_manager,
+        patch("main.AsyncProxy") as mock_async_proxy,
     ):
-        # HACK: To run the __main__ block, we can import it.
-        # This is a bit unusual but effective for this test case.
-        main.__main__
+        mock_proxy_instance = AsyncMock()
+        mock_async_proxy.return_value = mock_proxy_instance
 
-        mock_run.assert_called_once_with(mock_amain())
+        await main.amain()
+
+        mock_load_config.assert_called_once()
+        mock_docker_manager.assert_called_once()
+        mock_async_proxy.assert_called_once()
+        mock_proxy_instance.start.assert_awaited_once()
 
 
-async def test_main_entrypoint_healthcheck():
+def test_main_entrypoint_runs_amain():
     """
-    Tests that when the script is run with '--healthcheck', it calls
-    the health_check function and exits.
+    Tests that when the script is run normally, it calls asyncio.run.
+    """
+    with patch("asyncio.run") as mock_run, patch("sys.argv", ["main.py"]):
+        with pytest.raises(SystemExit):
+            runpy.run_path("main.py", run_name="__main__")
+
+        mock_run.assert_called_once()
+        # The sys.exit from health_check will be caught, so this is expected.
+
+
+def test_main_entrypoint_healthcheck():
+    """
+    Tests that when run with '--healthcheck', it calls the health_check function.
     """
     with (
         patch("main.health_check") as mock_health_check,
-        patch("main.sys.argv", ["main.py", "--healthcheck"]),
+        patch("sys.argv", ["main.py", "--healthcheck"]),
     ):
-        main.__main__
+        with pytest.raises(SystemExit):
+            runpy.run_path("main.py", run_name="__main__")
+
         mock_health_check.assert_called_once()
 
 
@@ -48,7 +63,7 @@ def test_health_check_success():
     """
     with (
         patch("main.load_app_config", return_value=MagicMock()),
-        patch("main.sys.exit") as mock_exit,
+        patch("sys.exit") as mock_exit,
     ):
         main.health_check()
         mock_exit.assert_called_once_with(0)
@@ -60,7 +75,7 @@ def test_health_check_failure():
     """
     with (
         patch("main.load_app_config", side_effect=Exception("Config error")),
-        patch("main.sys.exit") as mock_exit,
+        patch("sys.exit") as mock_exit,
     ):
         main.health_check()
         mock_exit.assert_called_once_with(1)
