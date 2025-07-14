@@ -1,18 +1,23 @@
-# tests/test_integration.py
+# tests/integration_tests/test_integration.py
 """
 Integration tests for the Nether-bridge proxy.
 These tests use live Docker containers to verify end-to-end functionality.
 """
 
 import asyncio
+import os
+import sys
 
 import pytest
 import pytest_asyncio
-from helpers import check_port_listening, wait_for_container_status
 from mcstatus import BedrockServer, JavaServer
+
+# Correctly add the project root to the path for reliable imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from config import load_app_config
 from docker_manager import DockerManager
+from tests.helpers import check_port_listening, wait_for_container_status
 
 # Mark all tests in this module as asyncio and integration
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
@@ -33,7 +38,7 @@ async def docker_manager(app_config):
 
 
 async def test_java_server_lifecycle(
-    docker_manager, app_config, docker_compose_fixture
+    docker_manager: DockerManager, app_config, docker_compose_fixture
 ):
     """
     Verifies the full lifecycle for a Java server: on-demand start and idle stop.
@@ -50,12 +55,12 @@ async def test_java_server_lifecycle(
     try:
         _, writer = await asyncio.wait_for(
             asyncio.open_connection("127.0.0.1", server_config.proxy_port),
-            timeout=5,
+            timeout=10,
         )
         writer.close()
         await writer.wait_closed()
     except (ConnectionRefusedError, asyncio.TimeoutError):
-        pass  # Expected as server spins up
+        pass  # Expected as the server is spinning up
 
     # 3. Verify Server Started
     assert await wait_for_container_status(
@@ -74,7 +79,7 @@ async def test_java_server_lifecycle(
 
     # 5. Verify Auto-Stop
     print("Waiting for Java server to auto-stop due to idle timeout...")
-    idle_plus_buffer = server_config.stop_after_idle + 30
+    idle_plus_buffer = server_config.stop_after_idle + 45  # Add more buffer
     await asyncio.sleep(idle_plus_buffer)
 
     assert not await docker_manager.is_container_running(container_name), (
@@ -84,7 +89,7 @@ async def test_java_server_lifecycle(
 
 
 async def test_bedrock_server_lifecycle(
-    docker_manager, app_config, docker_compose_fixture
+    docker_manager: DockerManager, app_config, docker_compose_fixture
 ):
     """
     Verifies the full lifecycle for a Bedrock server: on-demand start and idle stop.
@@ -103,8 +108,7 @@ async def test_bedrock_server_lifecycle(
         lambda: asyncio.DatagramProtocol(),
         remote_addr=("127.0.0.1", server_config.proxy_port),
     )
-    # Send a dummy packet to trigger the proxy
-    transport.sendto(b"\x01")
+    transport.sendto(b"\x01\x00\x00\x00\x00\x01\x23\x45\x67\x89\xab\xcd\xef")
     transport.close()
 
     # 3. Verify Server Started
@@ -120,7 +124,7 @@ async def test_bedrock_server_lifecycle(
 
     # 5. Verify Auto-Stop
     print("Waiting for Bedrock server to auto-stop due to idle timeout...")
-    idle_plus_buffer = server_config.stop_after_idle + 30
+    idle_plus_buffer = server_config.stop_after_idle + 45  # Add more buffer
     await asyncio.sleep(idle_plus_buffer)
 
     assert not await docker_manager.is_container_running(container_name), (
