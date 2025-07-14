@@ -1,6 +1,7 @@
 # tests/load_tester.py
 
 import argparse
+import asyncio
 import os
 import random
 import socket
@@ -10,7 +11,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 
-import docker
+import aiodocker  # Import aiodocker
 
 # Add project root to the path to allow module imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -38,10 +39,8 @@ def simulate_single_client(
 ):
     """
     Simulates a single client connecting to the proxy.
-
-    If chaos mode is enabled, a percentage of clients will misbehave by
-    connecting and then abruptly disconnecting to test the proxy's error
-    handling and session cleanup.
+    This function remains synchronous as it uses blocking socket operations
+    within a ThreadPoolExecutor.
     """
     start_time = time.time()
 
@@ -65,6 +64,7 @@ def simulate_single_client(
 
     # --- Regular "Patient" Client Logic ---
     if server_type == ServerType.JAVA:
+        sock = None  # Initialize sock to None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(test_timeout)
@@ -87,10 +87,11 @@ def simulate_single_client(
         except Exception as e:
             return f"FAILURE: Could not connect or stay connected - {type(e).__name__}"
         finally:
-            if "sock" in locals():
+            if sock:
                 sock.close()
 
     elif server_type == ServerType.BEDROCK:
+        sock = None  # Initialize sock to None
         while time.time() - start_time < test_timeout:
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -100,39 +101,48 @@ def simulate_single_client(
                 sock.close()
                 return "SUCCESS"
             except socket.timeout:
-                sock.close()
+                if sock:
+                    sock.close()
                 time.sleep(2)
             except Exception as e:
+                if sock:
+                    sock.close()
                 return f"FAILURE: Bedrock client error - {type(e).__name__}"
 
     return f"FAILURE: Client timed out after {test_timeout} seconds."
 
 
-def dump_debug_info(container_names_to_log):
+async def dump_debug_info(container_names_to_log: list):
     """
     Connects to the Docker daemon to retrieve and print status and logs for
     specified containers, providing a complete snapshot of the environment.
+    This function is asynchronous.
     """
     print("\n" + "=" * 25 + " FINAL DIAGNOSTIC INFO " + "=" * 25)
     client = None
     try:
-        client = docker.from_env()
+        client = aiodocker.Docker()  # Use aiodocker
         all_test_containers = ["nether-bridge", "mc-bedrock", "mc-java", "nb-tester"]
 
         print("\n--- STATUS OF ALL TEST CONTAINERS ---")
-        for container in client.containers.list(all=True):
+        containers = await client.containers.list(all=True)
+        for container in containers:
             if any(name in container.name for name in all_test_containers):
-                status = f"Status: {container.status}"
+                info = await container.show()
+                status = f"Status: {info['State']['Status']}"
                 print(f"  - {container.name:<20} | {status}")
 
         for name in container_names_to_log:
             print(f"\n--- LOGS FOR CONTAINER: {name} ---")
             try:
-                container = client.containers.get(name)
-                logs = container.logs().decode("utf-8", errors="ignore").strip()
+                container = await client.containers.get(name)
+                logs = (await container.logs()).decode("utf-8", errors="ignore").strip()
                 print(logs if logs else "[No logs found for this container]")
-            except docker.errors.NotFound:
-                print(f"[Container '{name}' was not found]")
+            except aiodocker.exceptions.DockerError as e:
+                if e.status == 404:
+                    print(f"[Container '{name}' was not found]")
+                else:
+                    print(f"[Docker error getting logs for '{name}': {e}]")
             except Exception as e:
                 print(f"[Could not retrieve logs for '{name}': {e}]")
 
@@ -140,13 +150,12 @@ def dump_debug_info(container_names_to_log):
         print(f"\nCRITICAL: Could not gather debug info. Docker client failed: {e}")
     finally:
         if client:
-            client.close()
+            await client.close()
         print("\n" + "=" * 27 + " END OF DEBUG INFO " + "=" * 27)
 
 
-# --- Main Execution Block ---
-
-if __name__ == "__main__":
+async def run_load_test_main():
+    """The main asynchronous entrypoint for the load tester."""
     parser = argparse.ArgumentParser(
         description="Load testing tool for Nether-bridge proxy."
     )
@@ -198,15 +207,20 @@ if __name__ == "__main__":
         print(f"Chaos Percentage:   {args.chaos}%")
         print("---------------------------------------------")
 
-        ensure_container_stopped(target_container)
+        await ensure_container_stopped(target_container)
 
         print(f"\n--- Starting test with {args.clients} clients... ---")
         start_time = time.time()
 
+        # ThreadPoolExecutor is used for synchronous client simulations
+        # to run them concurrently.
+        loop = asyncio.get_running_loop()
         tasks = []
         with ThreadPoolExecutor(max_workers=args.clients) as executor:
             for i in range(args.clients):
-                task = executor.submit(
+                # Submit synchronous tasks to the thread pool
+                future = loop.run_in_executor(
+                    executor,
                     simulate_single_client,
                     args.server_type,
                     target_host,
@@ -214,8 +228,10 @@ if __name__ == "__main__":
                     args.timeout,
                     args.chaos,
                 )
-                tasks.append(task)
-            results = [t.result() for t in tasks]
+                tasks.append(future)
+
+            # Await completion of all submitted tasks
+            results = await asyncio.gather(*tasks)
 
         end_time = time.time()
 
@@ -251,5 +267,10 @@ if __name__ == "__main__":
 
     finally:
         print("\n--- DUMPING DIAGNOSTIC INFO ---")
-        dump_debug_info(containers_to_log)
+        await dump_debug_info(containers_to_log)
         sys.exit(exit_code)
+
+
+if __name__ == "__main__":
+    # Run the main asynchronous function
+    asyncio.run(run_load_test_main())

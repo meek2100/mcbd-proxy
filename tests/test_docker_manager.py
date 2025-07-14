@@ -1,125 +1,175 @@
-import os
-import sys
-from unittest.mock import MagicMock, patch
+# tests/test_docker_manager.py
+from unittest.mock import AsyncMock, patch
 
-import docker
 import pytest
+from aiodocker.exceptions import DockerError
 
-# Adjust sys.path to ensure modules can be found when tests are run from the root.
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-# Imports from the module being tested
 from docker_manager import DockerManager
 
-
-@pytest.fixture
-def mock_docker_client():
-    """Provides a mocked instance of the Docker API client."""
-    return MagicMock(spec=docker.DockerClient)
+# Mark all tests in this file as unit tests
+pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
-def docker_manager_instance(mock_docker_client):
-    """Provides a DockerManager instance with a mocked Docker client."""
-    manager = DockerManager()
-    manager.client = mock_docker_client
-    return manager
+def mock_aiodocker():
+    """Mocks the aiodocker.Docker client constructor and its methods."""
+    with patch("aiodocker.Docker", autospec=True) as mock_constructor:
+        mock_client = AsyncMock()
+        mock_constructor.return_value = mock_client
+
+        # Mock container object that will be returned by client.containers.get
+        mock_container = AsyncMock()
+        mock_client.containers.get.return_value = mock_container
+
+        yield mock_client, mock_container
 
 
 @pytest.fixture
-def mock_container():
-    """Provides a reusable MagicMock for a Docker container object."""
-    return MagicMock(spec=docker.models.containers.Container)
+def docker_manager(mock_aiodocker):
+    """Provides a DockerManager instance with a mocked aiodocker client."""
+    return DockerManager(docker_url="unix:///var/run/docker.sock")
 
 
-@pytest.fixture
-def mock_server_config():
-    """Provides a mock server config object for testing isolated methods."""
-    # This mock simulates the ServerConfig object that the method expects.
-    config = MagicMock()
-    config.container_name = "test-mc-bedrock"
-    config.internal_port = 19132
-    config.server_type = "bedrock"
-    return config
+# --- Test ensure_server_running ---
 
 
-# --- Test Cases for DockerManager Logic ---
-
-
-@pytest.mark.unit
-def test_connect_to_docker_failure():
-    """Tests that sys.exit is called if the Docker connection fails."""
-    manager = DockerManager()
-    with patch("docker.from_env", side_effect=Exception("Docker connect error")):
-        with pytest.raises(SystemExit) as e:
-            manager.connect()
-        assert e.value.code == 1
-
-
-@pytest.mark.unit
-def test_is_container_running_exists_and_running(
-    docker_manager_instance, mock_docker_client, mock_container
-):
-    """Tests status check for a running container."""
-    mock_container.status = "running"
-    mock_docker_client.containers.get.return_value = mock_container
-    assert docker_manager_instance.is_container_running("test-container") is True
-
-
-@pytest.mark.unit
-def test_is_container_running_exists_and_stopped(
-    docker_manager_instance, mock_docker_client, mock_container
-):
-    """Tests status check for a stopped (exited) container."""
-    mock_container.status = "exited"
-    mock_docker_client.containers.get.return_value = mock_container
-    assert docker_manager_instance.is_container_running("test-container") is False
-
-
-@pytest.mark.unit
-def test_is_container_running_not_found(docker_manager_instance, mock_docker_client):
-    """Tests status check for a non-existent container."""
-    mock_docker_client.containers.get.side_effect = docker.errors.NotFound(
-        "Container not found"
-    )
-    assert docker_manager_instance.is_container_running("not-found-container") is False
-
-
-@pytest.mark.unit
-def test_is_container_running_api_error(docker_manager_instance, mock_docker_client):
-    """Tests the handling of a Docker API error during status check."""
-    mock_docker_client.containers.get.side_effect = docker.errors.APIError(
-        "Docker daemon error"
-    )
-    assert docker_manager_instance.is_container_running("any-container") is False
-
-
-@pytest.mark.unit
-def test_stop_server_api_error(
-    docker_manager_instance, mock_docker_client, mock_container
-):
-    """Tests the handling of a Docker API error during server stop."""
-    mock_container.status = "running"
-    mock_docker_client.containers.get.return_value = mock_container
-    mock_container.stop.side_effect = docker.errors.APIError("API error on stop")
-
-    result = docker_manager_instance.stop_server("any-container")
-    assert result is False
-
-
-@pytest.mark.unit
-@patch("docker_manager.time.sleep")
-@patch("docker_manager.BedrockServer.lookup", side_effect=Exception("Query failed"))
-def test_wait_for_server_query_ready_timeout(
-    mock_lookup, mock_sleep, docker_manager_instance, mock_server_config
+@pytest.mark.asyncio
+async def test_ensure_server_running_starts_stopped_container(
+    docker_manager, mock_aiodocker
 ):
     """
-    Tests that the readiness probe correctly times out and returns False
-    if the target server never responds.
+    Tests that `ensure_server_running` correctly starts a stopped container
+    and returns its IP address.
     """
-    result = docker_manager_instance.wait_for_server_query_ready(
-        mock_server_config, max_wait_seconds=0.2, query_timeout_seconds=0.1
+    _, mock_container = mock_aiodocker
+
+    # Configure container.show() to simulate state changes
+    mock_container.show.side_effect = [
+        # First call: Container is stopped
+        {"State": {"Running": False}, "NetworkSettings": {"Networks": {}}},
+        # Second call (after start): Container is running with an IP
+        {
+            "State": {"Running": True},
+            "NetworkSettings": {"Networks": {"bridge": {"IPAddress": "172.17.0.3"}}},
+        },
+    ]
+
+    ip = await docker_manager.ensure_server_running("test_container")
+
+    assert ip == "172.17.0.3"
+    mock_container.start.assert_awaited_once()
+    assert mock_container.show.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_ensure_server_running_already_running(docker_manager, mock_aiodocker):
+    """
+    Tests that `ensure_server_running` does not try to start a container
+    that is already running.
+    """
+    _, mock_container = mock_aiodocker
+
+    mock_container.show.return_value = {
+        "State": {"Running": True},
+        "NetworkSettings": {"Networks": {"bridge": {"IPAddress": "172.17.0.4"}}},
+    }
+
+    ip = await docker_manager.ensure_server_running("running_container")
+
+    assert ip == "172.17.0.4"
+    mock_container.start.assert_not_awaited()
+    mock_container.show.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ensure_server_not_found(docker_manager, mock_aiodocker):
+    """Tests that the method returns None when the container is not found."""
+    mock_client, _ = mock_aiodocker
+    mock_client.containers.get.side_effect = DockerError(
+        status=404, data={"message": "Container not found"}
     )
-    assert result is False
-    # Verify that the logic attempted to query the server at least once.
-    mock_lookup.assert_called()
+
+    ip = await docker_manager.ensure_server_running("nonexistent_container")
+    assert ip is None
+
+
+# --- Test is_container_running ---
+
+
+@pytest.mark.asyncio
+async def test_is_container_running_true(docker_manager, mock_aiodocker):
+    """Tests identification of a running container."""
+    _, mock_container = mock_aiodocker
+    mock_container.show.return_value = {"State": {"Running": True}}
+
+    is_running = await docker_manager.is_container_running("running_one")
+    assert is_running is True
+
+
+@pytest.mark.asyncio
+async def test_is_container_running_false(docker_manager, mock_aiodocker):
+    """Tests identification of a stopped container."""
+    _, mock_container = mock_aiodocker
+    mock_container.show.return_value = {"State": {"Running": False}}
+
+    is_running = await docker_manager.is_container_running("stopped_one")
+    assert is_running is False
+
+
+@pytest.mark.asyncio
+async def test_is_container_running_not_found(docker_manager, mock_aiodocker):
+    """Tests that a non-existent container is reported as not running."""
+    mock_client, _ = mock_aiodocker
+    mock_client.containers.get.side_effect = DockerError(
+        status=404, data={"message": "Not found"}
+    )
+
+    is_running = await docker_manager.is_container_running("missing_one")
+    assert is_running is False
+
+
+# --- Test stop_server ---
+
+
+@pytest.mark.asyncio
+async def test_stop_server_when_running(docker_manager, mock_aiodocker):
+    """Tests stopping a container that is currently running."""
+    _, mock_container = mock_aiodocker
+    mock_container.show.return_value = {"State": {"Running": True}}
+
+    await docker_manager.stop_server("running_server")
+
+    mock_container.stop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_stop_server_when_already_stopped(docker_manager, mock_aiodocker):
+    """Tests that stop is not called for an already stopped container."""
+    _, mock_container = mock_aiodocker
+    mock_container.show.return_value = {"State": {"Running": False}}
+
+    await docker_manager.stop_server("stopped_server")
+
+    mock_container.stop.assert_not_awaited()
+
+
+# --- Test close ---
+
+
+@pytest.mark.asyncio
+async def test_close_calls_client_close(docker_manager, mock_aiodocker):
+    """Tests that the `close` method correctly calls the client's close."""
+    mock_client, _ = mock_aiodocker
+    mock_client.close = AsyncMock()
+
+    await docker_manager.close()
+
+    mock_client.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_docker_manager_initialization_failure():
+    """Tests that initialization failure raises an exception."""
+    with patch("aiodocker.Docker", side_effect=Exception("Connection failed")):
+        with pytest.raises(Exception, match="Connection failed"):
+            DockerManager(docker_url="invalid-url")
