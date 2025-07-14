@@ -20,6 +20,10 @@ async def test_amain_happy_path():
         patch("main.DockerManager") as mock_docker_manager,
         patch("main.AsyncProxy") as mock_async_proxy,
     ):
+        # Fix: Ensure the mocked manager's close method is awaitable
+        mock_docker_instance = AsyncMock()
+        mock_docker_manager.return_value = mock_docker_instance
+
         mock_proxy_instance = AsyncMock()
         mock_async_proxy.return_value = mock_proxy_instance
 
@@ -29,12 +33,14 @@ async def test_amain_happy_path():
         mock_docker_manager.assert_called_once()
         mock_async_proxy.assert_called_once()
         mock_proxy_instance.start.assert_awaited_once()
+        mock_docker_instance.close.assert_awaited_once()
 
 
 def test_main_entrypoint_runs_amain():
     """
     Tests that when the script is run normally, it calls asyncio.run.
     """
+    # Fix: Patch the target functions directly and use runpy
     with (
         patch("main.asyncio.run") as mock_run,
         patch("main.amain") as mock_amain,
@@ -50,12 +56,14 @@ def test_main_entrypoint_healthcheck():
     """
     Tests that when run with '--healthcheck', it calls the health_check function.
     """
+    # Fix: Patch the target function directly and use runpy
     with (
         patch("main.health_check") as mock_health_check,
         patch("sys.argv", ["main.py", "--healthcheck"]),
     ):
+        # runpy will execute the __main__ block
         with pytest.raises(SystemExit):
-            runpy.run_path("main.py", run_name="__main__")
+            runpy.run_module("main", run_name="__main__")
 
         mock_health_check.assert_called_once()
 

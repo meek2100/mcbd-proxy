@@ -65,6 +65,8 @@ async def test_startup_orchestration(proxy):
     ):
         mock_loop = MagicMock()
         mock_get_loop.return_value = mock_loop
+        # This prevents the NotImplementedError on Windows for add_signal_handler
+        mock_loop.add_signal_handler.return_value = None
 
         await proxy.start()
 
@@ -127,5 +129,6 @@ async def test_bedrock_protocol_datagram_received(proxy):
         client_addr = ("127.0.0.1", 12345)
         test_data = b"test_packet"
         protocol.datagram_received(test_data, client_addr)
+        # Yield control to the event loop to run the created task
         await asyncio.sleep(0)
         mock_create_backend.assert_awaited_once_with(client_addr, test_data)
