@@ -25,6 +25,7 @@ dependencies = [
     "structlog==25.4.0",
     "colorama==0.4.6",
     "pydantic==2.8.2",
+    "python-dotenv==1.1.1",
 ]
 
 [project.urls]
@@ -37,7 +38,6 @@ dev = [
     "pytest-mock==3.14.1",
     "pytest-cov==6.2.1",
     "ruff==0.12.2",
-    "python-dotenv==1.1.1",
     "requests==2.32.4",
     "pytest-asyncio==1.0.0",
 ]
