@@ -62,6 +62,18 @@ def docker_compose_fixture(request, docker_compose_project_name, env_config):
     compose_file = "tests/docker-compose.tests.yml"
     env_file = "tests/.env"
 
+    # Ensure all statically named containers are removed before starting.
+    # This prevents conflicts from previous failed runs.
+    static_container_names = [
+        "nether-bridge",
+        "mc-bedrock",
+        "mc-java",
+        "nb-tester",
+    ]
+    for name in static_container_names:
+        print(f"Attempting to remove stale container: {name}")
+        subprocess.run(["docker", "rm", "-f", name], check=False)
+
     subprocess.run(
         [
             "docker-compose",
@@ -104,6 +116,7 @@ def docker_compose_fixture(request, docker_compose_project_name, env_config):
             ],
             check=False,
         )
+    # Perform cleanup after tests, explicitly removing containers by project name
     subprocess.run(
         [
             "docker-compose",
