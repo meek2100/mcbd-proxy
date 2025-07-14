@@ -45,17 +45,24 @@ async def docker_manager(mock_app_config):
         yield manager
 
 
-@patch("docker_manager.BedrockServer.async_lookup")
+@patch("docker_manager.BedrockServer.lookup")
 async def test_wait_for_server_query_ready_timeout(
-    mock_async_lookup, docker_manager, mock_server_config
+    mock_lookup, docker_manager, mock_server_config
 ):
     """
     Tests that the readiness probe correctly times out if the target server
     never responds.
     """
-    mock_async_lookup.side_effect = asyncio.TimeoutError
+    mock_server_instance = AsyncMock()
+    mock_server_instance.async_status.side_effect = asyncio.TimeoutError
+    mock_lookup.return_value = mock_server_instance
+
+    # The method should catch the timeout and return None
     await docker_manager.wait_for_server_query_ready(mock_server_config)
-    mock_async_lookup.assert_awaited()
+
+    mock_lookup.assert_called_with(
+        mock_server_config.host, mock_server_config.query_port
+    )
 
 
 async def test_is_container_running_exists_and_running(docker_manager):

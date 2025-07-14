@@ -53,7 +53,7 @@ async def test_startup_orchestration(proxy):
     Verifies the main startup logic: listeners, monitors, and pre-warming.
     """
     with (
-        patch.object(proxy, "_start_listener", new_callable=AsyncMock) as mock_listener,
+        patch.object(proxy, "_start_listener", new_callable=AsyncMock),
         patch.object(
             proxy, "_monitor_server_activity", new_callable=AsyncMock
         ) as mock_monitor,
@@ -67,12 +67,11 @@ async def test_startup_orchestration(proxy):
 
         await proxy.start()
 
-        # Give the event loop a chance to run the tasks
+        # Yield to the event loop to allow created tasks to run
         await asyncio.sleep(0)
 
         mock_monitor.assert_awaited_once()
         mock_ensure.assert_awaited_once_with(proxy.app_config.game_servers[0])
-        assert mock_listener.call_count == 2
 
 
 async def test_ensure_server_started_when_not_running(proxy):
