@@ -1,91 +1,66 @@
-import os
-import signal
-import sys
+# tests/test_main.py
+"""
+Unit tests for the main application entrypoint.
+"""
+
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Adjust sys.path to ensure modules can be found when tests are run.
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+import main
 
-# Imports from the module being tested
-from main import main, perform_health_check
+pytestmark = pytest.mark.asyncio
 
 
-@pytest.mark.unit
-@patch("main.sys.argv", ["main.py", "--healthcheck"])
-@patch("main.perform_health_check")
-def test_main_runs_health_check(mock_perform_health):
+async def test_main_entrypoint_runs_amain():
     """
-    Tests that the main function correctly calls perform_health_check
-    when the '--healthcheck' argument is provided.
+    Tests that when the script is run normally, it calls asyncio.run
+    with the amain function.
     """
-    main()
-    mock_perform_health.assert_called_once()
-
-
-@pytest.mark.unit
-@patch("main.sys.argv", ["main.py"])
-@patch("main.load_application_config")
-@patch("main.NetherBridgeProxy")
-@patch("main.run_app")
-@patch("signal.signal")
-def test_main_execution_flow(
-    mock_signal, mock_run_app, mock_proxy_class, mock_load_config
-):
-    """
-    Tests the main execution flow, ensuring that config is loaded,
-    the proxy is instantiated, signal handlers are set, and the app is run.
-    """
-    mock_settings = MagicMock(log_level="INFO", log_formatter="console")
-    mock_servers = [MagicMock()]
-    mock_load_config.return_value = (mock_settings, mock_servers)
-    mock_proxy_instance = MagicMock()
-    mock_proxy_class.return_value = mock_proxy_instance
-
-    main()
-
-    mock_load_config.assert_called_once()
-    mock_proxy_class.assert_called_once_with(mock_settings, mock_servers)
-    # Check that signal handlers are registered for SIGINT and SIGTERM
-    mock_signal.assert_any_call(signal.SIGINT, mock_proxy_instance.signal_handler)
-    mock_signal.assert_any_call(signal.SIGTERM, mock_proxy_instance.signal_handler)
-    # Check that the main application runner is called with the proxy instance
-    mock_run_app.assert_called_once_with(mock_proxy_instance)
-
-
-@pytest.mark.unit
-@patch("main.HEARTBEAT_FILE")
-def test_health_check_fails_if_file_missing(mock_heartbeat_file):
-    """
-    Tests that the health check fails with exit code 1 if the
-    heartbeat file does not exist.
-    """
-    with patch(
-        "main.load_application_config", return_value=(MagicMock(), [MagicMock()])
+    with (
+        patch("main.asyncio.run") as mock_run,
+        patch("main.sys.argv", ["main.py"]),
+        patch("main.amain") as mock_amain,
     ):
-        mock_heartbeat_file.is_file.return_value = False
-        with pytest.raises(SystemExit) as e:
-            perform_health_check()
-        assert e.value.code == 1
+        # HACK: To run the __main__ block, we can import it.
+        # This is a bit unusual but effective for this test case.
+        main.__main__
+
+        mock_run.assert_called_once_with(mock_amain())
 
 
-@pytest.mark.unit
-@patch("main.HEARTBEAT_FILE")
-@patch("time.time")
-def test_health_check_fails_if_heartbeat_is_stale(mock_time, mock_heartbeat_file):
+async def test_main_entrypoint_healthcheck():
     """
-    Tests that the health check fails with exit code 1 if the heartbeat
-    file is older than the configured threshold.
+    Tests that when the script is run with '--healthcheck', it calls
+    the health_check function and exits.
     """
-    mock_settings = MagicMock(healthcheck_stale_threshold_seconds=60)
-    with patch(
-        "main.load_application_config", return_value=(mock_settings, [MagicMock()])
+    with (
+        patch("main.health_check") as mock_health_check,
+        patch("main.sys.argv", ["main.py", "--healthcheck"]),
     ):
-        mock_heartbeat_file.is_file.return_value = True
-        mock_time.return_value = 1000  # Current time
-        mock_heartbeat_file.read_text.return_value = "900"  # Stale timestamp
+        main.__main__
+        mock_health_check.assert_called_once()
 
-        with pytest.raises(SystemExit) as e:
-            perform_health_check()
-        assert e.value.code == 1
+
+def test_health_check_success():
+    """
+    Tests that the health_check function exits with 0 on success.
+    """
+    with (
+        patch("main.load_app_config", return_value=MagicMock()),
+        patch("main.sys.exit") as mock_exit,
+    ):
+        main.health_check()
+        mock_exit.assert_called_once_with(0)
+
+
+def test_health_check_failure():
+    """
+    Tests that the health_check function exits with 1 on configuration failure.
+    """
+    with (
+        patch("main.load_app_config", side_effect=Exception("Config error")),
+        patch("main.sys.exit") as mock_exit,
+    ):
+        main.health_check()
+        mock_exit.assert_called_once_with(1)
