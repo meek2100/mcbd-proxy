@@ -2,25 +2,19 @@
 # This stage installs all project dependencies, including for development.
 FROM python:3.11-slim-bookworm as builder
 
-# Create the working directory first, owned by root initially.
 WORKDIR /app
 
 # Create a non-root user for security.
-RUN useradd --create-home --shell /bin/bash appuser
+RUN useradd --create-home --shell /bin/bash naeus
+USER naeus
 
-# Set ownership of the app directory BEFORE switching to the user.
-RUN chown appuser:appuser /app
-
-# Now, switch to the non-root user.
-USER appuser
-
-# Create and activate a virtual environment. This will now succeed.
+# Set up and activate a virtual environment.
 ENV VIRTUAL_ENV=/app/.venv
 RUN python3 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # Install all dependencies from pyproject.toml.
-COPY pyproject.toml poetry.lock* ./
+COPY --chown=naeus:naeus pyproject.toml ./
 RUN pip install --no-cache-dir .[dev]
 
 
@@ -29,8 +23,8 @@ RUN pip install --no-cache-dir .[dev]
 FROM builder as testing
 
 # Copy the application source code into the testing stage.
-COPY . /app
-USER appuser
+COPY --chown=naeus:naeus . /app
+USER naeus
 
 
 # ---- Final Stage ----
@@ -38,7 +32,9 @@ USER appuser
 FROM python:3.11-slim-bookworm as final
 
 WORKDIR /app
-RUN useradd --create-home --shell /bin/bash appuser
+
+# Create a non-root user.
+RUN useradd --create-home --shell /bin/bash naeus
 
 # Install gosu for easy user-switching.
 RUN apt-get update && apt-get install -y --no-install-recommends gosu \
@@ -46,12 +42,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends gosu \
 
 # Copy the installed dependencies and application code.
 COPY --from=builder /app/.venv /app/.venv
-COPY . /app
+COPY --chown=naeus:naeus . /app
 
-# Set correct ownership for the entire application directory.
-RUN chown -R appuser:appuser /app
+# FIX: Make the entrypoint script executable.
+RUN chown -R naeus:naeus /app && chmod +x /app/entrypoint.sh
 
-USER appuser
+USER naeus
 ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 25565 19132
