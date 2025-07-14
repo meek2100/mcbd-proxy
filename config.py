@@ -48,7 +48,6 @@ def load_app_config() -> AppConfig:
     load_dotenv()
 
     try:
-        # Load settings from environment variables, providing defaults
         settings_data = {
             "log_level": os.getenv("NB_LOG_LEVEL", "INFO"),
             "log_format": os.getenv("NB_LOG_FORMATTER", "console"),
@@ -59,8 +58,6 @@ def load_app_config() -> AppConfig:
             == "true",
             "prometheus_port": int(os.getenv("NB_PROMETHEUS_PORT", 8000)),
         }
-
-        # Load server configurations
         game_servers_data = [
             {
                 "name": "mc-java",
@@ -85,8 +82,6 @@ def load_app_config() -> AppConfig:
                 "pre_warm": os.getenv("NB_BEDROCK_PRE_WARM", "false").lower() == "true",
             },
         ]
-
-        # Validate the data with Pydantic
         config = AppConfig(game_servers=game_servers_data, **settings_data)
         log.info("Application configuration loaded successfully.")
         return config

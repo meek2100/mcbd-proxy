@@ -35,12 +35,15 @@ def test_main_entrypoint_runs_amain():
     """
     Tests that when the script is run normally, it calls asyncio.run.
     """
-    with patch("asyncio.run") as mock_run, patch("sys.argv", ["main.py"]):
-        with pytest.raises(SystemExit):
-            runpy.run_path("main.py", run_name="__main__")
+    with (
+        patch("main.asyncio.run") as mock_run,
+        patch("main.amain") as mock_amain,
+        patch("sys.argv", ["main.py"]),
+    ):
+        runpy.run_module("main", run_name="__main__")
 
-        mock_run.assert_called_once()
-        # The sys.exit from health_check will be caught, so this is expected.
+        mock_amain.assert_called_once()
+        mock_run.assert_called_once_with(mock_amain.return_value)
 
 
 def test_main_entrypoint_healthcheck():
