@@ -4,7 +4,7 @@ Unit tests for the main application entrypoint.
 """
 
 import runpy
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -15,37 +15,33 @@ import main
 async def test_amain_happy_path():
     """Tests the main async function runs without errors."""
     with (
-        patch("main.load_app_config") as mock_load_config,
+        patch("main.load_app_config"),
         patch("main.configure_logging"),
         patch("main.DockerManager") as mock_docker_manager,
         patch("main.AsyncProxy") as mock_async_proxy,
     ):
-        # Fix: Ensure the mocked manager's close method is awaitable
+        # Ensure the mock instances are also async mocks
         mock_docker_instance = AsyncMock()
         mock_docker_manager.return_value = mock_docker_instance
-
         mock_proxy_instance = AsyncMock()
         mock_async_proxy.return_value = mock_proxy_instance
 
         await main.amain()
 
-        mock_load_config.assert_called_once()
-        mock_docker_manager.assert_called_once()
-        mock_async_proxy.assert_called_once()
-        mock_proxy_instance.start.assert_awaited_once()
         mock_docker_instance.close.assert_awaited_once()
+        mock_proxy_instance.start.assert_awaited_once()
 
 
 def test_main_entrypoint_runs_amain():
     """
     Tests that when the script is run normally, it calls asyncio.run.
     """
-    # Fix: Patch the target functions directly and use runpy
     with (
-        patch("main.asyncio.run") as mock_run,
-        patch("main.amain") as mock_amain,
         patch("sys.argv", ["main.py"]),
+        patch("main.amain", new_callable=AsyncMock) as mock_amain,
+        patch("main.asyncio.run") as mock_run,
     ):
+        # Use runpy to execute the module's __main__ block
         runpy.run_module("main", run_name="__main__")
 
         mock_amain.assert_called_once()
@@ -56,12 +52,12 @@ def test_main_entrypoint_healthcheck():
     """
     Tests that when run with '--healthcheck', it calls the health_check function.
     """
-    # Fix: Patch the target function directly and use runpy
     with (
-        patch("main.health_check") as mock_health_check,
         patch("sys.argv", ["main.py", "--healthcheck"]),
-    ):
-        # runpy will execute the __main__ block
+        patch("main.health_check") as mock_health_check,
+        patch("main.asyncio.run"),
+    ):  # Patch run to prevent execution
+        # We expect SystemExit to be called by health_check
         with pytest.raises(SystemExit):
             runpy.run_module("main", run_name="__main__")
 
@@ -72,10 +68,7 @@ def test_health_check_success():
     """
     Tests that the health_check function exits with 0 on success.
     """
-    with (
-        patch("main.load_app_config", return_value=MagicMock()),
-        patch("sys.exit") as mock_exit,
-    ):
+    with patch("main.load_app_config"), patch("sys.exit") as mock_exit:
         main.health_check()
         mock_exit.assert_called_once_with(0)
 

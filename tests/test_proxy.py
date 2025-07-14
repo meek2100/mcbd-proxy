@@ -60,19 +60,20 @@ async def test_startup_orchestration(proxy):
         patch.object(
             proxy, "_ensure_server_started", new_callable=AsyncMock
         ) as mock_ensure,
+        patch("asyncio.gather", new_callable=AsyncMock) as mock_gather,
         patch("asyncio.get_running_loop") as mock_get_loop,
-        patch("asyncio.gather", new_callable=AsyncMock),
     ):
-        mock_loop = MagicMock()
-        mock_get_loop.return_value = mock_loop
         # This prevents the NotImplementedError on Windows for add_signal_handler
-        mock_loop.add_signal_handler.return_value = None
+        mock_get_loop.return_value.add_signal_handler.return_value = None
 
         await proxy.start()
 
         assert mock_listener.call_count == 2
-        mock_monitor.assert_awaited_once()
         mock_ensure.assert_awaited_once_with(proxy.app_config.game_servers[0])
+
+        # Check that the monitor was passed to gather
+        # This is a more robust way to test that the task was created
+        assert mock_monitor.return_value in mock_gather.call_args[0]
 
 
 async def test_ensure_server_started_when_not_running(proxy):
@@ -129,6 +130,5 @@ async def test_bedrock_protocol_datagram_received(proxy):
         client_addr = ("127.0.0.1", 12345)
         test_data = b"test_packet"
         protocol.datagram_received(test_data, client_addr)
-        # Yield control to the event loop to run the created task
         await asyncio.sleep(0)
         mock_create_backend.assert_awaited_once_with(client_addr, test_data)
