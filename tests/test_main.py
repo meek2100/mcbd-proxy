@@ -39,13 +39,9 @@ def test_main_entrypoint_runs_amain():
         patch("main.amain", new_callable=AsyncMock) as mock_amain,
         patch("main.asyncio.run") as mock_run,
     ):
-        # This is the coroutine object that amain() will create
         coro = mock_amain.return_value
-
         main.main()
-
         mock_amain.assert_called_once()
-        # The key fix: Assert that run was called with the created coroutine
         mock_run.assert_called_once_with(coro)
 
 
@@ -58,7 +54,6 @@ def test_main_entrypoint_healthcheck():
         patch("main.health_check") as mock_health_check,
     ):
         main.main()
-
         mock_health_check.assert_called_once()
 
 

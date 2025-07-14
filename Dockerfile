@@ -1,4 +1,3 @@
-# Dockerfile
 # Stage 1: Base - Use the modern, faster Python 3.11 on Debian Bookworm.
 FROM python:3.11-slim-bookworm AS base
 WORKDIR /app
@@ -37,18 +36,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends gosu procps && 
 RUN adduser --system --no-create-home naeus
 
 # Copy artifacts from previous stages, not the local context.
-# 1. Production python packages from the 'base' stage.
+# We need to adjust the python version in the path to 3.11
 COPY --from=base /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-# 2. The entrypoint script from the 'builder' stage.
 COPY --from=builder /app/entrypoint.sh /usr/local/bin/
 
-# 3. The new, refactored application code modules from the 'builder' stage.
+# Copy application code
 COPY --from=builder --chown=naeus:nogroup /app/main.py .
 COPY --from=builder --chown=naeus:nogroup /app/proxy.py .
 COPY --from=builder --chown=naeus:nogroup /app/config.py .
 COPY --from=builder --chown=naeus:nogroup /app/docker_manager.py .
 COPY --from=builder --chown=naeus:nogroup /app/metrics.py .
-# 4. The example configuration files from the 'builder' stage.
 COPY --from=builder --chown=naeus:nogroup /app/examples/ ./examples/
 
 # Make entrypoint executable and ensure final application directory permissions are correct.
