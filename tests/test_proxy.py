@@ -1,224 +1,141 @@
-import os
-import select
-import signal
-import sys
-import time
-from unittest.mock import MagicMock, patch
+# tests/test_proxy.py
+"""
+Unit tests for the new asynchronous AsyncProxy class.
+"""
+
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# Adjust sys.path to ensure modules can be found when tests are run from the root.
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from config import AppConfig, GameServerConfig
+from docker_manager import DockerManager
+from proxy import AsyncProxy, BedrockProtocol
 
-# Imports from the new application modules
-from config import ProxySettings, ServerConfig
-from proxy import NetherBridgeProxy
-
-
-@pytest.fixture
-def default_proxy_settings():
-    """Provides a default ProxySettings object for testing."""
-    # This dictionary is formatted to be under 88 characters per line.
-    settings_dict = {
-        "idle_timeout_seconds": 0.2,
-        "player_check_interval_seconds": 0.1,
-        "query_timeout_seconds": 0.1,
-        "server_ready_max_wait_time_seconds": 0.5,
-        "initial_boot_ready_max_wait_time_seconds": 0.5,
-        "server_startup_delay_seconds": 0,
-        "initial_server_query_delay_seconds": 0,
-        "log_level": "DEBUG",
-        "log_formatter": "console",
-        "healthcheck_stale_threshold_seconds": 0.5,
-        "proxy_heartbeat_interval_seconds": 0.1,
-        "tcp_listen_backlog": 128,
-        "max_concurrent_sessions": -1,
-        "prometheus_enabled": False,
-        "prometheus_port": 8000,
-    }
-    return ProxySettings(**settings_dict)
+pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture
-def mock_servers_config():
-    """Provides a list of mock ServerConfig objects for testing."""
-    return [
-        ServerConfig(
-            name="Bedrock Test",
-            server_type="bedrock",
-            listen_port=19132,
-            container_name="test-mc-bedrock",
-            internal_port=19132,
-        ),
-        ServerConfig(
-            name="Java Test",
-            server_type="java",
-            listen_port=25565,
-            container_name="test-mc-java",
-            internal_port=25565,
-        ),
-    ]
+def mock_app_config():
+    """Provides a mock AppConfig for testing the proxy."""
+    server_java = MagicMock(spec=GameServerConfig)
+    server_java.name = "mc-java"
+    server_java.game_type = "java"
+    server_java.host = "localhost"
+    server_java.port = 25565
+    server_java.pre_warm = True
+
+    server_bedrock = MagicMock(spec=GameServerConfig)
+    server_bedrock.name = "mc-bedrock"
+    server_bedrock.game_type = "bedrock"
+    server_bedrock.pre_warm = False
+
+    config = MagicMock(spec=AppConfig)
+    config.game_servers = [server_java, server_bedrock]
+    return config
 
 
 @pytest.fixture
-def proxy_instance(default_proxy_settings, mock_servers_config):
+def mock_docker_manager():
+    """Provides a mock DockerManager."""
+    return AsyncMock(spec=DockerManager)
+
+
+@pytest.fixture
+def proxy(mock_app_config, mock_docker_manager):
+    """Provides an instance of the AsyncProxy for testing."""
+    return AsyncProxy(mock_app_config, mock_docker_manager)
+
+
+async def test_startup_orchestration(proxy):
     """
-    Provides a NetherBridgeProxy instance with a mocked DockerManager.
-    This is the primary fixture for testing the proxy's internal logic.
+    Verifies the main startup logic: listeners, monitors, and pre-warming.
     """
-    with patch("proxy.DockerManager") as MockDockerManager:
-        mock_docker_manager_instance = MockDockerManager.return_value
-        proxy = NetherBridgeProxy(default_proxy_settings, mock_servers_config)
-        proxy.docker_manager = mock_docker_manager_instance
-        yield proxy
+    with (
+        patch.object(proxy, "_start_listener", new_callable=AsyncMock) as mock_listener,
+        patch.object(
+            proxy, "_monitor_server_activity", new_callable=AsyncMock
+        ) as mock_monitor,
+        patch.object(
+            proxy, "_ensure_server_started", new_callable=AsyncMock
+        ) as mock_ensure,
+        patch.object(asyncio, "gather", new_callable=AsyncMock),
+    ):
+        await proxy.start()
+
+        assert mock_listener.call_count == 2
+        mock_monitor.assert_awaited_once()
+        # Only the java server is configured to pre-warm
+        mock_ensure.assert_awaited_once_with(proxy.app_config.game_servers[0])
 
 
-# --- Test Cases for NetherBridgeProxy Logic ---
-
-
-@pytest.mark.unit
-def test_proxy_initialization(
-    proxy_instance, default_proxy_settings, mock_servers_config
-):
-    """Tests that the proxy initializes its state correctly."""
-    assert proxy_instance.settings == default_proxy_settings
-    assert proxy_instance.servers_list == mock_servers_config
-    assert proxy_instance.docker_manager is not None
-    assert "test-mc-bedrock" in proxy_instance.server_states
-    assert not proxy_instance.server_states["test-mc-bedrock"]["running"]
-
-
-@pytest.mark.unit
-@pytest.mark.skipif(
-    sys.platform == "win32", reason="SIGHUP is not available on Windows"
-)
-def test_signal_handler_sighup(proxy_instance):
-    """Tests that a SIGHUP signal correctly flags the proxy for a reload."""
-    assert not proxy_instance._reload_requested
-    proxy_instance.signal_handler(signal.SIGHUP, None)
-    assert proxy_instance._reload_requested is True
-    assert not proxy_instance._shutdown_requested
-
-
-@pytest.mark.unit
-def test_signal_handler_sigint(proxy_instance):
-    """Tests that a SIGINT signal correctly flags the proxy for shutdown."""
-    assert not proxy_instance._shutdown_requested
-    proxy_instance.signal_handler(signal.SIGINT, None)
-    assert proxy_instance._shutdown_requested is True
-    assert not proxy_instance._reload_requested
-
-
-@pytest.mark.unit
-def test_start_minecraft_server_wrapper_success(proxy_instance, mock_servers_config):
+async def test_ensure_server_started_when_not_running(proxy):
     """
-    Tests the proxy's start method. It should delegate to the DockerManager
-    and update its internal state on success.
+    Tests that _ensure_server_started calls the DockerManager to start
+    a server that is not currently running.
     """
-    server_config = mock_servers_config[0]
-    container_name = server_config.container_name
+    server_config = proxy.app_config.game_servers[0]
+    proxy._server_state[server_config.name]["is_running"] = False
 
-    proxy_instance.docker_manager.is_container_running.return_value = False
-    proxy_instance.docker_manager.start_server.return_value = True
+    await proxy._ensure_server_started(server_config)
 
-    proxy_instance._start_minecraft_server(server_config)
-
-    proxy_instance.docker_manager.is_container_running.assert_called_once_with(
-        container_name
-    )
-    proxy_instance.docker_manager.start_server.assert_called_once_with(
-        server_config, proxy_instance.settings
-    )
-    assert proxy_instance.server_states[container_name]["running"] is True
+    proxy.docker_manager.start_server.assert_awaited_once_with(server_config)
+    assert proxy._server_state[server_config.name]["is_running"] is True
 
 
-@pytest.mark.unit
-def test_start_minecraft_server_wrapper_already_running(
-    proxy_instance, mock_servers_config
-):
-    """Tests that if the server is already running, the start logic is skipped."""
-    server_config = mock_servers_config[0]
-    proxy_instance.docker_manager.is_container_running.return_value = True
-
-    proxy_instance._start_minecraft_server(server_config)
-
-    proxy_instance.docker_manager.start_server.assert_not_called()
-    assert proxy_instance.server_states[server_config.container_name]["running"] is True
-
-
-@pytest.mark.unit
-def test_stop_minecraft_server_wrapper(proxy_instance):
+async def test_ensure_server_started_when_already_running(proxy):
     """
-
-    Tests that the proxy's stop method correctly calls the docker_manager
-    and updates its state.
+    Tests that _ensure_server_started does not attempt to start a server
+    that is already marked as running.
     """
-    container_name = "test-mc-bedrock"
-    proxy_instance.server_states[container_name]["running"] = True
-    proxy_instance.docker_manager.stop_server.return_value = True
+    server_config = proxy.app_config.game_servers[0]
+    proxy._server_state[server_config.name]["is_running"] = True
 
-    proxy_instance._stop_minecraft_server(container_name)
+    await proxy._ensure_server_started(server_config)
 
-    proxy_instance.docker_manager.stop_server.assert_called_once_with(container_name)
-    assert not proxy_instance.server_states[container_name]["running"]
+    proxy.docker_manager.start_server.assert_not_awaited()
 
 
-@pytest.mark.unit
-# Correct the patch target to look for the Event class inside the proxy module
-@patch("proxy.Event.wait")
-def test_monitor_servers_activity_stops_idle_server(
-    mock_event_wait, proxy_instance, mock_servers_config
-):
+@patch("asyncio.open_connection", new_callable=AsyncMock)
+async def test_handle_tcp_connection(mock_open_conn, proxy):
     """
-    Tests that the monitor thread correctly identifies an idle server
-    and calls the stop method.
+    Tests the end-to-end handling of a single TCP client connection,
+    including data proxying.
     """
-    # This side effect will allow the loop to run once, then raise an
-    # error on the second call to Event.wait() to exit the test.
-    mock_event_wait.side_effect = [None, InterruptedError("Stop loop")]
+    # Mocks for client and server streams
+    mock_client_reader, mock_client_writer = AsyncMock(), AsyncMock()
+    mock_server_reader, mock_server_writer = AsyncMock(), AsyncMock()
+    mock_open_conn.return_value = (mock_server_reader, mock_server_writer)
 
-    idle_server_config = mock_servers_config[0]
-    container_name = idle_server_config.container_name
+    # Mock the proxy_data helper to prevent infinite loops in the test
+    with patch.object(proxy, "_proxy_data", new_callable=AsyncMock) as mock_proxy:
+        server_config = proxy.app_config.game_servers[0]
+        await proxy._handle_tcp_connection(
+            mock_client_reader, mock_client_writer, server_config
+        )
 
-    # Set up the state for an idle server that is currently running
-    proxy_instance.server_states[container_name]["running"] = True
-    proxy_instance.server_states[container_name]["last_activity"] = time.time() - 1000
-
-    # Mock the stop method on the instance to verify it gets called
-    with patch.object(proxy_instance, "_stop_minecraft_server") as mock_stop_method:
-        try:
-            proxy_instance._monitor_servers_activity()
-        except InterruptedError:
-            pass  # Expected way to exit the while loop for testing purposes
-
-    # Assert that the logic correctly identified and tried to stop the idle server.
-    mock_stop_method.assert_called_once_with(container_name)
+        # Verify a connection to the backend was opened
+        mock_open_conn.assert_awaited_once_with(server_config.host, server_config.port)
+        # Verify that data proxying was set up in both directions
+        assert mock_proxy.call_count == 2
 
 
-@pytest.mark.unit
-@patch("proxy.select.select")
-@patch("proxy.time.sleep")
-def test_run_proxy_loop_handles_select_error(mock_sleep, mock_select, proxy_instance):
+async def test_bedrock_protocol_datagram_received(proxy):
     """
-    Tests that the main proxy loop gracefully handles a select.error,
-    logs it, and continues, preventing a crash.
+    Tests that the BedrockProtocol correctly handles an incoming datagram
+    from a new client.
     """
+    server_config = proxy.app_config.game_servers[1]
+    protocol = BedrockProtocol(proxy, server_config)
+    protocol.transport = AsyncMock()
 
-    # We define a side effect function for the select mock.
-    def select_side_effect(*args, **kwargs):
-        # The FIRST time this is called, we set the flag to stop the loop
-        # on the NEXT iteration. Then we raise the error to be tested.
-        proxy_instance._shutdown_requested = True
-        raise select.error
+    # Mock the backend connection creation
+    with patch.object(
+        protocol, "_create_backend_connection", new_callable=AsyncMock
+    ) as mock_create_backend:
+        client_addr = ("127.0.0.1", 12345)
+        test_data = b"test_packet"
+        protocol.datagram_received(test_data, client_addr)
 
-    mock_select.side_effect = select_side_effect
-
-    # The _run_proxy_loop method requires the main module for reloads, so we mock it.
-    mock_main_module = MagicMock()
-
-    # The loop will run once, hit the error, call sleep, continue,
-    # and then exit because the shutdown flag is now set.
-    proxy_instance._run_proxy_loop(mock_main_module)
-
-    # Assert that the loop caught the error and slept for 1 second.
-    mock_sleep.assert_called_once_with(1)
+        # Verify it attempts to create a backend connection for the new client
+        mock_create_backend.assert_awaited_once_with(client_addr, test_data)
