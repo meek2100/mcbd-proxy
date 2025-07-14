@@ -39,7 +39,6 @@ class DockerManager:
             yield container
         except aiodocker.exceptions.DockerError as e:
             if e.status == 404:
-                # This is an expected case when checking a stopped server
                 yield None
             else:
                 log.error(
@@ -141,7 +140,7 @@ class DockerManager:
         """
         start_time = time.time()
         log.info(
-            "Waiting for server to become queryable",
+            "Waiting for server to be queryable",
             container_name=server_config.container_name,
             timeout=self.app_config.server_startup_timeout,
         )
@@ -159,13 +158,14 @@ class DockerManager:
                     server = await JavaServer.async_lookup(
                         server_config.host, server_config.query_port
                     )
-                else:  # 'bedrock'
-                    # Correctly use async_lookup for Bedrock as well
-                    server = await BedrockServer.async_lookup(
+                    await server.async_status()
+                else:  # bedrock
+                    # Fix: Use the correct async pattern for Bedrock
+                    server = BedrockServer.lookup(
                         server_config.host, server_config.query_port
                     )
+                    await server.async_status()
 
-                await server.async_status()
                 log.info(
                     "Server is queryable!", container_name=server_config.container_name
                 )
