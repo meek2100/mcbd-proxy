@@ -1,201 +1,95 @@
-import json
+# config.py
+"""
+Handles application configuration using Pydantic for validation.
+"""
+
 import os
-from dataclasses import dataclass
-from pathlib import Path
-from typing import List, Optional
+from typing import List, Literal
 
 import structlog
+from dotenv import load_dotenv
+from pydantic import BaseModel, Field, ValidationError
 
-# Default values for settings, used if not overridden by env vars or settings.json
-DEFAULT_SETTINGS = {
-    "idle_timeout_seconds": 600,
-    "player_check_interval_seconds": 60,
-    "query_timeout_seconds": 5,
-    "server_ready_max_wait_time_seconds": 120,
-    "initial_boot_ready_max_wait_time_seconds": 180,
-    "server_startup_delay_seconds": 5,
-    "initial_server_query_delay_seconds": 10,
-    "log_level": "INFO",
-    "log_formatter": "json",
-    "healthcheck_stale_threshold_seconds": 60,
-    "proxy_heartbeat_interval_seconds": 15,
-    "tcp_listen_backlog": 128,
-    "max_concurrent_sessions": -1,  # -1 for unlimited
-    "prometheus_enabled": True,
-    "prometheus_port": 8000,
-}
+log = structlog.get_logger()
 
 
-@dataclass
-class ServerConfig:
-    """Dataclass to hold a single server's configuration."""
+class GameServerConfig(BaseModel):
+    """Configuration for a single game server."""
 
     name: str
-    server_type: str
-    listen_port: int
+    game_type: Literal["java", "bedrock"]
     container_name: str
-    internal_port: int
-    idle_timeout_seconds: Optional[int] = None
+    host: str
+    port: int
+    proxy_port: int
+    proxy_host: str = "0.0.0.0"
+    query_port: int
+    stop_after_idle: int = 300
+    pre_warm: bool = False
 
 
-@dataclass
-class ProxySettings:
-    """Dataclass to hold all proxy-wide settings."""
+class AppConfig(BaseModel):
+    """Main application configuration model."""
 
-    idle_timeout_seconds: int
-    player_check_interval_seconds: int
-    query_timeout_seconds: int
-    server_ready_max_wait_time_seconds: int
-    initial_boot_ready_max_wait_time_seconds: int
-    server_startup_delay_seconds: int
-    initial_server_query_delay_seconds: int
-    log_level: str
-    log_formatter: str
-    healthcheck_stale_threshold_seconds: int
-    proxy_heartbeat_interval_seconds: int
-    tcp_listen_backlog: int
-    max_concurrent_sessions: int
-    prometheus_enabled: bool
-    prometheus_port: int
+    game_servers: List[GameServerConfig]
+    log_level: str = Field("INFO", env="NB_LOG_LEVEL")
+    log_format: str = Field("console", env="NB_LOG_FORMATTER")
+    server_check_interval: int = Field(60, env="NB_SERVER_CHECK_INTERVAL")
+    server_startup_timeout: int = Field(300, env="NB_SERVER_STARTUP_TIMEOUT")
+    server_stop_timeout: int = Field(60, env="NB_SERVER_STOP_TIMEOUT")
+    is_prometheus_enabled: bool = Field(True, env="NB_PROMETHEUS_ENABLED")
+    prometheus_port: int = Field(8000, env="NB_PROMETHEUS_PORT")
 
 
-def _load_settings_from_json(file_path: Path) -> dict:
-    """Loads proxy-wide settings from a JSON file."""
-    logger = structlog.get_logger(__name__)
-    if not file_path.is_file():
-        return {}
-    try:
-        with open(file_path, "r") as f:
-            settings_from_file = json.load(f)
-            logger.info("Loaded settings from file.", path=str(file_path))
-            return settings_from_file
-    except json.JSONDecodeError as e:
-        logger.error(
-            "Error decoding JSON from file.", path=str(file_path), error=str(e)
-        )
-        return {}
-
-
-def _load_servers_from_json(file_path: Path) -> list[dict]:
-    """Loads server definitions from a JSON file."""
-    logger = structlog.get_logger(__name__)
-    if not file_path.is_file():
-        return []
-    try:
-        with open(file_path, "r") as f:
-            servers_json_config = json.load(f)
-            logger.info("Loaded server definitions from file.", path=str(file_path))
-            return servers_json_config.get("servers", [])
-    except json.JSONDecodeError as e:
-        logger.error(
-            "Error decoding JSON from file.", path=str(file_path), error=str(e)
-        )
-        return []
-
-
-def _load_servers_from_env() -> list[dict]:
-    """Loads server definitions from environment variables (NB_x_...)."""
-    logger = structlog.get_logger(__name__)
-    env_servers, i = [], 1
-    while True:
-        listen_port_str = os.environ.get(f"NB_{i}_LISTEN_PORT")
-        if not listen_port_str:
-            break
-        try:
-            idle_timeout_str = os.environ.get(f"NB_{i}_IDLE_TIMEOUT")
-            server_def = {
-                "name": os.environ.get(f"NB_{i}_NAME", f"Server {i}"),
-                "server_type": os.environ.get(f"NB_{i}_SERVER_TYPE", "bedrock").lower(),
-                "listen_port": int(listen_port_str),
-                "container_name": os.environ.get(f"NB_{i}_CONTAINER_NAME"),
-                "internal_port": int(os.environ.get(f"NB_{i}_INTERNAL_PORT")),
-                "idle_timeout_seconds": int(idle_timeout_str)
-                if idle_timeout_str
-                else None,
-            }
-            if not all(
-                v is not None
-                for v in [
-                    server_def["container_name"],
-                    server_def["internal_port"],
-                ]
-            ):
-                raise ValueError(f"Incomplete definition for server index {i}.")
-            if server_def["server_type"] not in ["bedrock", "java"]:
-                raise ValueError(f"Invalid 'server_type' for server index {i}.")
-            env_servers.append(server_def)
-        except (ValueError, TypeError) as e:
-            logger.error(
-                "Invalid server definition in environment. Skipping.",
-                index=i,
-                error=str(e),
-            )
-        i += 1
-    if env_servers:
-        logger.info(
-            "Loaded server(s) from environment variables.", count=len(env_servers)
-        )
-    return env_servers
-
-
-def load_application_config() -> tuple[ProxySettings, List[ServerConfig]]:
+def load_app_config() -> AppConfig:
     """
-    Loads all configuration from files and environment, with env vars taking precedence.
+    Loads application configuration from environment variables and .env files.
     """
-    logger = structlog.get_logger(__name__)
-    settings_from_json = _load_settings_from_json(Path("settings.json"))
-    final_settings = {}
-    for key, default_val in DEFAULT_SETTINGS.items():
-        env_map = {
-            "idle_timeout_seconds": "NB_IDLE_TIMEOUT",
-            "player_check_interval_seconds": "NB_PLAYER_CHECK_INTERVAL",
-            "query_timeout_seconds": "NB_QUERY_TIMEOUT",
-            "server_ready_max_wait_time_seconds": "NB_SERVER_READY_MAX_WAIT",
-            "initial_boot_ready_max_wait_time_seconds": "NB_INITIAL_BOOT_READY_MAX_WAIT",  # noqa: E501
-            "server_startup_delay_seconds": "NB_SERVER_STARTUP_DELAY",
-            "initial_server_query_delay_seconds": "NB_INITIAL_SERVER_QUERY_DELAY",
-            "log_level": "LOG_LEVEL",
-            "log_formatter": "NB_LOG_FORMATTER",
-            "healthcheck_stale_threshold_seconds": "NB_HEALTHCHECK_STALE_THRESHOLD",
-            "proxy_heartbeat_interval_seconds": "NB_HEARTBEAT_INTERVAL",
-            "tcp_listen_backlog": "NB_TCP_LISTEN_BACKLOG",
-            "max_concurrent_sessions": "NB_MAX_SESSIONS",
-            "prometheus_enabled": "NB_PROMETHEUS_ENABLED",
-            "prometheus_port": "NB_PROMETHEUS_PORT",
-        }
-        env_var_name = env_map.get(key, key.upper())
-        env_val = os.environ.get(env_var_name)
-        if env_val is not None:
-            try:
-                if isinstance(default_val, bool):
-                    final_settings[key] = env_val.lower() in (
-                        "true",
-                        "1",
-                        "yes",
-                    )
-                elif isinstance(default_val, int):
-                    final_settings[key] = int(env_val)
-                else:
-                    final_settings[key] = env_val
-            except ValueError:
-                final_settings[key] = settings_from_json.get(key, default_val)
-        else:
-            final_settings[key] = settings_from_json.get(key, default_val)
+    # Load environment variables from a .env file if it exists
+    load_dotenv()
 
-    proxy_settings = ProxySettings(**final_settings)
-    servers_list_raw = _load_servers_from_env() or _load_servers_from_json(
-        Path("servers.json")
-    )
-    final_servers: List[ServerConfig] = []
-    for srv_dict in servers_list_raw:
-        try:
-            final_servers.append(ServerConfig(**srv_dict))
-        except TypeError as e:
-            logger.error(
-                "Failed to load server definition.",
-                server_config=srv_dict,
-                error=str(e),
-            )
-    if not final_servers:
-        logger.critical("FATAL: No server configurations loaded.")
-    return proxy_settings, final_servers
+    try:
+        # Pydantic will automatically read the environment variables
+        config = AppConfig(
+            game_servers=[
+                # Example for mc-java
+                GameServerConfig(
+                    name="mc-java",
+                    game_type="java",
+                    container_name="mc-java",
+                    host="127.0.0.1",
+                    port=25565,
+                    proxy_port=25565,
+                    query_port=25565,
+                    stop_after_idle=int(os.getenv("NB_JAVA_STOP_AFTER_IDLE", 300)),
+                    pre_warm=os.getenv("NB_JAVA_PRE_WARM", "false").lower() == "true",
+                ),
+                # Example for mc-bedrock
+                GameServerConfig(
+                    name="mc-bedrock",
+                    game_type="bedrock",
+                    container_name="mc-bedrock",
+                    host="127.0.0.1",
+                    port=19132,
+                    proxy_port=19132,
+                    query_port=19132,
+                    stop_after_idle=int(os.getenv("NB_BEDROCK_STOP_AFTER_IDLE", 300)),
+                    pre_warm=os.getenv("NB_BEDROCK_PRE_WARM", "false").lower()
+                    == "true",
+                ),
+            ]
+        )
+        log.info("Application configuration loaded successfully.")
+        return config
+    except ValidationError as e:
+        log.error("Configuration validation error", error=e)
+        raise  # Re-raise the exception to be handled by the caller
+
+
+if __name__ == "__main__":
+    # Example of how to load and print the configuration
+    try:
+        app_config = load_app_config()
+        print(app_config.model_dump_json(indent=2))
+    except Exception as e:
+        print(f"Failed to load config: {e}")
