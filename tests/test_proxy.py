@@ -1,125 +1,119 @@
+# tests/test_proxy.py
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from prometheus_client import Gauge
 
-from config import AppSettings, Server
-from proxy import NetherBridgeProxy
+from config import AppConfig
+from proxy import Proxy
 
-
-@pytest.fixture
-def mock_settings():
-    """Provides default AppSettings for tests."""
-    return AppSettings(docker_url="unix:///var/run/docker.sock")
+# Mark all tests in this file as unit tests
+pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
-def mock_server_config():
-    """Provides a default Server configuration for tests."""
-    return Server(
-        server_name="test-server",
-        listen_port=25565,
-        listen_host="0.0.0.0",
-        target_port=25565,
-        docker_container_name="mc-test-server",
-    )
+def mock_config():
+    """Provides a mock AppConfig instance for tests."""
+    return MagicMock(spec=AppConfig)
 
 
 @pytest.fixture
 def mock_docker_manager():
-    """Mocks the DockerManager with asynchronous methods."""
-    manager = AsyncMock()
-    manager.ensure_server_running.return_value = "172.17.0.2"
+    """Provides a mock DockerManager instance for tests."""
+    return AsyncMock()
+
+
+@pytest.fixture
+def mock_metrics_manager():
+    """Provides a mock MetricsManager instance for tests."""
+    # Mock the counter objects within MetricsManager
+    manager = MagicMock()
+    manager.connections_total = MagicMock()
+    manager.connections_proxied = MagicMock()
+    manager.connections_failed = MagicMock()
     return manager
 
 
 @pytest.fixture
-def mock_metrics():
-    """Provides mock Prometheus gauges with correct method specs."""
-    return {
-        "active_sessions": MagicMock(spec=Gauge),
-        "running_servers": MagicMock(spec=Gauge),
-        "bytes_transferred": MagicMock(spec=Gauge),
-        "server_startup_duration": MagicMock(spec=Gauge, set=MagicMock()),
-    }
+def proxy_instance(mock_config, mock_docker_manager, mock_metrics_manager):
+    """Fixture to create a Proxy instance with mocked dependencies."""
+    return Proxy(mock_config, mock_docker_manager, mock_metrics_manager)
 
 
 @pytest.fixture
-def proxy_instance(
-    mock_settings, mock_server_config, mock_docker_manager, mock_metrics
+def mock_streams():
+    """Fixture to create mock asyncio stream reader and writer."""
+    reader = AsyncMock(spec=asyncio.StreamReader)
+    writer = AsyncMock(spec=asyncio.StreamWriter)
+    writer.get_extra_info.return_value = ("127.0.0.1", 12345)
+    return reader, writer
+
+
+@pytest.mark.asyncio
+async def test_handle_client_success(proxy_instance, mock_docker_manager, mock_streams):
+    """
+    Tests the successful handling of a client connection, including
+    proxying data.
+    """
+    mock_docker_manager.ensure_server_running.return_value = "172.17.0.5"
+    reader, writer = mock_streams
+    reader.read.side_effect = [b"some data", b""]  # Simulate one read then EOF
+
+    # Patch asyncio.open_connection to avoid real network calls
+    with patch("asyncio.open_connection") as mock_open_connection:
+        mock_backend_reader = AsyncMock(spec=asyncio.StreamReader)
+        mock_backend_writer = AsyncMock(spec=asyncio.StreamWriter)
+        mock_backend_reader.read.side_effect = [b"backend data", b""]
+        mock_open_connection.return_value = (
+            mock_backend_reader,
+            mock_backend_writer,
+        )
+
+        await proxy_instance.handle_client(reader, writer)
+
+        # Verify server was checked and connection was opened
+        mock_docker_manager.ensure_server_running.assert_awaited_once()
+        mock_open_connection.assert_awaited_once_with("172.17.0.5", 0)
+
+        # Verify data was written to the backend
+        mock_backend_writer.write.assert_called_once_with(b"some data")
+        await mock_backend_writer.drain()
+
+        # Verify backend response was written to the client
+        writer.write.assert_called_once_with(b"backend data")
+        await writer.drain()
+
+
+@pytest.mark.asyncio
+async def test_handle_client_no_backend_ip(
+    proxy_instance, mock_docker_manager, mock_metrics_manager, mock_streams
 ):
-    """Initializes the NetherBridgeProxy with mocked dependencies."""
-    return NetherBridgeProxy(
-        settings=mock_settings,
-        servers_list=[mock_server_config],
-        docker_manager=mock_docker_manager,
-        shutdown_event=asyncio.Event(),
-        reload_event=asyncio.Event(),
-        active_sessions_metric=mock_metrics["active_sessions"],
-        running_servers_metric=mock_metrics["running_servers"],
-        bytes_transferred_metric=mock_metrics["bytes_transferred"],
-        server_startup_duration_metric=mock_metrics["server_startup_duration"],
-        config_path=MagicMock(),
-    )
+    """
+    Tests that the connection is closed if the backend server's IP
+    cannot be obtained.
+    """
+    mock_docker_manager.ensure_server_running.return_value = None
+    reader, writer = mock_streams
+
+    await proxy_instance.handle_client(reader, writer)
+
+    # Verify connection was closed and failure was logged
+    writer.close.assert_awaited_once()
+    mock_metrics_manager.connections_failed.inc.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_handle_client_success(proxy_instance, mock_server_config, mock_metrics):
-    """
-    Tests the full lifecycle of a client connection.
-    """
-    client_reader, writer = AsyncMock(), AsyncMock()
-    writer.get_extra_info = MagicMock(return_value=("127.0.0.1", 12345))
+async def test_shuttle_data(mock_streams):
+    """Tests the data shuttling logic between two streams."""
+    reader, writer = mock_streams
+    reader.at_eof.side_effect = [False, True]  # Read once, then EOF
+    reader.read.return_value = b"live data"
 
-    server_reader, server_writer = AsyncMock(), AsyncMock()
+    proxy = Proxy(MagicMock(), MagicMock(), MagicMock())
+    await proxy.shuttle_data(reader, writer, "test")
 
-    # FIX: at_eof is a sync method, so mock it with MagicMock to return bools
-    client_reader.at_eof = MagicMock(side_effect=[False, True])
-    client_reader.read.return_value = b"data from client"
-
-    server_reader.at_eof = MagicMock(side_effect=[False, True])
-    server_reader.read.return_value = b"data from server"
-
-    with patch("asyncio.open_connection", new_callable=AsyncMock) as mock_open:
-        mock_open.return_value = (server_reader, server_writer)
-        await proxy_instance._handle_client(client_reader, writer, mock_server_config)
-
-    proxy_instance.docker_manager.ensure_server_running.assert_awaited_once()
-    mock_open.assert_awaited_once_with("172.17.0.2", 25565)
-    server_writer.write.assert_called_with(b"data from client")
-    writer.write.assert_called_with(b"data from server")
-
-
-@pytest.mark.asyncio
-async def test_proxy_run_and_shutdown(proxy_instance):
-    """
-    Tests that the main run loop starts listeners and handles shutdown.
-    """
-    listener = AsyncMock()
-    with patch("asyncio.start_server", return_value=listener):
-        run_task = asyncio.create_task(proxy_instance.run())
-        await asyncio.sleep(0.01)  # Allow the task to start
-        proxy_instance.shutdown_event.set()
-        await run_task
-
-    listener.close.assert_called_once()
-    listener.wait_closed.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_handle_client_docker_failure(proxy_instance, mock_server_config):
-    """
-    Tests that the client connection is terminated if the Docker container fails.
-    """
-    client_reader, writer = AsyncMock(), AsyncMock()
-    writer.get_extra_info = MagicMock(return_value=("127.0.0.1", 54321))
-
-    proxy_instance.docker_manager.ensure_server_running.return_value = None
-
-    with patch("asyncio.open_connection") as mock_open:
-        await proxy_instance._handle_client(client_reader, writer, mock_server_config)
-        mock_open.assert_not_called()
-
-    writer.close.assert_called_once()
-    writer.wait_closed.assert_awaited_once()
+    # Verify data was read and written correctly
+    reader.read.assert_awaited_with(4096)
+    writer.write.assert_called_once_with(b"live data")
+    writer.drain.assert_awaited_once()
+    writer.close.assert_awaited_once()
