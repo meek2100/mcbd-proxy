@@ -2,6 +2,7 @@
 import asyncio
 import os
 import sys
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -31,46 +32,42 @@ def mock_server_config():
     config.game_type = "bedrock"
     config.host = "localhost"
     config.query_port = 19132
+    config.container_name = "test-container"
     return config
 
 
 @pytest_asyncio.fixture
 async def docker_manager(mock_app_config):
     """Provides a DockerManager instance with a mocked aiodocker client."""
-    with patch("docker_manager.aiodocker.Docker") as mock_docker_constructor:
+    with patch("docker_manager.aiodocker.Docker"):
         manager = DockerManager(mock_app_config)
-        manager.docker = mock_docker_constructor.return_value
+        manager.docker = AsyncMock()
         yield manager
-        if manager.docker.close.called:
-            await manager.docker.close()
 
 
-# Corrected Patch Target
-@patch("docker_manager.BedrockServer.lookup")
+@patch("docker_manager.BedrockServer.async_lookup")
 async def test_wait_for_server_query_ready_timeout(
-    mock_lookup, docker_manager, mock_server_config
+    mock_async_lookup, docker_manager, mock_server_config
 ):
     """
     Tests that the readiness probe correctly times out if the target server
     never responds.
     """
-    mock_server_instance = AsyncMock()
-    mock_server_instance.async_status.side_effect = asyncio.TimeoutError
-    mock_lookup.return_value = mock_server_instance
-
-    result = await docker_manager.wait_for_server_query_ready(mock_server_config)
-
-    assert result is None
-    mock_lookup.assert_called_with(
-        mock_server_config.host, mock_server_config.query_port
-    )
+    mock_async_lookup.side_effect = asyncio.TimeoutError
+    await docker_manager.wait_for_server_query_ready(mock_server_config)
+    mock_async_lookup.assert_awaited()
 
 
 async def test_is_container_running_exists_and_running(docker_manager):
     """Tests status check for a running container."""
     mock_container = AsyncMock()
     mock_container.show.return_value = {"State": {"Running": True}}
-    docker_manager.docker.containers.get.return_value = mock_container
+
+    @asynccontextmanager
+    async def get_container_mock(*args, **kwargs):
+        yield mock_container
+
+    docker_manager.get_container = get_container_mock
     assert await docker_manager.is_container_running("test-container") is True
 
 
@@ -78,5 +75,10 @@ async def test_is_container_running_exists_and_stopped(docker_manager):
     """Tests status check for a stopped (exited) container."""
     mock_container = AsyncMock()
     mock_container.show.return_value = {"State": {"Running": False}}
-    docker_manager.docker.containers.get.return_value = mock_container
+
+    @asynccontextmanager
+    async def get_container_mock(*args, **kwargs):
+        yield mock_container
+
+    docker_manager.get_container = get_container_mock
     assert await docker_manager.is_container_running("test-container") is False

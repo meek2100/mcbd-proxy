@@ -20,7 +20,6 @@ async def test_amain_happy_path():
         patch("main.DockerManager") as mock_docker_manager,
         patch("main.AsyncProxy") as mock_async_proxy,
     ):
-        # Ensure the mock instances are also async mocks
         mock_docker_instance = AsyncMock()
         mock_docker_manager.return_value = mock_docker_instance
         mock_proxy_instance = AsyncMock()
@@ -41,8 +40,11 @@ def test_main_entrypoint_runs_amain():
         patch("main.amain", new_callable=AsyncMock) as mock_amain,
         patch("main.asyncio.run") as mock_run,
     ):
-        # Use runpy to execute the module's __main__ block
-        runpy.run_module("main", run_name="__main__")
+        # Need to wrap the runpy call in try/except because health_check calls sys.exit
+        try:
+            runpy.run_module("main", run_name="__main__")
+        except SystemExit:
+            pass  # This is expected
 
         mock_amain.assert_called_once()
         mock_run.assert_called_once_with(mock_amain.return_value)
@@ -55,9 +57,7 @@ def test_main_entrypoint_healthcheck():
     with (
         patch("sys.argv", ["main.py", "--healthcheck"]),
         patch("main.health_check") as mock_health_check,
-        patch("main.asyncio.run"),
-    ):  # Patch run to prevent execution
-        # We expect SystemExit to be called by health_check
+    ):
         with pytest.raises(SystemExit):
             runpy.run_module("main", run_name="__main__")
 

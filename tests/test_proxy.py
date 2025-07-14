@@ -60,20 +60,19 @@ async def test_startup_orchestration(proxy):
         patch.object(
             proxy, "_ensure_server_started", new_callable=AsyncMock
         ) as mock_ensure,
-        patch("asyncio.gather", new_callable=AsyncMock) as mock_gather,
+        patch("asyncio.gather", new_callable=AsyncMock),
         patch("asyncio.get_running_loop") as mock_get_loop,
     ):
-        # This prevents the NotImplementedError on Windows for add_signal_handler
         mock_get_loop.return_value.add_signal_handler.return_value = None
 
         await proxy.start()
 
-        assert mock_listener.call_count == 2
-        mock_ensure.assert_awaited_once_with(proxy.app_config.game_servers[0])
+        # Give the event loop a chance to run the tasks
+        await asyncio.sleep(0)
 
-        # Check that the monitor was passed to gather
-        # This is a more robust way to test that the task was created
-        assert mock_monitor.return_value in mock_gather.call_args[0]
+        mock_monitor.assert_awaited_once()
+        mock_ensure.assert_awaited_once_with(proxy.app_config.game_servers[0])
+        assert mock_listener.call_count == 2
 
 
 async def test_ensure_server_started_when_not_running(proxy):

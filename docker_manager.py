@@ -9,13 +9,9 @@ from contextlib import asynccontextmanager
 
 import aiodocker
 import structlog
-from aiodocker.exceptions import DockerError
 from mcstatus import BedrockServer, JavaServer
 
 from config import AppConfig, GameServerConfig
-
-# Added aiodocker to the dependencies and will use it instead of docker.
-# The docker dependency will be removed later.
 
 log = structlog.get_logger()
 
@@ -41,9 +37,9 @@ class DockerManager:
         try:
             container = await self.docker.containers.get(container_name)
             yield container
-        except DockerError as e:
+        except aiodocker.exceptions.DockerError as e:
             if e.status == 404:
-                log.error("Container not found", container_name=container_name, error=e)
+                # This is an expected case when checking a stopped server
                 yield None
             else:
                 log.error(
@@ -77,7 +73,7 @@ class DockerManager:
                         is_running=is_running,
                     )
                     return is_running
-                except DockerError:
+                except aiodocker.exceptions.DockerError:
                     log.error(
                         "Could not get container info",
                         container_name=container_name,
@@ -98,9 +94,8 @@ class DockerManager:
                     log.info(
                         "Container started successfully", container_name=container_name
                     )
-                    # Wait for the server to be queryable after starting
                     await self.wait_for_server_query_ready(server_config)
-                except DockerError as e:
+                except aiodocker.exceptions.DockerError as e:
                     if "already started" in str(e).lower():
                         log.warning(
                             "Container is already running",
@@ -133,7 +128,7 @@ class DockerManager:
                     log.info(
                         "Container stopped successfully", container_name=container_name
                     )
-                except DockerError:
+                except aiodocker.exceptions.DockerError:
                     log.error(
                         "Failed to stop container",
                         container_name=container_name,
@@ -152,7 +147,6 @@ class DockerManager:
         )
 
         while True:
-            # Check for overall timeout
             if time.time() - start_time > self.app_config.server_startup_timeout:
                 log.error(
                     "Timeout waiting for server to be queryable",
@@ -165,7 +159,8 @@ class DockerManager:
                     server = await JavaServer.async_lookup(
                         server_config.host, server_config.query_port
                     )
-                else:  # Assumes 'bedrock'
+                else:  # 'bedrock'
+                    # Correctly use async_lookup for Bedrock as well
                     server = await BedrockServer.async_lookup(
                         server_config.host, server_config.query_port
                     )
