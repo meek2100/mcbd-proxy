@@ -1,18 +1,16 @@
 # Dockerfile
-# Stage 1: Base - Installs production dependencies into a clean layer.
-# This layer is cached and only rebuilt when pyproject.toml changes.
-FROM python:3.10-slim-bullseye AS base
+# Stage 1: Base - Use the modern, faster Python 3.11 on Debian Bookworm.
+FROM python:3.11-slim-bookworm AS base
 WORKDIR /app
 COPY pyproject.toml .
 RUN python -m pip install --upgrade pip && pip install --no-cache-dir .
 
 # Stage 2: Builder - A complete copy of the source code for use by other stages.
-FROM python:3.10-slim-bullseye AS builder
+FROM python:3.11-slim-bookworm AS builder
 WORKDIR /app
 COPY . .
 
 # Stage 3: Testing - A self-contained environment for running tests in CI.
-# This stage includes development dependencies and the full source code.
 FROM base AS testing
 WORKDIR /app
 # Install system packages needed by the entrypoint and for testing.
@@ -30,7 +28,7 @@ ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["/bin/bash"]
 
 # Stage 4: Final Production Image - Assembled from previous stages for a lean and secure image.
-FROM python:3.10-slim-bullseye AS final
+FROM python:3.11-slim-bookworm AS final
 WORKDIR /app
 
 # Install 'gosu' for dropping privileges and 'procps' for providing `kill` command.
@@ -40,7 +38,7 @@ RUN adduser --system --no-create-home naeus
 
 # Copy artifacts from previous stages, not the local context.
 # 1. Production python packages from the 'base' stage.
-COPY --from=base /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+COPY --from=base /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 # 2. The entrypoint script from the 'builder' stage.
 COPY --from=builder /app/entrypoint.sh /usr/local/bin/
 
