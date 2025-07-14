@@ -45,14 +45,10 @@ def load_app_config() -> AppConfig:
     """
     Loads application configuration from environment variables and .env files.
     """
-    # Load environment variables from a .env file if it exists
     load_dotenv()
-
     try:
-        # Pydantic will automatically read the environment variables
         config = AppConfig(
             game_servers=[
-                # Example for mc-java
                 GameServerConfig(
                     name="mc-java",
                     game_type="java",
@@ -64,7 +60,6 @@ def load_app_config() -> AppConfig:
                     stop_after_idle=int(os.getenv("NB_JAVA_STOP_AFTER_IDLE", 300)),
                     pre_warm=os.getenv("NB_JAVA_PRE_WARM", "false").lower() == "true",
                 ),
-                # Example for mc-bedrock
                 GameServerConfig(
                     name="mc-bedrock",
                     game_type="bedrock",
@@ -83,13 +78,4 @@ def load_app_config() -> AppConfig:
         return config
     except ValidationError as e:
         log.error("Configuration validation error", error=e)
-        raise  # Re-raise the exception to be handled by the caller
-
-
-if __name__ == "__main__":
-    # Example of how to load and print the configuration
-    try:
-        app_config = load_app_config()
-        print(app_config.model_dump_json(indent=2))
-    except Exception as e:
-        print(f"Failed to load config: {e}")
+        raise

@@ -38,12 +38,8 @@ def configure_logging(log_level: str, log_format: str):
 
 async def amain():
     """The main asynchronous entrypoint for the application."""
-    try:
-        app_config = load_app_config()
-        configure_logging(app_config.log_level, app_config.log_format)
-    except Exception:
-        log.critical("Fatal: Failed to load application configuration.", exc_info=True)
-        sys.exit(1)
+    app_config = load_app_config()
+    configure_logging(app_config.log_level, app_config.log_format)
 
     docker_manager = DockerManager(app_config)
     proxy_server = AsyncProxy(app_config, docker_manager)
@@ -51,11 +47,9 @@ async def amain():
     try:
         await proxy_server.start()
     except asyncio.CancelledError:
-        log.info("Main application task was cancelled by shutdown signal.")
-    except Exception:
-        log.critical("The main proxy server has crashed.", exc_info=True)
+        log.info("Main application task was cancelled.")
     finally:
-        log.info("Closing Docker manager session...")
+        log.info("Closing Docker manager session.")
         await docker_manager.close()
         log.info("Shutdown complete.")
 
@@ -63,14 +57,13 @@ async def amain():
 def health_check():
     """
     Performs a simple health check. Exits 0 on success, 1 on failure.
-    The primary check is whether the configuration can be loaded.
     """
     try:
         load_app_config()
-        log.info("Health check passed: Configuration loaded successfully.")
+        print("Health check passed: Configuration loaded successfully.")
         sys.exit(0)
-    except Exception:
-        log.error("Health check failed: Configuration could not be loaded.")
+    except Exception as e:
+        print(f"Health check failed: {e}")
         sys.exit(1)
 
 
@@ -81,4 +74,4 @@ if __name__ == "__main__":
         try:
             asyncio.run(amain())
         except KeyboardInterrupt:
-            log.info("Application interrupted by user (Ctrl+C). Shutting down.")
+            log.info("Application interrupted by user.")

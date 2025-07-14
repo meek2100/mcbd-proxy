@@ -15,8 +15,6 @@ from metrics import MetricsManager
 
 log = structlog.get_logger()
 
-# Prometheus metrics are now managed by the MetricsManager to decouple logic.
-
 
 class AsyncProxy:
     """
@@ -28,10 +26,8 @@ class AsyncProxy:
         self.app_config = app_config
         self.docker_manager = docker_manager
         self.server_tasks = {}
-        # The MetricsManager is now responsible for all Prometheus updates.
         self.metrics_manager = MetricsManager(app_config, docker_manager)
 
-        # This dictionary holds the internal state, independent of Prometheus.
         self._server_state = {
             server.name: {"last_activity": time.time(), "is_running": False}
             for server in app_config.game_servers
@@ -39,45 +35,35 @@ class AsyncProxy:
 
     async def start(self):
         """
-        Starts proxy listeners, pre-warms servers, and starts monitoring.
+        Starts all proxy listeners, pre-warms servers if configured,
+        and starts the server monitoring task.
         """
         log.info("Starting async proxy...")
         loop = asyncio.get_running_loop()
         loop.add_signal_handler(signal.SIGINT, self._shutdown_handler)
         loop.add_signal_handler(signal.SIGTERM, self._shutdown_handler)
 
-        # --- Pre-warming Logic Restored ---
         for server_config in self.app_config.game_servers:
             if server_config.pre_warm:
                 log.info("Pre-warming server.", server=server_config.name)
-                # Ensure startup errors don't stop the whole proxy
-                try:
-                    await self._ensure_server_started(server_config)
-                except Exception:
-                    log.error(
-                        "Failed to pre-warm server",
-                        server=server_config.name,
-                        exc_info=True,
-                    )
+                await self._ensure_server_started(server_config)
 
-        # Start listeners for each game server
         listener_tasks = [
             asyncio.create_task(self._start_listener(sc))
             for sc in self.app_config.game_servers
         ]
-
-        # Start the monitoring tasks
         monitor_task = asyncio.create_task(self._monitor_server_activity())
         metrics_task = asyncio.create_task(self.metrics_manager.start())
+
         self.server_tasks = {
             "listeners": listener_tasks,
             "monitor": monitor_task,
             "metrics": metrics_task,
         }
 
-        # Gather all tasks to run concurrently
-        all_tasks = listener_tasks + [monitor_task, metrics_task]
-        await asyncio.gather(*all_tasks, return_exceptions=True)
+        await asyncio.gather(
+            monitor_task, metrics_task, *listener_tasks, return_exceptions=True
+        )
 
     def _shutdown_handler(self):
         """Initiates a graceful shutdown of all tasks."""
@@ -97,28 +83,23 @@ class AsyncProxy:
             host=server_config.proxy_host,
             port=server_config.proxy_port,
         )
-        try:
-            if server_config.game_type == "java":
-                server = await asyncio.start_server(
-                    lambda r, w: self._handle_tcp_connection(r, w, server_config),
-                    server_config.proxy_host,
-                    server_config.proxy_port,
-                )
-                await server.serve_forever()
-            else:  # 'bedrock'
-                loop = asyncio.get_running_loop()
-                transport, _ = await loop.create_datagram_endpoint(
-                    lambda: BedrockProtocol(self, server_config),
-                    local_addr=(server_config.proxy_host, server_config.proxy_port),
-                )
-                try:
-                    await asyncio.Future()  # Keep UDP server running
-                finally:
-                    transport.close()
-        except asyncio.CancelledError:
-            log.info("Listener cancelled", server=server_config.name)
-        except Exception:
-            log.error("Listener failed", server=server_config.name, exc_info=True)
+        if server_config.game_type == "java":
+            server = await asyncio.start_server(
+                lambda r, w: self._handle_tcp_connection(r, w, server_config),
+                server_config.proxy_host,
+                server_config.proxy_port,
+            )
+            await server.serve_forever()
+        else:  # 'bedrock'
+            loop = asyncio.get_running_loop()
+            transport, _ = await loop.create_datagram_endpoint(
+                lambda: BedrockProtocol(self, server_config),
+                local_addr=(server_config.proxy_host, server_config.proxy_port),
+            )
+            try:
+                await asyncio.Future()
+            finally:
+                transport.close()
 
     async def _ensure_server_started(self, server_config: GameServerConfig):
         """Checks if a server is running and starts it if not."""
@@ -128,8 +109,6 @@ class AsyncProxy:
             await self.docker_manager.start_server(server_config)
             state["is_running"] = True
             log.info("Server started.", server=server_config.name)
-        else:
-            log.debug("Server already running.", server=server_config.name)
 
     def _update_activity(self, server_name: str):
         """Updates the last activity timestamp for a server."""
@@ -147,12 +126,9 @@ class AsyncProxy:
                     break
                 writer.write(data)
                 await writer.drain()
-        except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError):
-            log.info("Connection closed during proxying.")
         finally:
-            if not writer.is_closing():
-                writer.close()
-                await writer.wait_closed()
+            writer.close()
+            await writer.wait_closed()
 
     async def _handle_tcp_connection(
         self,
@@ -165,52 +141,40 @@ class AsyncProxy:
         log.info("New TCP connection", client=client_addr, server=server_config.name)
         self._update_activity(server_config.name)
 
-        server_writer = None
         try:
             await self._ensure_server_started(server_config)
             server_reader, server_writer = await asyncio.open_connection(
                 server_config.host, server_config.port
             )
             log.info("Connected to backend server", server=server_config.name)
-
             to_client = self._proxy_data(server_reader, client_writer)
             to_server = self._proxy_data(client_reader, server_writer)
             await asyncio.gather(to_client, to_server)
-
         except (ConnectionRefusedError, asyncio.TimeoutError):
             log.error("Could not connect to backend.", server=server_config.name)
-        except Exception:
-            log.error("Error in TCP handler", exc_info=True)
         finally:
             log.info("Closing TCP connection", client=client_addr)
-            if not client_writer.is_closing():
-                client_writer.close()
-                await client_writer.wait_closed()
-            if server_writer and not server_writer.is_closing():
-                server_writer.close()
-                await server_writer.wait_closed()
+            client_writer.close()
+            await client_writer.wait_closed()
             self.metrics_manager.dec_active_connections(server_config.name)
 
     async def _monitor_server_activity(self):
         """Periodically checks for server inactivity and stops them."""
         log.info("Starting server activity monitor.")
-        try:
-            while True:
-                await asyncio.sleep(self.app_config.server_check_interval)
-                now = time.time()
-                for sc in self.app_config.game_servers:
-                    state = self._server_state[sc.name]
-                    if state["is_running"]:
-                        idle_time = now - state["last_activity"]
-                        if idle_time > sc.stop_after_idle:
-                            log.info("Server idle timeout.", server=sc.name)
-                            await self.docker_manager.stop_server(
-                                sc.container_name, self.app_config.server_stop_timeout
-                            )
-                            state["is_running"] = False
-                            log.info("Server stopped.", server=sc.name)
-        except asyncio.CancelledError:
-            log.info("Server activity monitor stopped.")
+        while True:
+            await asyncio.sleep(self.app_config.server_check_interval)
+            now = time.time()
+            for sc in self.app_config.game_servers:
+                state = self._server_state[sc.name]
+                if state["is_running"]:
+                    idle_time = now - state["last_activity"]
+                    if idle_time > sc.stop_after_idle:
+                        log.info("Server idle timeout.", server=sc.name)
+                        await self.docker_manager.stop_server(
+                            sc.container_name, self.app_config.server_stop_timeout
+                        )
+                        state["is_running"] = False
+                        log.info("Server stopped.", server=sc.name)
 
 
 class BedrockProtocol(asyncio.DatagramProtocol):
@@ -227,10 +191,7 @@ class BedrockProtocol(asyncio.DatagramProtocol):
         self.transport = transport
 
     def datagram_received(self, data: bytes, addr: tuple):
-        """Called when a datagram is received from a client."""
-        log.debug("UDP datagram received", from_addr=addr)
         self.proxy._update_activity(self.server_config.name)
-
         if addr not in self.client_map:
             log.info("New UDP client", client=addr)
             loop = asyncio.get_running_loop()
@@ -244,19 +205,12 @@ class BedrockProtocol(asyncio.DatagramProtocol):
     async def _create_backend_connection(self, client_addr: tuple, initial_data: bytes):
         await self.proxy._ensure_server_started(self.server_config)
         loop = asyncio.get_running_loop()
-
-        try:
-            transport, protocol = await loop.create_datagram_endpoint(
-                lambda: BackendProtocol(self.transport, client_addr),
-                remote_addr=(self.server_config.host, self.server_config.port),
-            )
-            self.client_map[client_addr]["protocol"] = protocol
-            self.client_map[client_addr]["transport"] = transport
-            protocol.transport.sendto(initial_data)
-        except Exception:
-            log.error("Failed to create backend UDP connection", exc_info=True)
-            self.proxy.metrics_manager.dec_active_connections(self.server_config.name)
-            del self.client_map[client_addr]
+        transport, protocol = await loop.create_datagram_endpoint(
+            lambda: BackendProtocol(self.transport, client_addr),
+            remote_addr=(self.server_config.host, self.server_config.port),
+        )
+        self.client_map[client_addr]["protocol"] = protocol
+        protocol.transport.sendto(initial_data)
 
     def connection_lost(self, exc):
         log.info("UDP listener closed.")
@@ -279,12 +233,8 @@ class BackendProtocol(asyncio.DatagramProtocol):
         self.transport = transport
 
     def datagram_received(self, data: bytes, _addr: tuple):
-        """Forwards data from the backend server back to the client."""
         if self.client_transport and not self.client_transport.is_closing():
             self.client_transport.sendto(data, self.client_addr)
-
-    def error_received(self, exc: Exception):
-        log.error("Error in backend UDP connection", exc_info=exc)
 
     def connection_lost(self, _exc):
         log.info("Backend UDP connection closed", for_client=self.client_addr)

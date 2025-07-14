@@ -18,18 +18,14 @@ def env_config():
     """
     print("--- Loading Test Environment Configuration ---")
     load_dotenv(dotenv_path="tests/.env")
-
-    # Dynamically build DOCKER_HOST from .env variables
     host_ip = os.environ.get("DOCKER_HOST_IP")
     conn_type = os.environ.get("DOCKER_CONNECTION_TYPE", "").lower()
     conn_port = os.environ.get("DOCKER_CONNECTION_PORT")
     ssh_user = os.environ.get("DOCKER_SSH_USER")
-
     if conn_type == "tcp":
         os.environ["DOCKER_HOST"] = f"tcp://{host_ip}:{conn_port}"
     elif conn_type == "ssh" and ssh_user:
         os.environ["DOCKER_HOST"] = f"ssh://{ssh_user}@{host_ip}:{conn_port}"
-
     return os.environ
 
 
@@ -66,7 +62,6 @@ def docker_compose_fixture(request, docker_compose_project_name, env_config):
     compose_file = "tests/docker-compose.tests.yml"
     env_file = "tests/.env"
 
-    # Teardown any stale containers from previous runs
     subprocess.run(
         [
             "docker-compose",
@@ -79,8 +74,6 @@ def docker_compose_fixture(request, docker_compose_project_name, env_config):
         ],
         check=False,
     )
-
-    # Bring up the test environment
     subprocess.run(
         [
             "docker-compose",
@@ -96,10 +89,7 @@ def docker_compose_fixture(request, docker_compose_project_name, env_config):
         ],
         check=True,
     )
-
     yield
-
-    # Dump logs on failure
     if request.session.testsfailed > 0:
         print("--- DUMPING CONTAINER LOGS ON FAILURE ---")
         subprocess.run(
@@ -114,8 +104,6 @@ def docker_compose_fixture(request, docker_compose_project_name, env_config):
             ],
             check=False,
         )
-
-    # Teardown: Stop containers
     subprocess.run(
         [
             "docker-compose",
