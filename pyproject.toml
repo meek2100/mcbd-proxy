@@ -6,9 +6,7 @@ description = "An intelligent, on-demand proxy for Minecraft servers in Docker."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [
-    { name = "meek2100" },
-]
+authors = ["meek2100 <meek2100@users.noreply.github.com>"]
 keywords = ["minecraft", "proxy", "docker", "on-demand"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
