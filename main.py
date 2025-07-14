@@ -1,7 +1,6 @@
 # main.py
 """
 The main entrypoint for the Nether-bridge application.
-Initializes and runs the primary asynchronous proxy server.
 """
 
 import asyncio
@@ -33,7 +32,6 @@ def configure_logging(log_level: str, log_format: str):
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
     )
-    log.info("Logging configured", level=log_level, format=log_format)
 
 
 async def amain():
@@ -67,7 +65,8 @@ def health_check():
         sys.exit(1)
 
 
-if __name__ == "__main__":
+def main():
+    """Main entrypoint function to be called by the script."""
     if "--healthcheck" in sys.argv:
         health_check()
     else:
@@ -75,3 +74,7 @@ if __name__ == "__main__":
             asyncio.run(amain())
         except KeyboardInterrupt:
             log.info("Application interrupted by user.")
+
+
+if __name__ == "__main__":
+    main()

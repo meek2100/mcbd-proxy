@@ -3,7 +3,6 @@
 Unit tests for the main application entrypoint.
 """
 
-import runpy
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -40,11 +39,14 @@ def test_main_entrypoint_runs_amain():
         patch("main.amain", new_callable=AsyncMock) as mock_amain,
         patch("main.asyncio.run") as mock_run,
     ):
-        # runpy executes the __main__ block
-        runpy.run_module("main", run_name="__main__")
+        # This is the coroutine object that amain() will create
+        coro = mock_amain.return_value
+
+        main.main()
 
         mock_amain.assert_called_once()
-        mock_run.assert_called_once_with(mock_amain.return_value)
+        # The key fix: Assert that run was called with the created coroutine
+        mock_run.assert_called_once_with(coro)
 
 
 def test_main_entrypoint_healthcheck():
@@ -54,10 +56,8 @@ def test_main_entrypoint_healthcheck():
     with (
         patch("sys.argv", ["main.py", "--healthcheck"]),
         patch("main.health_check") as mock_health_check,
-        patch("main.asyncio.run"),
-    ):  # Patch run to prevent execution
-        with pytest.raises(SystemExit):
-            runpy.run_module("main", run_name="__main__")
+    ):
+        main.main()
 
         mock_health_check.assert_called_once()
 
