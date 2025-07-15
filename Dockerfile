@@ -1,3 +1,4 @@
+# Dockerfile
 # Stage 1: Base - Use the modern, faster Python 3.11 on Debian Bookworm.
 FROM python:3.11-slim-bookworm AS base
 WORKDIR /app
@@ -36,7 +37,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends gosu procps && 
 RUN adduser --system --no-create-home naeus
 
 # Copy artifacts from previous stages, not the local context.
-# We need to adjust the python version in the path to 3.11
 COPY --from=base /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /app/entrypoint.sh /usr/local/bin/
 
@@ -54,12 +54,12 @@ RUN chmod +x /usr/local/bin/entrypoint.sh && chown -R naeus:nogroup /app
 # Expose the ports the proxy will listen on.
 EXPOSE 19132/udp 25565/udp 25565/tcp 8000/tcp
 
-# Update HEALTHCHECK to call the new main.py entrypoint.
+# Restored a more robust health check that validates the heartbeat file.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
-  CMD ["gosu", "naeus", "python", "main.py", "--healthcheck"]
+  CMD gosu naeus python main.py --healthcheck || exit 1
 
 # Set the container's entrypoint script.
 ENTRYPOINT ["entrypoint.sh"]
 
-# Update the default command to run the new main.py application.
+# Set the default command to run the main application.
 CMD ["python", "main.py"]
