@@ -15,7 +15,6 @@ def mock_app_config():
     """Fixture for a mock AppConfig."""
     config = MagicMock()
     config.server_startup_timeout = 10
-    # CORRECTED: Use 'player_check_interval' to match the new config model.
     config.player_check_interval = 1
     return config
 
@@ -96,8 +95,11 @@ async def test_start_server_success(
 
 
 @pytest.mark.asyncio
+@patch(
+    "docker_manager.DockerManager.wait_for_server_query_ready", new_callable=AsyncMock
+)
 async def test_start_server_already_started(
-    mock_app_config, mock_game_server_config, mock_aiodocker
+    mock_wait_ready, mock_app_config, mock_game_server_config, mock_aiodocker
 ):
     """Test start_server handles an already started container gracefully."""
     manager = DockerManager(mock_app_config)
@@ -141,7 +143,7 @@ async def test_wait_for_server_query_ready_java(
     """Test waits for Java server to be queryable."""
     manager = DockerManager(mock_app_config)
     mock_game_server_config.game_type = "java"
-    mock_async_lookup.return_value.async_status.return_value = MagicMock()
+    mock_async_lookup.return_value.async_status = AsyncMock()
 
     await manager.wait_for_server_query_ready(mock_game_server_config)
     mock_async_lookup.assert_awaited_once()
@@ -158,10 +160,10 @@ async def test_wait_for_server_query_ready_bedrock(
     """Test waits for Bedrock server to be queryable."""
     manager = DockerManager(mock_app_config)
     mock_game_server_config.game_type = "bedrock"
-    # The returned mock must have an awaitable async_status method.
     mock_bedrock_lookup.return_value.async_status = AsyncMock()
 
     await manager.wait_for_server_query_ready(mock_game_server_config)
+    # The lookup is synchronous and run in a thread, so we check the mock was called
     mock_bedrock_lookup.assert_called_once()
 
 
@@ -185,4 +187,5 @@ async def test_wait_for_server_query_ready_retry(
     await manager.wait_for_server_query_ready(mock_game_server_config)
 
     assert mock_async_lookup.call_count == 2
-    mock_sleep.assert_awaited_once_with(mock_app_config.player_check_interval)
+    # Assert that the sleep call uses the new fixed value
+    mock_sleep.assert_awaited_once_with(5)
