@@ -3,7 +3,9 @@
 Handles application configuration using Pydantic for validation.
 """
 
+import json
 import os
+from pathlib import Path
 from typing import List, Literal
 
 import structlog
@@ -62,10 +64,11 @@ class AppConfig(BaseModel):
 
 def load_app_config() -> AppConfig:
     """
-    Loads application configuration dynamically from environment variables.
+    Loads application configuration from environment variables and servers.json.
+    Environment variables (NB_X_...) for servers take precedence.
     """
     load_dotenv()
-    log.info("Loading application configuration from environment variables...")
+    log.info("Loading application configuration...")
 
     game_servers = []
     i = 1
@@ -74,7 +77,7 @@ def load_app_config() -> AppConfig:
         if container_var not in os.environ:
             break
 
-        log.debug(f"Found configuration for server index {i}.")
+        log.debug(f"Found configuration for server index {i} in environment.")
         try:
             server_data = {
                 "name": os.getenv(f"NB_{i}_NAME", f"Server-{i}"),
@@ -93,17 +96,32 @@ def load_app_config() -> AppConfig:
             server_config = GameServerConfig(**server_data_filtered)
             game_servers.append(server_config)
             log.info(
-                "Loaded config for server",
+                "Loaded server from environment",
                 name=server_config.name,
                 type=server_config.game_type,
             )
         except ValidationError as e:
-            log.error(f"Configuration error for server index {i}", error=e)
+            log.error(f"Config error for server index {i}", error=e)
             raise e
         i += 1
 
+    # If no servers were defined via environment, try to load from servers.json
     if not game_servers:
-        log.warning("No game servers were defined via NB_X_... environment variables.")
+        servers_file = Path("/app/servers.json")
+        if servers_file.is_file():
+            log.info("No env servers found, attempting to load from servers.json.")
+            try:
+
+                class _ServerFile(BaseModel):
+                    servers: List[GameServerConfig]
+
+                file_data = _ServerFile.model_validate_json(servers_file.read_text())
+                game_servers = file_data.servers
+                log.info("Loaded servers from servers.json", count=len(game_servers))
+            except (ValidationError, json.JSONDecodeError) as e:
+                log.error("Failed to load or parse servers.json", error=e)
+        else:
+            log.warning("No server definitions found in environment or servers.json.")
 
     try:
         settings_data = {
