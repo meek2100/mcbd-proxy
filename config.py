@@ -36,9 +36,6 @@ class GameServerConfig(BaseModel):
     query_port: int | None = Field(
         None, description="The query port, if different from the game port."
     )
-    stop_after_idle: int = Field(
-        300, description="Seconds of inactivity before stopping the server."
-    )
     pre_warm: bool = Field(
         False, description="If true, start this server when the proxy starts."
     )
@@ -55,7 +52,8 @@ class AppConfig(BaseModel):
     game_servers: List[GameServerConfig]
     log_level: str = "INFO"
     log_format: str = "console"
-    server_check_interval: int = 60
+    idle_timeout: int = 600
+    player_check_interval: int = 60
     server_startup_timeout: int = 300
     server_stop_timeout: int = 60
     is_prometheus_enabled: bool = True
@@ -71,16 +69,12 @@ def load_app_config() -> AppConfig:
 
     game_servers = []
     i = 1
-    # This loop dynamically discovers server definitions like NB_1_..., NB_2_...
     while True:
-        # A server is considered defined if its container name is set.
         container_var = f"NB_{i}_CONTAINER_NAME"
         if container_var not in os.environ:
             break
 
         log.debug(f"Found configuration for server index {i}.")
-        # Collect all relevant environment variables for this server index.
-        # Pydantic will use these to populate the GameServerConfig model.
         try:
             server_data = {
                 "name": os.getenv(f"NB_{i}_NAME", f"Server-{i}"),
@@ -91,10 +85,8 @@ def load_app_config() -> AppConfig:
                 "proxy_port": os.getenv(f"NB_{i}_PROXY_PORT"),
                 "proxy_host": os.getenv(f"NB_{i}_PROXY_HOST", "0.0.0.0"),
                 "query_port": os.getenv(f"NB_{i}_QUERY_PORT"),
-                "stop_after_idle": os.getenv(f"NB_{i}_STOP_AFTER_IDLE", 300),
                 "pre_warm": os.getenv(f"NB_{i}_PRE_WARM", "false").lower() == "true",
             }
-            # Filter out None values so Pydantic uses defaults
             server_data_filtered = {
                 k: v for k, v in server_data.items() if v is not None
             }
@@ -114,12 +106,12 @@ def load_app_config() -> AppConfig:
         log.warning("No game servers were defined via NB_X_... environment variables.")
 
     try:
-        # Load global application settings
         settings_data = {
-            "log_level": os.getenv("NB_LOG_LEVEL", "INFO"),
-            "log_format": os.getenv("NB_LOG_FORMAT", "console"),
-            "server_check_interval": int(os.getenv("NB_SERVER_CHECK_INTERVAL", 60)),
-            "server_startup_timeout": int(os.getenv("NB_SERVER_STARTUP_TIMEOUT", 300)),
+            "log_level": os.getenv("LOG_LEVEL", "INFO"),
+            "log_format": os.getenv("NB_LOG_FORMATTER", "console"),
+            "idle_timeout": int(os.getenv("NB_IDLE_TIMEOUT", 600)),
+            "player_check_interval": int(os.getenv("NB_PLAYER_CHECK_INTERVAL", 60)),
+            "server_startup_timeout": int(os.getenv("NB_SERVER_READY_MAX_WAIT", 300)),
             "server_stop_timeout": int(os.getenv("NB_SERVER_STOP_TIMEOUT", 60)),
             "is_prometheus_enabled": os.getenv("NB_PROMETHEUS_ENABLED", "true").lower()
             == "true",

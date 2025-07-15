@@ -33,9 +33,7 @@ class AsyncProxy:
             s.name: {"last_activity": 0.0, "is_running": False}
             for s in app_config.game_servers
         }
-        # A lock to ensure only one startup process runs per server.
         self._startup_locks = {s.name: asyncio.Lock() for s in app_config.game_servers}
-        # An event to signal when a server is ready to accept connections.
         self._ready_events = {s.name: asyncio.Event() for s in app_config.game_servers}
 
     async def start(self):
@@ -51,7 +49,6 @@ class AsyncProxy:
         for server_config in self.app_config.game_servers:
             if server_config.pre_warm:
                 log.info("Pre-warming server.", server=server_config.name)
-                # Use a task to avoid blocking startup
                 asyncio.create_task(self._ensure_server_started(server_config))
 
         listener_tasks = [
@@ -102,23 +99,18 @@ class AsyncProxy:
                 local_addr=(server_config.proxy_host, server_config.proxy_port),
             )
             try:
-                await asyncio.Future()  # Keep the protocol running indefinitely
+                await asyncio.Future()
             finally:
                 transport.close()
 
     async def _ensure_server_started(self, server_config: GameServerConfig):
         """
         Ensures a server is running, handling startup logic concurrently.
-        One coroutine performs the startup while others wait for the ready event.
         """
-        # Fast path: if server is already ready, do nothing.
         if self._ready_events[server_config.name].is_set():
             return
 
-        # Slow path: one coroutine will perform the startup.
         async with self._startup_locks[server_config.name]:
-            # Re-check state after acquiring lock in case another coroutine
-            # finished startup while we were waiting.
             state = self._server_state[server_config.name]
             if not state["is_running"]:
                 log.info(
@@ -134,7 +126,6 @@ class AsyncProxy:
                     server=server_config.name,
                 )
 
-        # All coroutines wait here for the event to be set.
         await self._ready_events[server_config.name].wait()
 
     def _update_activity(self, server_name: str):
@@ -169,7 +160,6 @@ class AsyncProxy:
         self._update_activity(server_config.name)
 
         try:
-            # This call now handles concurrency and waits for the server to be ready.
             await self._ensure_server_started(server_config)
 
             server_reader, server_writer = await asyncio.open_connection(
@@ -192,28 +182,24 @@ class AsyncProxy:
     async def _get_player_count(self, server_config: GameServerConfig) -> int:
         """Asynchronously queries a server and returns the player count."""
         try:
+            lookup_str = f"{server_config.host}:{server_config.query_port}"
             if server_config.game_type == "java":
-                server = await JavaServer.async_lookup(
-                    f"{server_config.host}:{server_config.query_port}", timeout=3
-                )
+                server = await JavaServer.async_lookup(lookup_str, timeout=3)
             else:  # bedrock
-                server = await BedrockServer.async_lookup(
-                    f"{server_config.host}:{server_config.query_port}", timeout=3
-                )
+                server = await BedrockServer.async_lookup(lookup_str, timeout=3)
             status = await server.async_status()
             return status.players.online
         except Exception:
-            # To be safe, if a query fails, assume players are still connected.
             log.warning(
                 "Could not query player count for server", server=server_config.name
             )
-            return 1  # Default to 1 to prevent accidental shutdown
+            return 1
 
     async def _monitor_server_activity(self):
         """Periodically checks for zero-player servers and stops them."""
         log.info("Starting server activity monitor (player count based).")
         while True:
-            await asyncio.sleep(self.app_config.server_check_interval)
+            await asyncio.sleep(self.app_config.player_check_interval)
             for sc in self.app_config.game_servers:
                 state = self._server_state[sc.name]
                 if state["is_running"]:
@@ -223,12 +209,10 @@ class AsyncProxy:
                     )
 
                     if player_count > 0:
-                        # If players are connected, reset the idle timer.
-                        self._update_activity(sc.name)
+                        state["last_activity"] = time.time()
                     else:
-                        # No players; check if idle timeout has been exceeded.
                         idle_time = time.time() - state["last_activity"]
-                        if idle_time > sc.stop_after_idle:
+                        if idle_time > self.app_config.idle_timeout:
                             log.info(
                                 "Server is empty and idle timeout exceeded. Stopping.",
                                 server=sc.name,
@@ -256,7 +240,6 @@ class BedrockProtocol(asyncio.DatagramProtocol):
         self.transport = transport
 
     def datagram_received(self, data: bytes, addr: tuple):
-        """Handles incoming datagrams from a Bedrock client."""
         self.proxy._update_activity(self.server_config.name)
         if addr not in self.client_map:
             log.info("New UDP client", client=addr, server=self.server_config.name)
@@ -264,14 +247,11 @@ class BedrockProtocol(asyncio.DatagramProtocol):
             task = loop.create_task(self._create_backend_connection(addr, data))
             self.client_map[addr] = {"task": task}
         else:
-            # Forward subsequent packets to the existing backend connection.
             backend_protocol = self.client_map[addr].get("protocol")
             if backend_protocol and backend_protocol.transport:
                 backend_protocol.transport.sendto(data)
 
     async def _create_backend_connection(self, client_addr: tuple, initial_data: bytes):
-        """Creates a new UDP connection to the backend for a new client."""
-        # Ensure the server is running before creating the backend endpoint.
         await self.proxy._ensure_server_started(self.server_config)
 
         loop = asyncio.get_running_loop()
@@ -279,14 +259,11 @@ class BedrockProtocol(asyncio.DatagramProtocol):
             lambda: BackendProtocol(self.transport, client_addr),
             remote_addr=(self.server_config.host, self.server_config.port),
         )
-        # Store the new protocol to forward future packets.
         self.client_map[client_addr]["protocol"] = protocol
-        # Send the initial packet that triggered this connection.
         if transport and not transport.is_closing():
             transport.sendto(initial_data)
 
     def connection_lost(self, exc):
-        """Called when the main UDP listener is closed."""
         log.info("UDP listener closed.", server=self.server_config.name)
         for client in self.client_map.values():
             protocol = client.get("protocol")
@@ -308,7 +285,6 @@ class BackendProtocol(asyncio.DatagramProtocol):
         self.transport = transport
 
     def datagram_received(self, data: bytes, _addr: tuple):
-        """Forwards data from the backend server back to the correct client."""
         if self.client_transport and not self.client_transport.is_closing():
             self.client_transport.sendto(data, self.client_addr)
 
