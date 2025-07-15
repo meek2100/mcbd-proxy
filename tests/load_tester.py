@@ -7,6 +7,7 @@ behavioral modes to test proxy stability.
 
 import argparse
 import asyncio
+import logging
 import random
 import time
 
@@ -14,21 +15,21 @@ import structlog
 
 log = structlog.get_logger()
 
+# --- Statistics Tracking ---
 successful_connections = 0
 failed_connections = 0
 
 
-async def simulate_tcp_client(host: str, port: int, client_id: int, chaos_percent: int):
+async def simulate_client(host: str, port: int, client_id: int, chaos_percent: int):
     """
-    Simulates a single TCP client with different behaviors based on the mode.
-    - 'load': Connects and disconnects cleanly.
-    - 'chaos': May disconnect improperly to test server resilience.
+    Simulates a single client with different behaviors based on the chaos mode.
     """
     global successful_connections, failed_connections
     writer = None
     try:
         log.debug(f"Client {client_id}: Starting TCP connection.")
-        reader, writer = await asyncio.wait_for(
+        # Increased timeout for more reliable connections under heavy load
+        _, writer = await asyncio.wait_for(
             asyncio.open_connection(host, port), timeout=20
         )
         successful_connections += 1
@@ -41,7 +42,7 @@ async def simulate_tcp_client(host: str, port: int, client_id: int, chaos_percen
                 writer.get_extra_info("socket").close()
             return
 
-        await asyncio.sleep(2)
+        await asyncio.sleep(random.uniform(0.5, 2.0))
         log.debug(f"Client {client_id}: Closing connection gracefully.")
     except Exception as e:
         failed_connections += 1
@@ -67,7 +68,7 @@ async def main(args):
     start_time = time.time()
     tasks = []
     for i in range(args.clients):
-        task = asyncio.create_task(simulate_tcp_client(args.host, port, i, args.chaos))
+        task = asyncio.create_task(simulate_client(args.host, port, i, args.chaos))
         tasks.append(task)
         if args.delay > 0:
             await asyncio.sleep(args.delay)
@@ -121,6 +122,8 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # --- Logging Configuration ---
+    logging.basicConfig(level=args.log_level.upper())
     structlog.configure(
         processors=[
             structlog.stdlib.add_log_level,
@@ -128,6 +131,5 @@ if __name__ == "__main__":
             structlog.dev.ConsoleRenderer(),
         ]
     )
-    log.setLevel(args.log_level.upper())
 
     asyncio.run(main(args))
