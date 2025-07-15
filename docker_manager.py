@@ -85,6 +85,7 @@ class DockerManager:
 
     async def start_server(self, server_config: GameServerConfig):
         """
+
         Asynchronously starts a Docker container and waits for it to be queryable.
         """
         container_name = server_config.container_name
@@ -157,8 +158,9 @@ class DockerManager:
                 if server_config.game_type == "java":
                     server = await JavaServer.async_lookup(lookup_str, timeout=3)
                 else:  # bedrock
-                    # CORRECTED: Instantiate BedrockServer directly.
-                    server = BedrockServer.lookup(lookup_str, timeout=3)
+                    server = await asyncio.to_thread(
+                        BedrockServer.lookup, lookup_str, timeout=3
+                    )
 
                 await server.async_status()
                 log.info(
@@ -172,7 +174,7 @@ class DockerManager:
                     container_name=server_config.container_name,
                     error=str(e),
                 )
-                await asyncio.sleep(self.app_config.player_check_interval)
+                await asyncio.sleep(5)  # Use a fixed, reasonable retry interval
 
         log.error(
             "Timeout waiting for server to be queryable",

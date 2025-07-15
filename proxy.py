@@ -99,7 +99,7 @@ class AsyncProxy:
                 local_addr=(server_config.proxy_host, server_config.proxy_port),
             )
             try:
-                await asyncio.Future()
+                await asyncio.Future()  # Runs forever until cancelled
             finally:
                 transport.close()
 
@@ -186,8 +186,9 @@ class AsyncProxy:
             if server_config.game_type == "java":
                 server = await JavaServer.async_lookup(lookup_str, timeout=3)
             else:  # bedrock
-                # CORRECTED: Instantiate BedrockServer directly.
-                server = BedrockServer.lookup(lookup_str, timeout=3)
+                server = await asyncio.to_thread(
+                    BedrockServer.lookup, lookup_str, timeout=3
+                )
 
             status = await server.async_status()
             return status.players.online
@@ -195,6 +196,7 @@ class AsyncProxy:
             log.warning(
                 "Could not query player count for server", server=server_config.name
             )
+            # On query failure, assume players are present to prevent shutdown
             return 1
 
     async def _monitor_server_activity(self):
@@ -216,7 +218,7 @@ class AsyncProxy:
                         idle_time = time.time() - state["last_activity"]
                         if idle_time > self.app_config.idle_timeout:
                             log.info(
-                                "Server is empty and idle timeout exceeded. Stopping.",
+                                "Server empty and idle timeout exceeded. Stopping.",
                                 server=sc.name,
                             )
                             await self.docker_manager.stop_server(
@@ -235,7 +237,7 @@ class BedrockProtocol(asyncio.DatagramProtocol):
         self.proxy = proxy
         self.server_config = server_config
         self.transport = None
-        self.client_map = {}
+        self.client_map = {}  # Maps client_addr to its backend connection
         super().__init__()
 
     def connection_made(self, transport: asyncio.DatagramTransport):
