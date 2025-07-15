@@ -3,11 +3,11 @@
 Unit tests for the main application entrypoint and lifecycle.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from main import amain
+from main import health_check, main
 
 pytestmark = pytest.mark.unit
 
@@ -16,51 +16,65 @@ pytestmark = pytest.mark.unit
 def mock_load_config():
     """Fixture to mock config loading."""
     with patch("main.load_app_config") as mock:
-        # Provide a mock config object that can be used by the code
         mock.return_value = MagicMock()
         yield mock
 
 
-@pytest.fixture
-def mock_docker_manager():
-    """Fixture to mock DockerManager."""
-    with patch("main.DockerManager") as mock:
-        instance = AsyncMock()
-        mock.return_value = instance
-        yield instance
+@pytest.mark.unit
+@patch("main.sys.argv", ["main.py", "--healthcheck"])
+@patch("main.health_check")
+def test_main_entrypoint_runs_health_check(mock_health_check_func):
+    """
+    Tests that the main function correctly calls health_check when the
+    '--healthcheck' argument is provided.
+    """
+    main()
+    mock_health_check_func.assert_called_once()
 
 
-@pytest.fixture
-def mock_proxy():
-    """Fixture to mock AsyncProxy."""
-    with patch("main.AsyncProxy") as mock:
-        instance = AsyncMock()
-        # Make the proxy's start() method raise an exception to break the loop
-        instance.start.side_effect = RuntimeError("Test-induced loop break")
-        mock.return_value = instance
-        yield instance
+@patch("main.HEARTBEAT_FILE")
+def test_health_check_fails_if_file_missing(mock_heartbeat_file, mock_load_config):
+    """
+    Tests that the health check fails with exit code 1 if the
+    heartbeat file does not exist.
+    """
+    mock_heartbeat_file.exists.return_value = False
+    with pytest.raises(SystemExit) as e:
+        health_check()
+    assert e.value.code == 1
 
 
-@pytest.mark.asyncio
-async def test_amain_initializes_and_starts_services_in_loop(
-    mock_load_config, mock_docker_manager, mock_proxy
+@patch("main.time.time")
+@patch("main.HEARTBEAT_FILE")
+def test_health_check_fails_if_heartbeat_is_stale(
+    mock_heartbeat_file, mock_time, mock_load_config
 ):
     """
-    Tests that the main amain() loop correctly initializes all services
-    and starts the proxy on its first iteration.
+    Tests that the health check fails if the heartbeat file is too old.
     """
-    # The amain function has a 'while True' loop. We expect it to run once,
-    # call proxy.start(), which we've mocked to raise an error to break the
-    # loop, allowing us to assert that the setup process worked correctly.
-    with pytest.raises(RuntimeError, match="Test-induced loop break"):
-        await amain()
+    mock_heartbeat_file.exists.return_value = True
+    mock_time.return_value = 1000  # Current time
+    # Mock stat().st_mtime to return a stale timestamp
+    mock_heartbeat_file.stat.return_value.st_mtime = 900
 
-    # Verify that the core components were initialized on the first loop
-    mock_load_config.assert_called_once()
-    mock_docker_manager.assert_called_once_with(mock_load_config.return_value)
-    mock_proxy.assert_called_once_with(
-        mock_load_config.return_value, mock_docker_manager.return_value
-    )
+    with pytest.raises(SystemExit) as e:
+        health_check()
+    assert e.value.code == 1
 
-    # Verify the proxy's main start method was awaited
-    mock_proxy.return_value.start.assert_awaited_once()
+
+@patch("main.time.time")
+@patch("main.HEARTBEAT_FILE")
+def test_health_check_passes_with_fresh_heartbeat(
+    mock_heartbeat_file, mock_time, mock_load_config
+):
+    """
+    Tests that the health check passes if the heartbeat file is recent.
+    """
+    mock_heartbeat_file.exists.return_value = True
+    mock_time.return_value = 1000  # Current time
+    # Mock stat().st_mtime to return a fresh timestamp
+    mock_heartbeat_file.stat.return_value.st_mtime = 990
+
+    with pytest.raises(SystemExit) as e:
+        health_check()
+    assert e.value.code == 0
