@@ -14,6 +14,7 @@ import tarfile
 
 import pytest
 import pytest_asyncio
+from mcstatus import BedrockServer, JavaServer
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
@@ -26,7 +27,9 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 @pytest_asyncio.fixture(scope="function")
 async def docker_manager(docker_client_fixture):
     """Provides a DockerManager instance for the test function."""
+    # This manager is only used for its docker client, not its config
     manager = DockerManager(app_config=None)
+    # We replace the default client with our function-scoped fixture client
     manager.docker = docker_client_fixture
     yield manager
 
@@ -39,22 +42,27 @@ async def test_java_server_lifecycle(
     """
     container_name = "mc-java"
     proxy_port = 25565
-    idle_timeout = 30
+    backend_port = 25565
+    idle_timeout = 30  # From docker-compose.tests.yml NB_IDLE_TIMEOUT
 
     assert not await docker_manager.is_container_running(container_name), (
         "Java container should be initially stopped."
     )
 
     try:
-        await asyncio.wait_for(
+        _, writer = await asyncio.wait_for(
             asyncio.open_connection("127.0.0.1", proxy_port), timeout=10
         )
+        writer.close()
+        await writer.wait_closed()
     except (ConnectionRefusedError, asyncio.TimeoutError):
         pass
 
     assert await wait_for_container_status(
         docker_manager.docker, container_name, "running", timeout=120
     ), "Java container failed to start."
+    server = await JavaServer.async_lookup(f"127.0.0.1:{backend_port}")
+    await server.async_status()
 
     await asyncio.sleep(idle_timeout + 15)
     assert not await docker_manager.is_container_running(container_name), (
@@ -70,7 +78,8 @@ async def test_bedrock_server_lifecycle(
     """
     container_name = "mc-bedrock"
     proxy_port = 19132
-    idle_timeout = 30
+    backend_port = 19132
+    idle_timeout = 30  # From docker-compose.tests.yml NB_IDLE_TIMEOUT
 
     assert not await docker_manager.is_container_running(container_name), (
         "Bedrock container should be initially stopped."
@@ -86,6 +95,8 @@ async def test_bedrock_server_lifecycle(
     assert await wait_for_container_status(
         docker_manager.docker, container_name, "running", timeout=120
     ), "Bedrock container failed to start."
+    server = await BedrockServer.async_lookup(f"127.0.0.1:{backend_port}")
+    await server.async_status()
 
     await asyncio.sleep(idle_timeout + 15)
     assert not await docker_manager.is_container_running(container_name), (
