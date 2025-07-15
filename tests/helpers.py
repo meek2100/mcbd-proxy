@@ -71,14 +71,13 @@ async def wait_for_mc_server_ready(
         try:
             if server_type == "java":
                 server = await JavaServer.async_lookup(host, port)
-                status = await server.async_status()
             elif server_type == "bedrock":
                 server = await BedrockServer.async_lookup(host, port)
-                status = await server.async_status()
             else:
                 log.error("Unknown server type", server_type=server_type)
                 return False
 
+            status = await server.async_status()
             log.info(
                 "Server is ready!",
                 server=server_type,
@@ -93,14 +92,24 @@ async def wait_for_mc_server_ready(
     return False
 
 
-async def check_port_listening(host: str, port: int, timeout=1):
-    """Asynchronously checks if a port is actively listening for TCP connections."""
-    try:
-        # The timeout applies to each phase of the connection establishment
-        fut = asyncio.open_connection(host, port)
-        reader, writer = await asyncio.wait_for(fut, timeout=timeout)
-        writer.close()
-        await writer.wait_closed()
-        return True
-    except (asyncio.TimeoutError, ConnectionRefusedError, OSError):
-        return False
+async def check_port_listening(host: str, port: int, protocol="tcp", timeout=1):
+    """Asynchronously checks if a port is actively listening."""
+    if protocol == "tcp":
+        try:
+            fut = asyncio.open_connection(host, port)
+            reader, writer = await asyncio.wait_for(fut, timeout=timeout)
+            writer.close()
+            await writer.wait_closed()
+            return True
+        except (asyncio.TimeoutError, ConnectionRefusedError, OSError):
+            return False
+    else:  # udp
+        loop = asyncio.get_running_loop()
+        try:
+            transport, _ = await loop.create_datagram_endpoint(
+                lambda: asyncio.DatagramProtocol(), remote_addr=(host, port)
+            )
+            transport.close()
+            return True
+        except (OSError, asyncio.TimeoutError):
+            return False
