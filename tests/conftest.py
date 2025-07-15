@@ -35,17 +35,17 @@ def docker_compose_project_name():
     return f"netherbridge_test_{int(time.time())}"
 
 
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture(scope="function")
 def event_loop():
-    """Create an instance of the default event loop for the session."""
+    """Create an instance of the default event loop for each test function."""
     loop = asyncio.get_event_loop_policy().new_event_loop()
     yield loop
     loop.close()
 
 
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture(scope="function")
 async def docker_client_fixture(env_config):
-    """Provides an asynchronous Docker client for the test session."""
+    """Provides an async Docker client for each test function."""
     client = aiodocker.Docker()
     yield client
     await client.close()
@@ -62,8 +62,6 @@ def docker_compose_fixture(request, docker_compose_project_name, env_config):
     compose_file = "tests/docker-compose.tests.yml"
     env_file = "tests/.env"
 
-    # Ensure all statically named containers are removed before starting.
-    # This prevents conflicts from previous failed runs.
     static_container_names = [
         "nether-bridge",
         "mc-bedrock",
@@ -72,7 +70,7 @@ def docker_compose_fixture(request, docker_compose_project_name, env_config):
     ]
     for name in static_container_names:
         print(f"Attempting to remove stale container: {name}")
-        subprocess.run(["docker", "rm", "-f", name], check=False)
+        subprocess.run(["docker", "rm", "-f", name], check=False, capture_output=True)
 
     subprocess.run(
         [
@@ -116,7 +114,7 @@ def docker_compose_fixture(request, docker_compose_project_name, env_config):
             ],
             check=False,
         )
-    # Perform cleanup after tests, explicitly removing containers by project name
+
     subprocess.run(
         [
             "docker-compose",
