@@ -1,13 +1,9 @@
 # .github/workflows/load-test.yml
-
 name: Load Test
 
 on:
-  # 1. Run automatically on Pull Requests against main and develop branches
   pull_request:
     branches: [ main, develop ]
-
-  # 2. Allow manual runs from the GitHub Actions tab with custom inputs
   workflow_dispatch:
     inputs:
       server_type:
@@ -25,28 +21,19 @@ on:
 
 jobs:
   load-test:
-    name: Run Load Test (${{ strategy.matrix.server_type }})
+    name: Run Load Test (${{ matrix.server_type }})
     runs-on: [ubuntu-latest]
 
     strategy:
       matrix:
-        # If run manually, this creates a JSON array with one item, e.g., '["java"]'.
-        # If run by a PR, this uses the default JSON array '["java", "bedrock"]'.
-        # fromJSON() then correctly parses this into a list for the matrix.
         server_type: ${{ fromJSON(github.event.inputs.server_type && format('["{0}"]', github.event.inputs.server_type) || '["java", "bedrock"]') }}
-
-    env:
-      # Define server versions here, keeping them consistent
-      JAVA_VERSION: "1.20.1"
-      JAVA_TYPE: "PAPER"
-      BEDROCK_VERSION: "1.20.81.01"
-      BEDROCK_DOWNLOAD_URL: https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.20.81.01.zip
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up and start test environment
+        id: setup
         run: |
           echo "--- Building and starting Docker services ---"
           docker compose -f tests/docker-compose.tests.yml up --build -d
@@ -70,9 +57,6 @@ jobs:
 
       - name: Run Load Test Script
         run: |
-          # Use the matrix variable to select the server type.
-          # For automated PR runs, use a small client count (e.g., 10).
-          # For manual runs, use the number provided in the workflow dispatch inputs.
           CLIENT_COUNT=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.clients || '10' }}
           
           echo "--- Running load test on ${{ matrix.server_type }} with $CLIENT_COUNT clients ---"
@@ -80,10 +64,10 @@ jobs:
             python tests/load_tester.py \
               --server-type ${{ matrix.server_type }} \
               --clients $CLIENT_COUNT \
-              --chaos 30 # Add this line
+              --chaos 30
 
       - name: Dump container logs on failure
-        if: failure()
+        if: failure() || steps.setup.outcome == 'failure'
         run: |
           echo "--- A step failed. Dumping all container logs. ---"
           docker compose -f tests/docker-compose.tests.yml logs --no-color

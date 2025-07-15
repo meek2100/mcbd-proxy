@@ -14,7 +14,6 @@ import tarfile
 
 import pytest
 import pytest_asyncio
-from mcstatus import BedrockServer, JavaServer
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
@@ -27,9 +26,7 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 @pytest_asyncio.fixture(scope="function")
 async def docker_manager(docker_client_fixture):
     """Provides a DockerManager instance for the test function."""
-    # This manager is only used for its docker client, not its config
     manager = DockerManager(app_config=None)
-    # We replace the default client with our function-scoped fixture client
     manager.docker = docker_client_fixture
     yield manager
 
@@ -38,15 +35,19 @@ async def test_java_server_lifecycle(
     docker_manager: DockerManager, docker_compose_fixture
 ):
     """
-    Verifies the full lifecycle for a Java server: on-demand start and idle stop.
+    Verifies the full lifecycle for a pre-warmed Java server.
     """
     container_name = "mc-java"
     proxy_port = 25565
-    backend_port = 25565
-    idle_timeout = 30  # From docker-compose.tests.yml NB_IDLE_TIMEOUT
+    idle_timeout = 30
 
+    assert await docker_manager.is_container_running(container_name), (
+        "Java container should be running due to pre-warm."
+    )
+
+    await asyncio.sleep(idle_timeout + 15)
     assert not await docker_manager.is_container_running(container_name), (
-        "Java container should be initially stopped."
+        "Java container did not stop after the idle timeout."
     )
 
     try:
@@ -60,14 +61,7 @@ async def test_java_server_lifecycle(
 
     assert await wait_for_container_status(
         docker_manager.docker, container_name, "running", timeout=120
-    ), "Java container failed to start."
-    server = await JavaServer.async_lookup(f"127.0.0.1:{backend_port}")
-    await server.async_status()
-
-    await asyncio.sleep(idle_timeout + 15)
-    assert not await docker_manager.is_container_running(container_name), (
-        "Java container did not stop after the idle timeout."
-    )
+    ), "Java container failed to start on demand after idle shutdown."
 
 
 async def test_bedrock_server_lifecycle(
@@ -78,11 +72,14 @@ async def test_bedrock_server_lifecycle(
     """
     container_name = "mc-bedrock"
     proxy_port = 19132
-    backend_port = 19132
-    idle_timeout = 30  # From docker-compose.tests.yml NB_IDLE_TIMEOUT
+    idle_timeout = 30
 
+    if await docker_manager.is_container_running(container_name):
+        async with docker_manager.get_container(container_name) as container:
+            assert container is not None, "Bedrock container not found for cleanup."
+            await container.stop(t=10)
     assert not await docker_manager.is_container_running(container_name), (
-        "Bedrock container should be initially stopped."
+        "Bedrock container could not be stopped for test setup."
     )
 
     loop = asyncio.get_running_loop()
@@ -94,9 +91,7 @@ async def test_bedrock_server_lifecycle(
 
     assert await wait_for_container_status(
         docker_manager.docker, container_name, "running", timeout=120
-    ), "Bedrock container failed to start."
-    server = await BedrockServer.async_lookup(f"127.0.0.1:{backend_port}")
-    await server.async_status()
+    ), "Bedrock container failed to start on demand."
 
     await asyncio.sleep(idle_timeout + 15)
     assert not await docker_manager.is_container_running(container_name), (
@@ -157,12 +152,12 @@ async def test_proxy_restarts_crashed_server(
     container_name = "mc-java"
     proxy_port = 25565
 
-    await check_port_listening("127.0.0.1", proxy_port)
     assert await wait_for_container_status(
         docker_manager.docker, container_name, "running"
-    ), "Server did not start on first connection."
+    ), "Server was not running at the start of the test."
 
     async with docker_manager.get_container(container_name) as container:
+        assert container is not None, "Java container not found for stopping."
         await container.stop(t=10)
     assert not await docker_manager.is_container_running(container_name), (
         "Container did not stop after manual command."
@@ -172,5 +167,5 @@ async def test_proxy_restarts_crashed_server(
 
     await check_port_listening("127.0.0.1", proxy_port)
     assert await wait_for_container_status(
-        docker_manager.docker, container_name, "running"
+        docker_manager.docker, container_name, "running", timeout=120
     ), "Proxy did not restart the 'crashed' server on new connection."

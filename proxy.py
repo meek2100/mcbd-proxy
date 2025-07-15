@@ -95,7 +95,7 @@ class AsyncProxy:
                 local_addr=(server_config.proxy_host, server_config.proxy_port),
             )
             try:
-                await asyncio.Future()  # Runs forever until cancelled
+                await asyncio.Future()
             finally:
                 transport.close()
 
@@ -104,23 +104,30 @@ class AsyncProxy:
         Ensures a server is running, handling startup logic concurrently.
         """
         if self._ready_events[server_config.name].is_set():
-            return
+            if await self.docker_manager.is_container_running(
+                server_config.container_name
+            ):
+                return
+            else:
+                log.warning(
+                    "Ready event was set, but container is stopped. Resetting.",
+                    server=server_config.name,
+                )
+                self._ready_events[server_config.name].clear()
 
         async with self._startup_locks[server_config.name]:
-            state = self._server_state[server_config.name]
-            if not state["is_running"]:
+            if not self._ready_events[server_config.name].is_set():
                 log.info(
                     "Server not running. Initiating startup...",
                     server=server_config.name,
                 )
                 start_time = time.time()
-                self._ready_events[server_config.name].clear()
                 await self.docker_manager.start_server(server_config)
                 duration = time.time() - start_time
                 self.metrics_manager.observe_startup_duration(
                     server_config.name, duration
                 )
-                state["is_running"] = True
+                self._server_state[server_config.name]["is_running"] = True
                 self._ready_events[server_config.name].set()
                 log.info(
                     "Server startup complete. Event is set.",
@@ -216,29 +223,35 @@ class AsyncProxy:
         while True:
             await asyncio.sleep(self.app_config.player_check_interval)
             for sc in self.app_config.game_servers:
-                state = self._server_state[sc.name]
-                if state["is_running"]:
-                    player_count = await self._get_player_count(sc)
-                    log.debug(
-                        "Player count check", server=sc.name, players=player_count
-                    )
+                is_running = await self.docker_manager.is_container_running(
+                    sc.container_name
+                )
+                if not is_running:
+                    self._server_state[sc.name]["is_running"] = False
+                    continue
 
-                    if player_count > 0:
-                        state["last_activity"] = time.time()
-                    else:
-                        idle_time = time.time() - state["last_activity"]
-                        if idle_time > self.app_config.idle_timeout:
-                            log.info(
-                                "Server empty and idle timeout exceeded. Stopping.",
-                                server=sc.name,
-                            )
-                            await self.docker_manager.stop_server(
-                                sc.container_name,
-                                self.app_config.server_stop_timeout,
-                            )
-                            state["is_running"] = False
-                            self._ready_events[sc.name].clear()
-                            log.info("Server stopped.", server=sc.name)
+                self._server_state[sc.name]["is_running"] = True
+                player_count = await self._get_player_count(sc)
+                log.debug("Player count check", server=sc.name, players=player_count)
+
+                if player_count > 0:
+                    self._server_state[sc.name]["last_activity"] = time.time()
+                else:
+                    idle_time = (
+                        time.time() - self._server_state[sc.name]["last_activity"]
+                    )
+                    if idle_time > self.app_config.idle_timeout:
+                        log.info(
+                            "Server empty and idle timeout exceeded. Stopping.",
+                            server=sc.name,
+                        )
+                        await self.docker_manager.stop_server(
+                            sc.container_name,
+                            self.app_config.server_stop_timeout,
+                        )
+                        self._server_state[sc.name]["is_running"] = False
+                        self._ready_events[sc.name].clear()
+                        log.info("Server stopped.", server=sc.name)
 
 
 class BedrockProtocol(asyncio.DatagramProtocol):
