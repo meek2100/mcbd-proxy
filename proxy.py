@@ -4,7 +4,6 @@ Core asynchronous proxy logic for TCP (Java) and UDP (Bedrock) servers.
 """
 
 import asyncio
-import signal
 import time
 
 import structlog
@@ -36,15 +35,22 @@ class AsyncProxy:
         self._startup_locks = {s.name: asyncio.Lock() for s in app_config.game_servers}
         self._ready_events = {s.name: asyncio.Event() for s in app_config.game_servers}
 
+    def _shutdown_handler(self):
+        """Initiates a graceful shutdown of all tasks."""
+        log.warning("Shutdown signal received. Cancelling tasks...")
+        for task_group in self.server_tasks.values():
+            if isinstance(task_group, list):
+                for task in task_group:
+                    task.cancel()
+            else:
+                task_group.cancel()
+
     async def start(self):
         """
         Starts all proxy listeners, pre-warms servers if configured,
         and starts the server monitoring task.
         """
         log.info("Starting async proxy...")
-        loop = asyncio.get_running_loop()
-        loop.add_signal_handler(signal.SIGINT, self._shutdown_handler)
-        loop.add_signal_handler(signal.SIGTERM, self._shutdown_handler)
 
         for server_config in self.app_config.game_servers:
             if server_config.pre_warm:
@@ -66,16 +72,6 @@ class AsyncProxy:
         await asyncio.gather(
             monitor_task, metrics_task, *listener_tasks, return_exceptions=True
         )
-
-    def _shutdown_handler(self):
-        """Initiates a graceful shutdown of all tasks."""
-        log.warning("Shutdown signal received. Cancelling tasks...")
-        for task_group in self.server_tasks.values():
-            if isinstance(task_group, list):
-                for task in task_group:
-                    task.cancel()
-            else:
-                task_group.cancel()
 
     async def _start_listener(self, server_config: GameServerConfig):
         """Starts a TCP or UDP listener for a specific game server."""
@@ -117,8 +113,13 @@ class AsyncProxy:
                     "Server not running. Initiating startup...",
                     server=server_config.name,
                 )
+                start_time = time.time()
                 self._ready_events[server_config.name].clear()
                 await self.docker_manager.start_server(server_config)
+                duration = time.time() - start_time
+                self.metrics_manager.observe_startup_duration(
+                    server_config.name, duration
+                )
                 state["is_running"] = True
                 self._ready_events[server_config.name].set()
                 log.info(
@@ -134,7 +135,11 @@ class AsyncProxy:
         self.metrics_manager.inc_active_connections(server_name)
 
     async def _proxy_data(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        server_name: str,
+        direction: str,
     ):
         """Proxies data between a client and a server until EOF."""
         try:
@@ -142,6 +147,9 @@ class AsyncProxy:
                 data = await reader.read(4096)
                 if not data:
                     break
+                self.metrics_manager.inc_bytes_transferred(
+                    server_name, direction, len(data)
+                )
                 writer.write(data)
                 await writer.drain()
         finally:
@@ -166,8 +174,12 @@ class AsyncProxy:
                 server_config.host, server_config.port
             )
             log.info("Connected to backend server", server=server_config.name)
-            to_client = self._proxy_data(server_reader, client_writer)
-            to_server = self._proxy_data(client_reader, server_writer)
+            to_client = self._proxy_data(
+                server_reader, client_writer, server_config.name, "s2c"
+            )
+            to_server = self._proxy_data(
+                client_reader, server_writer, server_config.name, "c2s"
+            )
             await asyncio.gather(to_client, to_server)
         except (ConnectionRefusedError, asyncio.TimeoutError) as e:
             log.error(
@@ -196,7 +208,6 @@ class AsyncProxy:
             log.warning(
                 "Could not query player count for server", server=server_config.name
             )
-            # On query failure, assume players are present to prevent shutdown
             return 1
 
     async def _monitor_server_activity(self):
@@ -237,7 +248,7 @@ class BedrockProtocol(asyncio.DatagramProtocol):
         self.proxy = proxy
         self.server_config = server_config
         self.transport = None
-        self.client_map = {}  # Maps client_addr to its backend connection
+        self.client_map = {}
         super().__init__()
 
     def connection_made(self, transport: asyncio.DatagramTransport):
@@ -245,6 +256,9 @@ class BedrockProtocol(asyncio.DatagramProtocol):
 
     def datagram_received(self, data: bytes, addr: tuple):
         self.proxy._update_activity(self.server_config.name)
+        self.proxy.metrics_manager.inc_bytes_transferred(
+            self.server_config.name, "c2s", len(data)
+        )
         if addr not in self.client_map:
             log.info("New UDP client", client=addr, server=self.server_config.name)
             loop = asyncio.get_running_loop()
@@ -260,7 +274,9 @@ class BedrockProtocol(asyncio.DatagramProtocol):
 
         loop = asyncio.get_running_loop()
         transport, protocol = await loop.create_datagram_endpoint(
-            lambda: BackendProtocol(self.transport, client_addr),
+            lambda: BackendProtocol(
+                self.proxy, self.server_config, self.transport, client_addr
+            ),
             remote_addr=(self.server_config.host, self.server_config.port),
         )
         self.client_map[client_addr]["protocol"] = protocol
@@ -279,7 +295,15 @@ class BedrockProtocol(asyncio.DatagramProtocol):
 class BackendProtocol(asyncio.DatagramProtocol):
     """Protocol to handle communication from the backend Bedrock server."""
 
-    def __init__(self, client_transport: asyncio.DatagramTransport, client_addr: tuple):
+    def __init__(
+        self,
+        proxy: AsyncProxy,
+        server_config: GameServerConfig,
+        client_transport: asyncio.DatagramTransport,
+        client_addr: tuple,
+    ):
+        self.proxy = proxy
+        self.server_config = server_config
         self.client_transport = client_transport
         self.client_addr = client_addr
         self.transport = None
@@ -289,6 +313,9 @@ class BackendProtocol(asyncio.DatagramProtocol):
         self.transport = transport
 
     def datagram_received(self, data: bytes, _addr: tuple):
+        self.proxy.metrics_manager.inc_bytes_transferred(
+            self.server_config.name, "s2c", len(data)
+        )
         if self.client_transport and not self.client_transport.is_closing():
             self.client_transport.sendto(data, self.client_addr)
 
