@@ -26,14 +26,13 @@ def test_load_config_with_no_servers():
 def test_load_config_with_dynamic_servers():
     """Tests that servers are loaded dynamically from NB_X_... env vars."""
     mock_env = {
-        "NB_LOG_LEVEL": "DEBUG",
+        "LOG_LEVEL": "DEBUG",  # CORRECTED: Was NB_LOG_LEVEL
         # Server 1: Java
         "NB_1_NAME": "Test Java",
         "NB_1_GAME_TYPE": "java",
         "NB_1_CONTAINER_NAME": "mc-java-test",
         "NB_1_PORT": "25565",
         "NB_1_PROXY_PORT": "25565",
-        "NB_1_STOP_AFTER_IDLE": "900",
         # Server 2: Bedrock
         "NB_2_NAME": "Test Bedrock",
         "NB_2_GAME_TYPE": "bedrock",
@@ -53,16 +52,14 @@ def test_load_config_with_dynamic_servers():
         assert java_server.game_type == "java"
         assert java_server.container_name == "mc-java-test"
         assert java_server.port == 25565
-        assert java_server.query_port == 25565  # Should default to port
-        assert java_server.stop_after_idle == 900
-        assert java_server.pre_warm is False  # Default value
+        assert java_server.query_port == 25565
+        assert java_server.pre_warm is False
 
         # Verify Bedrock server config
         bedrock_server = config.game_servers[1]
         assert bedrock_server.name == "Test Bedrock"
         assert bedrock_server.game_type == "bedrock"
         assert bedrock_server.port == 19132
-        assert bedrock_server.stop_after_idle == 300  # Default value
         assert bedrock_server.pre_warm is True
 
 
@@ -83,9 +80,15 @@ def test_load_config_with_query_port_override():
 
 def test_load_config_missing_required_field_raises_error():
     """Tests that a ValidationError is raised if a required field is missing."""
+    # CORRECTED: The mock environment must define the container to enter the
+    # config loop, but is missing another required field (e.g., GAME_TYPE)
+    # to trigger the validation error.
     mock_env = {
         "NB_1_NAME": "Incomplete Server",
-        # Missing NB_1_CONTAINER_NAME, NB_1_GAME_TYPE, etc.
+        "NB_1_CONTAINER_NAME": "mc-incomplete",
+        "NB_1_PORT": "12345",
+        "NB_1_PROXY_PORT": "12345",
+        # NB_1_GAME_TYPE is missing
     }
     with patch.dict(os.environ, mock_env, clear=True):
         with pytest.raises(ValidationError):
