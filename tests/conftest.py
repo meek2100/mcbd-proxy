@@ -100,7 +100,36 @@ def docker_compose_fixture(request, docker_compose_project_name, env_config):
         ],
         check=True,
     )
+
+    # Wait for the nether-bridge container to be healthy before running tests
+    print("Waiting for nether-bridge to become healthy...")
+    start_time = time.time()
+    timeout = 120
+    while time.time() - start_time < timeout:
+        try:
+            result = subprocess.run(
+                [
+                    "docker",
+                    "inspect",
+                    "--format",
+                    "{{.State.Health.Status}}",
+                    "nether-bridge",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            if "healthy" in result.stdout:
+                print("Nether-bridge is healthy.")
+                break
+        except subprocess.CalledProcessError:
+            pass  # Container might not exist yet
+        time.sleep(5)
+    else:
+        pytest.fail("Timeout waiting for nether-bridge to become healthy.")
+
     yield
+
     if request.session.testsfailed > 0:
         print("--- DUMPING CONTAINER LOGS ON FAILURE ---")
         subprocess.run(
