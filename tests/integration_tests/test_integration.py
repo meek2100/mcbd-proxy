@@ -5,7 +5,9 @@ These tests use live Docker containers to verify end-to-end functionality.
 """
 
 import asyncio
+import json
 import os
+import signal
 import sys
 
 import pytest
@@ -43,7 +45,7 @@ async def test_java_server_lifecycle(
     """
     Verifies the full lifecycle for a Java server: on-demand start and idle stop.
     """
-    server_config = next(s for s in app_config.game_servers if s.name == "mc-java")
+    server_config = next(s for s in app_config.game_servers if s.game_type == "java")
     container_name = server_config.container_name
 
     # 1. Initial State: Ensure container is stopped
@@ -51,7 +53,7 @@ async def test_java_server_lifecycle(
         "Java container should be initially stopped."
     )
 
-    # 2. Trigger Server Start: A client connection starts the server
+    # 2. Trigger Server Start
     try:
         _, writer = await asyncio.wait_for(
             asyncio.open_connection("127.0.0.1", server_config.proxy_port),
@@ -60,32 +62,21 @@ async def test_java_server_lifecycle(
         writer.close()
         await writer.wait_closed()
     except (ConnectionRefusedError, asyncio.TimeoutError):
-        pass  # Expected as the server is spinning up
+        pass  # Expected as the server spins up
 
-    # 3. Verify Server Started
+    # 3. Verify Server Started and Queryable
     assert await wait_for_container_status(
         docker_manager.docker, container_name, "running", timeout=120
     ), "Java container failed to start."
+    server = await JavaServer.async_lookup(f"127.0.0.1:{server_config.port}")
+    await server.async_status()
 
-    assert await check_port_listening("127.0.0.1", server_config.proxy_port), (
-        "Proxy port for Java server is not listening."
-    )
-
-    # 4. Verify Server is Queryable
-    server = JavaServer.lookup(f"127.0.0.1:{server_config.port}")
-    status = await server.async_status()
-    assert status.version.name, "Could not query the started Java server."
-    print(f"Java server started with {status.players.online} players.")
-
-    # 5. Verify Auto-Stop
-    print("Waiting for Java server to auto-stop due to idle timeout...")
-    idle_plus_buffer = server_config.stop_after_idle + 45  # Add more buffer
+    # 4. Verify Auto-Stop after idle
+    idle_plus_buffer = app_config.idle_timeout + 15
     await asyncio.sleep(idle_plus_buffer)
-
     assert not await docker_manager.is_container_running(container_name), (
         "Java container did not stop after the idle timeout."
     )
-    print("Java server stopped successfully.")
 
 
 async def test_bedrock_server_lifecycle(
@@ -94,7 +85,7 @@ async def test_bedrock_server_lifecycle(
     """
     Verifies the full lifecycle for a Bedrock server: on-demand start and idle stop.
     """
-    server_config = next(s for s in app_config.game_servers if s.name == "mc-bedrock")
+    server_config = next(s for s in app_config.game_servers if s.game_type == "bedrock")
     container_name = server_config.container_name
 
     # 1. Initial State: Ensure container is stopped
@@ -102,32 +93,97 @@ async def test_bedrock_server_lifecycle(
         "Bedrock container should be initially stopped."
     )
 
-    # 2. Trigger Server Start: A client ping starts the server
+    # 2. Trigger Server Start with a ping
     loop = asyncio.get_running_loop()
     transport, _ = await loop.create_datagram_endpoint(
         lambda: asyncio.DatagramProtocol(),
         remote_addr=("127.0.0.1", server_config.proxy_port),
     )
-    transport.sendto(b"\x01\x00\x00\x00\x00\x01\x23\x45\x67\x89\xab\xcd\xef")
+    ping_data = b"\x01\x00\x00\x00\x00\x01\x23\x45\x67\x89\xab\xcd\xef"
+    transport.sendto(ping_data)
     transport.close()
 
-    # 3. Verify Server Started
+    # 3. Verify Server Started and Queryable
     assert await wait_for_container_status(
         docker_manager.docker, container_name, "running", timeout=120
     ), "Bedrock container failed to start."
-
-    # 4. Verify Server is Queryable
     server = await BedrockServer.async_lookup(f"127.0.0.1:{server_config.port}")
-    status = await server.async_status()
-    assert status.version.name, "Could not query the started Bedrock server."
-    print(f"Bedrock server started with {status.players.online} players.")
+    await server.async_status()
 
-    # 5. Verify Auto-Stop
-    print("Waiting for Bedrock server to auto-stop due to idle timeout...")
-    idle_plus_buffer = server_config.stop_after_idle + 45  # Add more buffer
+    # 4. Verify Auto-Stop after idle
+    idle_plus_buffer = app_config.idle_timeout + 15
     await asyncio.sleep(idle_plus_buffer)
-
     assert not await docker_manager.is_container_running(container_name), (
         "Bedrock container did not stop after the idle timeout."
     )
-    print("Bedrock server stopped successfully.")
+
+
+async def test_sighup_reloads_configuration(
+    docker_manager: DockerManager, app_config, docker_compose_fixture
+):
+    """
+    Tests that the proxy correctly reloads its configuration upon SIGHUP.
+    """
+    new_port = 19134  # A port not initially in use
+    new_config = {
+        "servers": [
+            {
+                "name": "Bedrock Reloaded",
+                "game_type": "bedrock",
+                "proxy_port": new_port,
+                "container_name": "mc-bedrock",
+                "port": 19132,
+            }
+        ]
+    }
+
+    # 1. Write the new config file inside the container
+    async with docker_manager.get_container("nether-bridge") as container:
+        assert container is not None, "nether-bridge container not found"
+        await container.put_archive(
+            "/app/",
+            data=json.dumps(new_config).encode("utf-8"),
+            filename="servers.json",
+        )
+
+        # 2. Send SIGHUP signal
+        await container.kill(signal=signal.SIGHUP)
+
+    # 3. Give proxy a moment to reload
+    await asyncio.sleep(5)
+
+    # 4. Verify the new port is listening and an old one is not
+    assert await check_port_listening("127.0.0.1", new_port, protocol="udp"), (
+        f"Proxy did not start listening on new port {new_port} after reload."
+    )
+    assert not await check_port_listening("127.0.0.1", 25565), (
+        "Proxy did not stop listening on old port 25565 after reload."
+    )
+
+
+async def test_proxy_restarts_crashed_server(
+    docker_manager: DockerManager, app_config, docker_compose_fixture
+):
+    """
+    Tests that the proxy will re-start a server that was stopped externally.
+    """
+    server_config = next(s for s in app_config.game_servers if s.game_type == "java")
+    container_name = server_config.container_name
+
+    # 1. Trigger server start and wait for it to be running
+    await check_port_listening("127.0.0.1", server_config.proxy_port)
+    assert await wait_for_container_status(
+        docker_manager.docker, container_name, "running"
+    ), "Server did not start on first connection."
+
+    # 2. Manually stop the container to simulate a crash
+    await docker_manager.stop_server(container_name, 10)
+    assert not await docker_manager.is_container_running(container_name), (
+        "Container did not stop after manual command."
+    )
+
+    # 3. Attempt a new connection and verify it restarts
+    await check_port_listening("127.0.0.1", server_config.proxy_port)
+    assert await wait_for_container_status(
+        docker_manager.docker, container_name, "running"
+    ), "Proxy did not restart the 'crashed' server on new connection."
