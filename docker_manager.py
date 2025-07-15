@@ -156,16 +156,13 @@ class DockerManager:
             try:
                 if server_config.game_type == "java":
                     server = await JavaServer.async_lookup(
-                        server_config.host, server_config.query_port
+                        f"{server_config.host}:{server_config.query_port}"
                     )
-                    await server.async_status()
                 else:  # bedrock
-                    # Fix: Use the correct async pattern for Bedrock
-                    server = BedrockServer.lookup(
-                        server_config.host, server_config.query_port
-                    )
-                    await server.async_status()
+                    # BedrockServer does not have async_lookup, instantiate directly
+                    server = BedrockServer(server_config.host, server_config.query_port)
 
+                await server.async_status()
                 log.info(
                     "Server is queryable!", container_name=server_config.container_name
                 )
@@ -176,7 +173,7 @@ class DockerManager:
                     container_name=server_config.container_name,
                     error=str(e),
                 )
-                await asyncio.sleep(self.app_config.server_query_interval)
+                await asyncio.sleep(self.app_config.server_check_interval)
 
     async def close(self):
         """Closes the aiodocker session."""
