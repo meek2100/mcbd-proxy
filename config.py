@@ -58,6 +58,7 @@ class AppConfig(BaseModel):
     player_check_interval: int = 60
     server_startup_timeout: int = 300
     server_stop_timeout: int = 60
+    query_timeout: int = 5
     is_prometheus_enabled: bool = True
     prometheus_port: int = 8000
 
@@ -105,7 +106,6 @@ def load_app_config() -> AppConfig:
             raise e
         i += 1
 
-    # If no servers were defined via environment, try to load from servers.json
     if not game_servers:
         servers_file = Path("/app/servers.json")
         if servers_file.is_file():
@@ -131,6 +131,7 @@ def load_app_config() -> AppConfig:
             "player_check_interval": int(os.getenv("NB_PLAYER_CHECK_INTERVAL", 60)),
             "server_startup_timeout": int(os.getenv("NB_SERVER_READY_MAX_WAIT", 300)),
             "server_stop_timeout": int(os.getenv("NB_SERVER_STOP_TIMEOUT", 60)),
+            "query_timeout": int(os.getenv("NB_QUERY_TIMEOUT", 5)),
             "is_prometheus_enabled": os.getenv("NB_PROMETHEUS_ENABLED", "true").lower()
             == "true",
             "prometheus_port": int(os.getenv("NB_PROMETHEUS_PORT", 8000)),

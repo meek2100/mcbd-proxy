@@ -83,10 +83,10 @@ class DockerManager:
                     )
             return False
 
-    async def start_server(self, server_config: GameServerConfig):
+    async def start_server(self, server_config: GameServerConfig) -> bool:
         """
-
         Asynchronously starts a Docker container and waits for it to be queryable.
+        Returns True on success, False on failure.
         """
         container_name = server_config.container_name
         log.info("Starting container", container_name=container_name)
@@ -96,26 +96,28 @@ class DockerManager:
                     "Container not found, cannot start",
                     container_name=container_name,
                 )
-                return
+                return False
 
             try:
                 await container.start()
                 log.info(
                     "Container started successfully", container_name=container_name
                 )
-                await self.wait_for_server_query_ready(server_config)
+                return await self.wait_for_server_query_ready(server_config)
             except aiodocker.exceptions.DockerError as e:
                 if "already started" in str(e).lower():
                     log.warning(
                         "Container is already running",
                         container_name=container_name,
                     )
+                    return True  # If already started, consider it a success
                 else:
                     log.error(
                         "Failed to start container",
                         container_name=container_name,
                         exc_info=True,
                     )
+                    return False
 
     async def stop_server(self, container_name: str, stop_timeout: int):
         """
@@ -140,12 +142,16 @@ class DockerManager:
                         exc_info=True,
                     )
 
-    async def wait_for_server_query_ready(self, server_config: GameServerConfig):
+    async def wait_for_server_query_ready(
+        self, server_config: GameServerConfig
+    ) -> bool:
         """
         Asynchronously waits for a Minecraft server to become queryable.
+        Returns True if ready, False if it times out.
         """
         start_time = time.time()
         timeout = self.app_config.server_startup_timeout
+        query_timeout = self.app_config.query_timeout
         log.info(
             "Waiting for server to be queryable",
             container_name=server_config.container_name,
@@ -156,10 +162,12 @@ class DockerManager:
             try:
                 lookup_str = f"{server_config.host}:{server_config.query_port}"
                 if server_config.game_type == "java":
-                    server = await JavaServer.async_lookup(lookup_str, timeout=3)
+                    server = await JavaServer.async_lookup(
+                        lookup_str, timeout=query_timeout
+                    )
                 else:  # bedrock
                     server = await asyncio.to_thread(
-                        BedrockServer.lookup, lookup_str, timeout=3
+                        BedrockServer.lookup, lookup_str, timeout=query_timeout
                     )
 
                 await server.async_status()
@@ -167,19 +175,20 @@ class DockerManager:
                     "Server is queryable!",
                     container_name=server_config.container_name,
                 )
-                return
+                return True
             except (asyncio.TimeoutError, ConnectionRefusedError, OSError) as e:
                 log.debug(
                     "Server not queryable yet, retrying...",
                     container_name=server_config.container_name,
                     error=str(e),
                 )
-                await asyncio.sleep(5)  # Use a fixed, reasonable retry interval
+                await asyncio.sleep(5)
 
         log.error(
             "Timeout waiting for server to be queryable",
             container_name=server_config.container_name,
         )
+        return False
 
     async def close(self):
         """Closes the asynchronous aiodocker session."""
