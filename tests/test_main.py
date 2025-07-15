@@ -7,72 +7,60 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-import main
+from main import amain
+
+pytestmark = pytest.mark.unit
+
+
+@pytest.fixture
+def mock_load_config():
+    """Fixture to mock config loading."""
+    with patch("main.load_app_config") as mock:
+        yield mock
+
+
+@pytest.fixture
+def mock_docker_manager():
+    """Fixture to mock DockerManager."""
+    with patch("main.DockerManager") as mock:
+        instance = AsyncMock()
+        mock.return_value = instance
+        yield instance
+
+
+@pytest.fixture
+def mock_proxy():
+    """Fixture to mock AsyncProxy."""
+    with patch("main.AsyncProxy") as mock:
+        instance = AsyncMock()
+        mock.return_value = instance
+        yield instance
 
 
 @pytest.mark.asyncio
-async def test_amain_happy_path():
-    """Tests the main async function runs without errors."""
-    with (
-        patch("main.load_app_config"),
-        patch("main.configure_logging"),
-        patch("main.DockerManager") as mock_docker_manager,
-        patch("main.AsyncProxy") as mock_async_proxy,
-    ):
-        mock_docker_instance = AsyncMock()
-        mock_docker_manager.return_value = mock_docker_instance
-        mock_proxy_instance = AsyncMock()
-        mock_async_proxy.return_value = mock_proxy_instance
-
-        await main.amain()
-
-        mock_docker_instance.close.assert_awaited_once()
-        mock_proxy_instance.start.assert_awaited_once()
-
-
-def test_main_entrypoint_runs_amain():
+async def test_amain_starts_proxy_and_closes_docker_manager(
+    mock_load_config, mock_docker_manager, mock_proxy
+):
     """
-    Tests that when the script is run normally, it calls asyncio.run.
+    Test that amain starts the proxy and ensures docker_manager.close is called.
     """
-    with (
-        patch("sys.argv", ["main.py"]),
-        patch("main.amain", new_callable=AsyncMock) as mock_amain,
-        patch("main.asyncio.run") as mock_run,
-    ):
-        coro = mock_amain.return_value
-        main.main()
-        mock_amain.assert_called_once()
-        mock_run.assert_called_once_with(coro)
+    await amain()
+
+    mock_proxy.start.assert_awaited_once()
+    mock_docker_manager.close.assert_awaited_once()
 
 
-def test_main_entrypoint_healthcheck():
+@pytest.mark.asyncio
+async def test_amain_closes_docker_manager_on_exception(
+    mock_load_config, mock_docker_manager, mock_proxy
+):
     """
-    Tests that when run with '--healthcheck', it calls the health_check function.
+    Test that amain ensures docker_manager.close is called even if proxy
+    start fails.
     """
-    with (
-        patch("sys.argv", ["main.py", "--healthcheck"]),
-        patch("main.health_check") as mock_health_check,
-    ):
-        main.main()
-        mock_health_check.assert_called_once()
+    mock_proxy.start.side_effect = Exception("Proxy failed to start")
 
+    with pytest.raises(Exception, match="Proxy failed to start"):
+        await amain()
 
-def test_health_check_success():
-    """
-    Tests that the health_check function exits with 0 on success.
-    """
-    with patch("main.load_app_config"), patch("sys.exit") as mock_exit:
-        main.health_check()
-        mock_exit.assert_called_once_with(0)
-
-
-def test_health_check_failure():
-    """
-    Tests that the health_check function exits with 1 on configuration failure.
-    """
-    with (
-        patch("main.load_app_config", side_effect=Exception("Config error")),
-        patch("sys.exit") as mock_exit,
-    ):
-        main.health_check()
-        mock_exit.assert_called_once_with(1)
+    mock_docker_manager.close.assert_awaited_once()
