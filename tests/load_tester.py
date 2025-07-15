@@ -14,12 +14,11 @@ import structlog
 
 log = structlog.get_logger()
 
-# --- Statistics Tracking (Restored) ---
 successful_connections = 0
 failed_connections = 0
 
 
-async def simulate_tcp_client(host: str, port: int, client_id: int, mode: str):
+async def simulate_tcp_client(host: str, port: int, client_id: int, chaos_percent: int):
     """
     Simulates a single TCP client with different behaviors based on the mode.
     - 'load': Connects and disconnects cleanly.
@@ -28,8 +27,7 @@ async def simulate_tcp_client(host: str, port: int, client_id: int, mode: str):
     global successful_connections, failed_connections
     writer = None
     try:
-        log.debug(f"Client {client_id}: Starting TCP connection in '{mode}' mode.")
-        # Increased timeout for more reliable connections under heavy load
+        log.debug(f"Client {client_id}: Starting TCP connection.")
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(host, port), timeout=20
         )
@@ -37,9 +35,8 @@ async def simulate_tcp_client(host: str, port: int, client_id: int, mode: str):
         log.debug(f"Client {client_id}: TCP connection successful.")
 
         # In chaos mode, there's a chance the client "crashes"
-        if mode == "chaos" and random.random() < 0.25:
+        if chaos_percent > 0 and random.randint(1, 100) <= chaos_percent:
             log.warning(f"Client {client_id}: Simulating crash (abrupt close).")
-            # Abruptly close the underlying transport without a proper handshake
             if writer.get_extra_info("socket"):
                 writer.get_extra_info("socket").close()
             return
@@ -55,22 +52,22 @@ async def simulate_tcp_client(host: str, port: int, client_id: int, mode: str):
             try:
                 await writer.wait_closed()
             except Exception:
-                pass  # Ignore errors on close, as we are already handling them
+                pass
 
 
 async def main(args):
     """Main function to orchestrate the load test."""
+    port = 19132 if args.server_type == "bedrock" else 25565
     log.info(
-        f"Starting test with {args.clients} clients in '{args.mode}' mode "
-        f"against {args.host}:{args.port}"
+        f"Starting test with {args.clients} clients "
+        f"against {args.server_type} server on {args.host}:{port}",
+        chaos_percent=args.chaos,
     )
 
     start_time = time.time()
     tasks = []
     for i in range(args.clients):
-        task = asyncio.create_task(
-            simulate_tcp_client(args.host, args.port, i, args.mode)
-        )
+        task = asyncio.create_task(simulate_tcp_client(args.host, port, i, args.chaos))
         tasks.append(task)
         if args.delay > 0:
             await asyncio.sleep(args.delay)
@@ -79,9 +76,9 @@ async def main(args):
 
     duration = time.time() - start_time
 
-    # --- Final Report (Restored) ---
     print("\n--- Test Results ---")
-    print(f"Mode: {args.mode.upper()}")
+    print(f"Server Type: {args.server_type.upper()}")
+    print(f"Chaos Percentage: {args.chaos}%")
     print(f"Total Duration: {duration:.2f} seconds")
     print(f"Total Clients Simulated: {args.clients}")
     print(f"Successful Connections: {successful_connections}")
@@ -92,10 +89,14 @@ async def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Nether-bridge Load/Chaos Tester")
     parser.add_argument(
-        "--host", type=str, default="127.0.0.1", help="The IP address of the proxy."
+        "--server-type",
+        type=str,
+        choices=["java", "bedrock"],
+        required=True,
+        help="The type of server to target.",
     )
     parser.add_argument(
-        "--port", type=int, default=25565, help="The port of the proxy."
+        "--host", type=str, default="127.0.0.1", help="The IP address of the proxy."
     )
     parser.add_argument(
         "-c", "--clients", type=int, default=20, help="Concurrent clients to simulate."
@@ -104,11 +105,12 @@ if __name__ == "__main__":
         "--delay", type=float, default=0.05, help="Delay between starting clients."
     )
     parser.add_argument(
-        "--mode",
-        type=str,
-        choices=["load", "chaos"],
-        default="load",
-        help="Test mode: 'load' for clean connections, 'chaos' for unstable ones.",
+        "--chaos",
+        type=int,
+        default=0,
+        choices=range(0, 101),
+        metavar="[0-100]",
+        help="Percentage of clients that will connect and abruptly disconnect.",
     )
     parser.add_argument(
         "--log-level",
@@ -119,7 +121,6 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # --- Logging Configuration (Restored) ---
     structlog.configure(
         processors=[
             structlog.stdlib.add_log_level,
