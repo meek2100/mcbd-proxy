@@ -72,31 +72,22 @@ async def test_ensure_server_already_running(proxy, mock_docker_manager):
 @pytest.mark.asyncio
 @patch("proxy.asyncio.sleep", new_callable=AsyncMock)
 @patch("proxy.time.time")
-async def test_monitor_server_activity_stops_idle_server(
-    mock_time, mock_sleep, proxy, mock_docker_manager
-):
+async def test_monitor_server_activity_stops_idle_server(mock_time, mock_sleep, proxy):
     """Test that the monitor stops an idle server."""
     server_config = proxy.app_config.game_servers[0]
     state = proxy._server_state[server_config.name]
     state["is_running"] = True
-    # Set activity far in the past to trigger idle shutdown
     state["last_activity"] = 1000
     mock_time.return_value = 1000 + server_config.stop_after_idle + 1
 
-    # Run the monitor for one cycle
-    async def monitor_task():
+    # Allow the loop to run once, then raise an error to exit.
+    mock_sleep.side_effect = [None, asyncio.CancelledError()]
+
+    # The function is expected to be cancelled by our mock on the 2nd loop.
+    with pytest.raises(asyncio.CancelledError):
         await proxy._monitor_server_activity()
 
-    # The monitor loop is infinite, so we'll cancel it after one check.
-    task = asyncio.create_task(monitor_task())
-    await asyncio.sleep(0.01)  # Allow the loop to run once
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass  # Expected cancellation
-
-    # Assert against the docker_manager instance on the proxy object
+    # Assert that stop_server was called on the proxy's docker_manager instance.
     proxy.docker_manager.stop_server.assert_awaited_once_with(
         server_config.container_name, proxy.app_config.server_stop_timeout
     )
