@@ -1,9 +1,9 @@
 # tests/test_main.py
 """
-Unit tests for the main application entrypoint.
+Unit tests for the main application entrypoint and lifecycle.
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -16,6 +16,8 @@ pytestmark = pytest.mark.unit
 def mock_load_config():
     """Fixture to mock config loading."""
     with patch("main.load_app_config") as mock:
+        # Provide a mock config object that can be used by the code
+        mock.return_value = MagicMock()
         yield mock
 
 
@@ -33,34 +35,32 @@ def mock_proxy():
     """Fixture to mock AsyncProxy."""
     with patch("main.AsyncProxy") as mock:
         instance = AsyncMock()
+        # Make the proxy's start() method raise an exception to break the loop
+        instance.start.side_effect = RuntimeError("Test-induced loop break")
         mock.return_value = instance
         yield instance
 
 
 @pytest.mark.asyncio
-async def test_amain_starts_proxy_and_closes_docker_manager(
+async def test_amain_initializes_and_starts_services_in_loop(
     mock_load_config, mock_docker_manager, mock_proxy
 ):
     """
-    Test that amain starts the proxy and ensures docker_manager.close is called.
+    Tests that the main amain() loop correctly initializes all services
+    and starts the proxy on its first iteration.
     """
-    await amain()
-
-    mock_proxy.start.assert_awaited_once()
-    mock_docker_manager.close.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_amain_closes_docker_manager_on_exception(
-    mock_load_config, mock_docker_manager, mock_proxy
-):
-    """
-    Test that amain ensures docker_manager.close is called even if proxy
-    start fails.
-    """
-    mock_proxy.start.side_effect = Exception("Proxy failed to start")
-
-    with pytest.raises(Exception, match="Proxy failed to start"):
+    # The amain function has a 'while True' loop. We expect it to run once,
+    # call proxy.start(), which we've mocked to raise an error to break the
+    # loop, allowing us to assert that the setup process worked correctly.
+    with pytest.raises(RuntimeError, match="Test-induced loop break"):
         await amain()
 
-    mock_docker_manager.close.assert_awaited_once()
+    # Verify that the core components were initialized on the first loop
+    mock_load_config.assert_called_once()
+    mock_docker_manager.assert_called_once_with(mock_load_config.return_value)
+    mock_proxy.assert_called_once_with(
+        mock_load_config.return_value, mock_docker_manager.return_value
+    )
+
+    # Verify the proxy's main start method was awaited
+    mock_proxy.return_value.start.assert_awaited_once()
