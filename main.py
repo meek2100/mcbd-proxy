@@ -44,13 +44,11 @@ async def _update_heartbeat():
         try:
             current_time = int(time.time())
             HEARTBEAT_FILE.write_text(str(current_time))
-            log.debug("Updated heartbeat file.", path=str(HEARTBEAT_FILE))
             await asyncio.sleep(15)
         except asyncio.CancelledError:
             break
         except Exception:
             log.error("Failed to update heartbeat file.", exc_info=True)
-            await asyncio.sleep(60)
 
 
 async def amain():
@@ -70,11 +68,13 @@ async def amain():
     if hasattr(signal, "SIGHUP"):
         loop.add_signal_handler(signal.SIGHUP, sighup_handler)
 
+    heartbeat_task = asyncio.create_task(_update_heartbeat())
     try:
         await proxy_server.start()
     except asyncio.CancelledError:
         log.info("Main application task was cancelled.")
     finally:
+        heartbeat_task.cancel()
         log.info("Closing Docker manager session.")
         await docker_manager.close()
         log.info("Shutdown complete.")
@@ -88,17 +88,12 @@ def health_check():
     """
     try:
         load_app_config()
-        log.debug("Health check: Configuration loaded successfully.")
-
         if not HEARTBEAT_FILE.exists():
             print("Health check failed: Heartbeat file not found.")
             sys.exit(1)
 
-        heartbeat_timestamp = int(HEARTBEAT_FILE.read_text())
-        heartbeat_age = int(time.time()) - heartbeat_timestamp
-        stale_threshold = 60
-
-        if heartbeat_age > stale_threshold:
+        heartbeat_age = int(time.time()) - int(HEARTBEAT_FILE.read_text())
+        if heartbeat_age > 60:
             print(f"Health check failed: Heartbeat is stale ({heartbeat_age}s).")
             sys.exit(1)
 
@@ -114,24 +109,11 @@ def main():
     if "--healthcheck" in sys.argv:
         health_check()
     else:
-        # Start the heartbeat task as part of the main process
-        heartbeat_task = asyncio.Task(asyncio.sleep(0))  # Placeholder
         try:
-            app_config_for_log = load_app_config()
-            configure_logging(
-                app_config_for_log.log_level, app_config_for_log.log_format
-            )
-
-            async def run_with_heartbeat():
-                nonlocal heartbeat_task
-                heartbeat_task = asyncio.create_task(_update_heartbeat())
-                await amain()
-
-            asyncio.run(run_with_heartbeat())
+            asyncio.run(amain())
         except KeyboardInterrupt:
             log.info("Application interrupted by user.")
         finally:
-            heartbeat_task.cancel()
             if HEARTBEAT_FILE.exists():
                 HEARTBEAT_FILE.unlink(missing_ok=True)
 
