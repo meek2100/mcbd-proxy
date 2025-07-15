@@ -5,10 +5,12 @@ These tests use live Docker containers to verify end-to-end functionality.
 """
 
 import asyncio
+import io
 import json
 import os
 import signal
 import sys
+import tarfile
 
 import pytest
 import pytest_asyncio
@@ -22,13 +24,15 @@ from tests.helpers import check_port_listening, wait_for_container_status
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
-@pytest_asyncio.fixture(scope="module")
-async def docker_manager():
-    """Provides a DockerManager instance for the test module."""
+@pytest_asyncio.fixture(scope="function")
+async def docker_manager(docker_client_fixture):
+    """Provides a DockerManager instance for the test function."""
     # This manager is only used for its docker client, not its config
     manager = DockerManager(app_config=None)
+    # We replace the default client with our function-scoped fixture client
+    manager.docker = docker_client_fixture
     yield manager
-    await manager.close()
+    # The client is closed by its own fixture, so no need to close here
 
 
 async def test_java_server_lifecycle(
@@ -40,7 +44,7 @@ async def test_java_server_lifecycle(
     container_name = "mc-java"
     proxy_port = 25565
     backend_port = 25565
-    idle_timeout = 30  # From docker-compose.tests.yml
+    idle_timeout = 30  # From docker-compose.tests.yml NB_IDLE_TIMEOUT
 
     assert not await docker_manager.is_container_running(container_name), (
         "Java container should be initially stopped."
@@ -76,7 +80,7 @@ async def test_bedrock_server_lifecycle(
     container_name = "mc-bedrock"
     proxy_port = 19132
     backend_port = 19132
-    idle_timeout = 30  # From docker-compose.tests.yml
+    idle_timeout = 30  # From docker-compose.tests.yml NB_IDLE_TIMEOUT
 
     assert not await docker_manager.is_container_running(container_name), (
         "Bedrock container should be initially stopped."
@@ -123,10 +127,6 @@ async def test_sighup_reloads_configuration(
 
     async with docker_manager.get_container("nether-bridge") as container:
         assert container is not None, "nether-bridge container not found"
-        # Use put_archive which is the correct method in aiodocker
-        # We also need to create a tarball in memory.
-        import io
-        import tarfile
 
         tar_stream = io.BytesIO()
         with tarfile.open(fileobj=tar_stream, mode="w") as tar:
@@ -168,6 +168,9 @@ async def test_proxy_restarts_crashed_server(
     assert not await docker_manager.is_container_running(container_name), (
         "Container did not stop after manual command."
     )
+
+    # Give the proxy a moment to notice the connection is gone
+    await asyncio.sleep(1)
 
     await check_port_listening("127.0.0.1", proxy_port)
     assert await wait_for_container_status(
