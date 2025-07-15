@@ -71,7 +71,10 @@ async def test_is_container_running_false(mock_app_config, mock_aiodocker):
 async def test_is_container_running_not_found(mock_app_config, mock_aiodocker):
     """Test is_container_running returns False on DockerError (404)."""
     manager = DockerManager(mock_app_config)
-    mock_aiodocker.containers.get.side_effect = DockerError(status=404, data={})
+    # The DockerError requires a 'message' key in its data dict.
+    mock_aiodocker.containers.get.side_effect = DockerError(
+        status=404, data={"message": "Container not found"}
+    )
 
     running = await manager.is_container_running("test_container")
 
@@ -160,7 +163,8 @@ async def test_wait_for_server_query_ready_bedrock(
     """Test waits for Bedrock server to be queryable."""
     manager = DockerManager(mock_app_config)
     mock_game_server_config.game_type = "bedrock"
-    mock_bedrock_server.return_value.async_status.return_value = MagicMock()
+    # The returned mock must be awaitable, so we use AsyncMock.
+    mock_bedrock_server.return_value.async_status = AsyncMock()
 
     await manager.wait_for_server_query_ready(mock_game_server_config)
     mock_bedrock_server.assert_called_once_with(

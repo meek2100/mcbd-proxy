@@ -96,7 +96,8 @@ async def test_monitor_server_activity_stops_idle_server(
     except asyncio.CancelledError:
         pass  # Expected cancellation
 
-    mock_docker_manager.stop_server.assert_awaited_once_with(
+    # Assert against the docker_manager instance on the proxy object
+    proxy.docker_manager.stop_server.assert_awaited_once_with(
         server_config.container_name, proxy.app_config.server_stop_timeout
     )
     assert state["is_running"] is False
