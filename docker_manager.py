@@ -36,12 +36,6 @@ class DockerManager:
         """
         An async context manager to safely get a container object.
         Handles exceptions gracefully if the container is not found.
-
-        Args:
-            container_name: The name of the container to get.
-
-        Yields:
-            The DockerContainer object or None if not found.
         """
         container = None
         try:
@@ -68,7 +62,6 @@ class DockerManager:
     async def is_container_running(self, container_name: str) -> bool:
         """
         Asynchronously checks if a container is running.
-        Returns True if the container's state is 'running', False otherwise.
         """
         log.debug("Checking container status", container_name=container_name)
         async with self.get_container(container_name) as container:
@@ -92,8 +85,7 @@ class DockerManager:
 
     async def start_server(self, server_config: GameServerConfig):
         """
-        Asynchronously starts a Docker container for a game server and waits
-        for it to become queryable.
+        Asynchronously starts a Docker container and waits for it to be queryable.
         """
         container_name = server_config.container_name
         log.info("Starting container", container_name=container_name)
@@ -112,7 +104,6 @@ class DockerManager:
                 )
                 await self.wait_for_server_query_ready(server_config)
             except aiodocker.exceptions.DockerError as e:
-                # It's okay if the container is already started.
                 if "already started" in str(e).lower():
                     log.warning(
                         "Container is already running",
@@ -139,8 +130,7 @@ class DockerManager:
                 try:
                     await container.stop(t=stop_timeout)
                     log.info(
-                        "Container stopped successfully",
-                        container_name=container_name,
+                        "Container stopped successfully", container_name=container_name
                     )
                 except aiodocker.exceptions.DockerError:
                     log.error(
@@ -151,9 +141,7 @@ class DockerManager:
 
     async def wait_for_server_query_ready(self, server_config: GameServerConfig):
         """
-
-        Asynchronously waits for a Minecraft server to become queryable by
-        repeatedly pinging it until it responds or a timeout is reached.
+        Asynchronously waits for a Minecraft server to become queryable.
         """
         start_time = time.time()
         timeout = self.app_config.server_startup_timeout
@@ -169,7 +157,8 @@ class DockerManager:
                 if server_config.game_type == "java":
                     server = await JavaServer.async_lookup(lookup_str, timeout=3)
                 else:  # bedrock
-                    server = await BedrockServer.async_lookup(lookup_str, timeout=3)
+                    # CORRECTED: Instantiate BedrockServer directly.
+                    server = BedrockServer.lookup(lookup_str, timeout=3)
 
                 await server.async_status()
                 log.info(

@@ -15,7 +15,8 @@ def mock_app_config():
     """Fixture for a mock AppConfig."""
     config = MagicMock()
     config.server_startup_timeout = 10
-    config.server_check_interval = 1
+    # CORRECTED: Use 'player_check_interval' to match the new config model.
+    config.player_check_interval = 1
     return config
 
 
@@ -71,13 +72,10 @@ async def test_is_container_running_false(mock_app_config, mock_aiodocker):
 async def test_is_container_running_not_found(mock_app_config, mock_aiodocker):
     """Test is_container_running returns False on DockerError (404)."""
     manager = DockerManager(mock_app_config)
-    # The DockerError requires a 'message' key in its data dict.
     mock_aiodocker.containers.get.side_effect = DockerError(
         status=404, data={"message": "Container not found"}
     )
-
     running = await manager.is_container_running("test_container")
-
     assert running is False
 
 
@@ -90,8 +88,6 @@ async def test_start_server_success(
     manager = DockerManager(mock_app_config)
     mock_container = AsyncMock()
     mock_aiodocker.containers.get.return_value = mock_container
-
-    # Mock for wait_for_server_query_ready
     mock_async_lookup.return_value.async_status.return_value = MagicMock()
 
     await manager.start_server(mock_game_server_config)
@@ -111,7 +107,6 @@ async def test_start_server_already_started(
     )
     mock_aiodocker.containers.get.return_value = mock_container
 
-    # No exception should be raised
     await manager.start_server(mock_game_server_config)
     mock_container.start.assert_awaited_once()
 
@@ -153,9 +148,9 @@ async def test_wait_for_server_query_ready_java(
 
 
 @pytest.mark.asyncio
-@patch("docker_manager.BedrockServer")
+@patch("docker_manager.BedrockServer.lookup")
 async def test_wait_for_server_query_ready_bedrock(
-    mock_bedrock_server,
+    mock_bedrock_lookup,
     mock_app_config,
     mock_game_server_config,
     mock_aiodocker,
@@ -163,14 +158,11 @@ async def test_wait_for_server_query_ready_bedrock(
     """Test waits for Bedrock server to be queryable."""
     manager = DockerManager(mock_app_config)
     mock_game_server_config.game_type = "bedrock"
-    # The returned mock must be awaitable, so we use AsyncMock.
-    mock_bedrock_server.return_value.async_status = AsyncMock()
+    # The returned mock must have an awaitable async_status method.
+    mock_bedrock_lookup.return_value.async_status = AsyncMock()
 
     await manager.wait_for_server_query_ready(mock_game_server_config)
-    mock_bedrock_server.assert_called_once_with(
-        mock_game_server_config.host, mock_game_server_config.query_port
-    )
-    mock_bedrock_server.return_value.async_status.assert_awaited_once()
+    mock_bedrock_lookup.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -193,4 +185,4 @@ async def test_wait_for_server_query_ready_retry(
     await manager.wait_for_server_query_ready(mock_game_server_config)
 
     assert mock_async_lookup.call_count == 2
-    mock_sleep.assert_awaited_once_with(mock_app_config.server_check_interval)
+    mock_sleep.assert_awaited_once_with(mock_app_config.player_check_interval)

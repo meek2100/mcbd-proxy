@@ -186,7 +186,9 @@ class AsyncProxy:
             if server_config.game_type == "java":
                 server = await JavaServer.async_lookup(lookup_str, timeout=3)
             else:  # bedrock
-                server = await BedrockServer.async_lookup(lookup_str, timeout=3)
+                # CORRECTED: Instantiate BedrockServer directly.
+                server = BedrockServer.lookup(lookup_str, timeout=3)
+
             status = await server.async_status()
             return status.players.online
         except Exception:
