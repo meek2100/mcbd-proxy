@@ -4,12 +4,13 @@ Core asynchronous proxy logic for TCP (Java) and UDP (Bedrock) servers.
 """
 
 import asyncio
+import signal
 import time
 
 import structlog
 from mcstatus import BedrockServer, JavaServer
 
-from config import AppConfig, GameServerConfig
+from config import AppConfig, GameServerConfig, load_app_config
 from docker_manager import DockerManager
 from metrics import MetricsManager
 
@@ -34,16 +35,67 @@ class AsyncProxy:
         }
         self._startup_locks = {s.name: asyncio.Lock() for s in app_config.game_servers}
         self._ready_events = {s.name: asyncio.Event() for s in app_config.game_servers}
+        self._reload_requested = False
 
-    def _shutdown_handler(self):
+    def schedule_reload(self):
+        """Sets a flag to trigger a reload on the next monitor cycle."""
+        self._reload_requested = True
+
+    def _shutdown_handler(self, sig=None):
         """Initiates a graceful shutdown of all tasks."""
-        log.warning("Shutdown signal received. Cancelling tasks...")
-        for task_group in self.server_tasks.values():
-            if isinstance(task_group, list):
-                for task in task_group:
-                    task.cancel()
+        if sig:
+            log.warning(
+                "Shutdown signal received. Cancelling tasks...", signal=sig.name
+            )
+        else:
+            log.warning("Shutdown requested. Cancelling tasks...")
+
+        for task in self.server_tasks.values():
+            if isinstance(task, list):
+                for sub_task in task:
+                    sub_task.cancel()
             else:
-                task_group.cancel()
+                task.cancel()
+
+    async def _reload_configuration(self):
+        """Gracefully reloads the configuration and restarts listeners."""
+        log.info("Starting configuration reload.")
+        self._reload_requested = False
+
+        # 1. Cancel all current listener tasks
+        listener_tasks = self.server_tasks.get("listeners", [])
+        for task in listener_tasks:
+            task.cancel()
+        # Wait for them to finish cancelling
+        await asyncio.gather(*listener_tasks, return_exceptions=True)
+        log.info("Old listeners shut down.")
+
+        # 2. Reload config and update the DockerManager instance
+        self.app_config = load_app_config()
+        self.docker_manager.app_config = self.app_config
+        log.info(
+            "Configuration files reloaded.", servers=len(self.app_config.game_servers)
+        )
+
+        # 3. Re-initialize state based on new config
+        self._server_state = {
+            s.name: {"last_activity": 0.0, "is_running": False}
+            for s in self.app_config.game_servers
+        }
+        self._startup_locks = {
+            s.name: asyncio.Lock() for s in self.app_config.game_servers
+        }
+        self._ready_events = {
+            s.name: asyncio.Event() for s in self.app_config.game_servers
+        }
+
+        # 4. Start new listeners
+        new_listeners = [
+            asyncio.create_task(self._start_listener(sc))
+            for sc in self.app_config.game_servers
+        ]
+        self.server_tasks["listeners"] = new_listeners
+        log.info("New listeners started. Reload complete.")
 
     async def start(self):
         """
@@ -51,27 +103,25 @@ class AsyncProxy:
         and starts the server monitoring task.
         """
         log.info("Starting async proxy...")
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, self._shutdown_handler, sig)
 
         for server_config in self.app_config.game_servers:
             if server_config.pre_warm:
                 log.info("Pre-warming server.", server=server_config.name)
                 asyncio.create_task(self._ensure_server_started(server_config))
 
-        listener_tasks = [
+        self.server_tasks["listeners"] = [
             asyncio.create_task(self._start_listener(sc))
             for sc in self.app_config.game_servers
         ]
-        monitor_task = asyncio.create_task(self._monitor_server_activity())
-        metrics_task = asyncio.create_task(self.metrics_manager.start())
-
-        self.server_tasks = {
-            "listeners": listener_tasks,
-            "monitor": monitor_task,
-            "metrics": metrics_task,
-        }
-        await asyncio.gather(
-            monitor_task, metrics_task, *listener_tasks, return_exceptions=True
+        self.server_tasks["monitor"] = asyncio.create_task(
+            self._monitor_server_activity()
         )
+        self.server_tasks["metrics"] = asyncio.create_task(self.metrics_manager.start())
+
+        await asyncio.gather(*self.server_tasks.values(), return_exceptions=True)
 
     async def _start_listener(self, server_config: GameServerConfig):
         """Starts a TCP or UDP listener for a specific game server."""
@@ -81,22 +131,28 @@ class AsyncProxy:
             host=server_config.proxy_host,
             port=server_config.proxy_port,
         )
-        if server_config.game_type == "java":
-            server = await asyncio.start_server(
-                lambda r, w: self._handle_tcp_connection(r, w, server_config),
-                server_config.proxy_host,
-                server_config.proxy_port,
-            )
-            await server.serve_forever()
-        else:  # 'bedrock'
-            loop = asyncio.get_running_loop()
-            transport, _ = await loop.create_datagram_endpoint(
-                lambda: BedrockProtocol(self, server_config),
-                local_addr=(server_config.proxy_host, server_config.proxy_port),
-            )
-            try:
+        try:
+            if server_config.game_type == "java":
+                server = await asyncio.start_server(
+                    lambda r, w: self._handle_tcp_connection(r, w, server_config),
+                    server_config.proxy_host,
+                    server_config.proxy_port,
+                )
+                await server.serve_forever()
+            else:  # 'bedrock'
+                loop = asyncio.get_running_loop()
+                transport, _ = await loop.create_datagram_endpoint(
+                    lambda: BedrockProtocol(self, server_config),
+                    local_addr=(server_config.proxy_host, server_config.proxy_port),
+                )
                 await asyncio.Future()
-            finally:
+        except asyncio.CancelledError:
+            log.info("Listener task cancelled.", server=server_config.name)
+        finally:
+            if "server" in locals() and server.is_serving():
+                server.close()
+                await server.wait_closed()
+            if "transport" in locals():
                 transport.close()
 
     async def _ensure_server_started(self, server_config: GameServerConfig):
@@ -218,16 +274,25 @@ class AsyncProxy:
             return 1
 
     async def _monitor_server_activity(self):
-        """Periodically checks for zero-player servers and stops them."""
-        log.info("Starting server activity monitor (player count based).")
+        """Periodically checks for idle servers and reload requests."""
+        log.info("Starting server activity monitor.")
         while True:
-            await asyncio.sleep(self.app_config.player_check_interval)
+            try:
+                await asyncio.sleep(self.app_config.player_check_interval)
+            except asyncio.CancelledError:
+                break
+
+            if self._reload_requested:
+                await self._reload_configuration()
+                continue
+
             for sc in self.app_config.game_servers:
                 is_running = await self.docker_manager.is_container_running(
                     sc.container_name
                 )
                 if not is_running:
-                    self._server_state[sc.name]["is_running"] = False
+                    if self._server_state[sc.name]["is_running"]:
+                        self._server_state[sc.name]["is_running"] = False
                     continue
 
                 self._server_state[sc.name]["is_running"] = True
