@@ -1,12 +1,13 @@
 # config.py
 """
-Handles application configuration using Pydantic for validation.
+Handles application configuration using Pydantic for validation, while preserving
+the original project's configuration loading hierarchy.
 """
 
 import json
 import os
 from pathlib import Path
-from typing import List, Literal
+from typing import List, Literal, Optional
 
 import structlog
 from dotenv import load_dotenv
@@ -41,7 +42,7 @@ class GameServerConfig(BaseModel):
     proxy_host: str = Field(
         "0.0.0.0", description="The host interface the proxy will bind to."
     )
-    query_port: int | None = Field(
+    query_port: Optional[int] = Field(
         None, description="The query port, if different from the game port."
     )
     pre_warm: bool = Field(
@@ -60,95 +61,88 @@ class GameServerConfig(BaseModel):
 class AppConfig(BaseModel):
     """Main application configuration model."""
 
-    game_servers: List[GameServerConfig]
-    log_level: str = "INFO"
-    log_format: str = "console"
-    idle_timeout: int = 600
-    player_check_interval: int = 60
-    server_startup_timeout: int = 300
-    server_stop_timeout: int = 60
-    query_timeout: int = 5
-    is_prometheus_enabled: bool = True
-    prometheus_port: int = 8000
+    game_servers: List[GameServerConfig] = []
+    log_level: str = Field("INFO", alias="LOG_LEVEL")
+    log_format: str = Field("console", alias="NB_LOG_FORMATTER")
+    idle_timeout: int = Field(600, alias="NB_IDLE_TIMEOUT")
+    player_check_interval: int = Field(60, alias="NB_PLAYER_CHECK_INTERVAL")
+    server_startup_timeout: int = Field(300, alias="NB_SERVER_READY_MAX_WAIT")
+    server_stop_timeout: int = Field(60, alias="NB_SERVER_STOP_TIMEOUT")
+    query_timeout: int = Field(5, alias="NB_QUERY_TIMEOUT")
+    is_prometheus_enabled: bool = Field(True, alias="NB_PROMETHEUS_ENABLED")
+    prometheus_port: int = Field(8000, alias="NB_PROMETHEUS_PORT")
+
+    class Config:
+        case_sensitive = False
+        populate_by_name = True
 
 
 def load_app_config() -> AppConfig:
     """
-    Loads application configuration from environment variables and servers.json.
-    Environment variables (NB_X_...) for servers take precedence.
+    Loads configuration from JSON files and environment variables,
+    preserving the original loading hierarchy (Env > JSON > Defaults).
     """
     load_dotenv()
     log.info("Loading application configuration...")
 
+    # 1. Load Server Definitions (Prioritizing Environment)
     game_servers = []
     i = 1
     while True:
-        container_var = f"NB_{i}_CONTAINER_NAME"
-        if container_var not in os.environ:
+        if f"NB_{i}_CONTAINER_NAME" not in os.environ:
             break
-
-        log.debug(f"Found configuration for server index {i} in environment.")
         try:
-            # Use the correct environment variable keys that align with the aliases
             server_data = {
                 "name": os.getenv(f"NB_{i}_NAME", f"Server-{i}"),
                 "server_type": os.getenv(f"NB_{i}_GAME_TYPE"),
-                "container_name": os.getenv(container_var),
+                "container_name": os.getenv(f"NB_{i}_CONTAINER_NAME"),
                 "host": os.getenv(f"NB_{i}_HOST", "127.0.0.1"),
                 "internal_port": os.getenv(f"NB_{i}_PORT"),
                 "listen_port": os.getenv(f"NB_{i}_PROXY_PORT"),
                 "proxy_host": os.getenv(f"NB_{i}_PROXY_HOST", "0.0.0.0"),
                 "query_port": os.getenv(f"NB_{i}_QUERY_PORT"),
-                "pre_warm": os.getenv(f"NB_{i}_PRE_WARM", "false").lower() == "true",
+                "pre_warm": os.getenv(f"NB_{i}_PRE_WARM", "false"),
             }
-            server_data_filtered = {
-                k: v for k, v in server_data.items() if v is not None
-            }
-            server_config = GameServerConfig.model_validate(server_data_filtered)
-            game_servers.append(server_config)
+            game_servers.append(
+                GameServerConfig.model_validate(
+                    {k: v for k, v in server_data.items() if v is not None}
+                )
+            )
         except ValidationError as e:
             log.error(f"Config error for server index {i}", error=e)
-            raise e
+            raise
         i += 1
 
     if not game_servers:
-        servers_file = Path("/app/servers.json")
+        servers_file = Path("servers.json")
         if servers_file.is_file():
-            log.info("No env servers found, attempting to load from servers.json.")
+            log.info("No env servers found, loading from servers.json.")
             try:
-
-                class _ServerFile(BaseModel):
-                    servers: List[GameServerConfig]
-
-                file_data = _ServerFile.model_validate_json(servers_file.read_text())
-                game_servers = file_data.servers
-                log.info("Loaded servers from servers.json", count=len(game_servers))
+                file_content = json.loads(servers_file.read_text())
+                game_servers = [
+                    GameServerConfig.model_validate(s)
+                    for s in file_content.get("servers", [])
+                ]
             except (ValidationError, json.JSONDecodeError) as e:
                 log.error("Failed to load or parse servers.json", error=e)
-        else:
-            log.warning("No server definitions found in environment or servers.json.")
 
+    # 2. Load Global Settings (Env > JSON > Defaults)
+    settings_file = Path("settings.json")
+    json_settings = {}
+    if settings_file.is_file():
+        try:
+            json_settings = json.loads(settings_file.read_text())
+        except json.JSONDecodeError:
+            log.error("Could not parse settings.json", path=settings_file)
+
+    # Pydantic validates the final merged dictionary
     try:
-        settings_data = {
-            "log_level": os.getenv("LOG_LEVEL", "INFO"),
-            "log_format": os.getenv("NB_LOG_FORMATTER", "console"),
-            "idle_timeout": int(os.getenv("NB_IDLE_TIMEOUT", 600)),
-            "player_check_interval": int(os.getenv("NB_PLAYER_CHECK_INTERVAL", 60)),
-            "server_startup_timeout": int(os.getenv("NB_SERVER_READY_MAX_WAIT", 300)),
-            "server_stop_timeout": int(os.getenv("NB_SERVER_STOP_TIMEOUT", 60)),
-            "query_timeout": int(os.getenv("NB_QUERY_TIMEOUT", 5)),
-            "is_prometheus_enabled": os.getenv("NB_PROMETHEUS_ENABLED", "true").lower()
-            == "true",
-            "prometheus_port": int(os.getenv("NB_PROMETHEUS_PORT", 8000)),
-        }
-        config = AppConfig(game_servers=game_servers, **settings_data)
+        app_config = AppConfig(game_servers=game_servers, **json_settings)
         log.info(
             "Application configuration loaded successfully.",
             server_count=len(game_servers),
         )
-        return config
-    except (ValidationError, ValueError) as e:
+        return app_config
+    except ValidationError as e:
         log.error("Global configuration validation error", error=e)
-        raise ValidationError.from_exception_data(
-            title="AppConfig", line_errors=[]
-        ) from e
+        raise
