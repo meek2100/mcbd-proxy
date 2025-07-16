@@ -48,6 +48,9 @@ class GameServerConfig(BaseModel):
         False, description="If true, start this server when the proxy starts."
     )
 
+    class Config:
+        populate_by_name = True
+
     def model_post_init(self, __context):
         """Set query_port to port if it's not explicitly defined."""
         if self.query_port is None:
@@ -88,11 +91,11 @@ def load_app_config() -> AppConfig:
         try:
             server_data = {
                 "name": os.getenv(f"NB_{i}_NAME", f"Server-{i}"),
-                "game_type": os.getenv(f"NB_{i}_GAME_TYPE"),
+                "server_type": os.getenv(f"NB_{i}_GAME_TYPE"),
                 "container_name": os.getenv(container_var),
                 "host": os.getenv(f"NB_{i}_HOST", "127.0.0.1"),
-                "port": os.getenv(f"NB_{i}_PORT"),
-                "proxy_port": os.getenv(f"NB_{i}_PROXY_PORT"),
+                "internal_port": os.getenv(f"NB_{i}_PORT"),
+                "listen_port": os.getenv(f"NB_{i}_PROXY_PORT"),
                 "proxy_host": os.getenv(f"NB_{i}_PROXY_HOST", "0.0.0.0"),
                 "query_port": os.getenv(f"NB_{i}_QUERY_PORT"),
                 "pre_warm": os.getenv(f"NB_{i}_PRE_WARM", "false").lower() == "true",
@@ -100,13 +103,8 @@ def load_app_config() -> AppConfig:
             server_data_filtered = {
                 k: v for k, v in server_data.items() if v is not None
             }
-            server_config = GameServerConfig(**server_data_filtered)
+            server_config = GameServerConfig.model_validate(server_data_filtered)
             game_servers.append(server_config)
-            log.info(
-                "Loaded server from environment",
-                name=server_config.name,
-                type=server_config.game_type,
-            )
         except ValidationError as e:
             log.error(f"Config error for server index {i}", error=e)
             raise e
