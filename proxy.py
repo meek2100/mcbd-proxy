@@ -51,7 +51,6 @@ class AsyncProxy:
         else:
             log.warning("Shutdown requested. Cancelling tasks...")
 
-        # Cancel all major and session-specific tasks
         all_tasks = list(self.server_tasks.values())
         all_tasks.extend(self.active_tcp_sessions)
         for task in all_tasks:
@@ -66,37 +65,32 @@ class AsyncProxy:
         log.info("Starting configuration reload. Active connections will be dropped.")
         self._reload_requested = False
 
-        # 1. Cancel all active TCP connection tasks
         for task in self.active_tcp_sessions:
             task.cancel()
         await asyncio.gather(*self.active_tcp_sessions, return_exceptions=True)
         self.active_tcp_sessions.clear()
 
-        # 2. Cancel all current listener tasks (this also cleans up UDP sessions)
         listener_tasks = self.server_tasks.get("listeners", [])
         for task in listener_tasks:
             task.cancel()
         await asyncio.gather(*listener_tasks, return_exceptions=True)
         log.info("Old listeners and connections shut down.")
 
-        # 3. Reload config and update the DockerManager instance
         self.app_config = load_app_config()
         self.docker_manager.app_config = self.app_config
         log.info("Config reloaded.", servers=len(self.app_config.game_servers))
 
-        # 4. Re-initialize state based on new config
         self._server_state = {
             s.name: {"last_activity": 0.0, "is_running": False}
             for s in self.app_config.game_servers
         }
         self._startup_locks = {
             s.name: asyncio.Lock() for s in self.app_config.game_servers
-        }
+        }  # noqa: E501
         self._ready_events = {
             s.name: asyncio.Event() for s in self.app_config.game_servers
         }
 
-        # 5. Start new listeners
         self.server_tasks["listeners"] = [
             asyncio.create_task(self._start_listener(sc))
             for sc in self.app_config.game_servers
@@ -149,7 +143,7 @@ class AsyncProxy:
                     server_config.proxy_port,
                 )
                 await server.serve_forever()
-            else:  # 'bedrock'
+            else:
                 loop = asyncio.get_running_loop()
                 transport, _ = await loop.create_datagram_endpoint(
                     lambda: BedrockProtocol(self, server_config),
@@ -274,7 +268,7 @@ class AsyncProxy:
             lookup_str = f"{server_config.host}:{server_config.query_port}"
             if server_config.game_type == "java":
                 server = await JavaServer.async_lookup(lookup_str, timeout=3)
-            else:  # bedrock
+            else:
                 server = await asyncio.to_thread(
                     BedrockServer.lookup, lookup_str, timeout=3
                 )
@@ -301,21 +295,15 @@ class AsyncProxy:
                 continue
 
             for sc in self.app_config.game_servers:
-                is_running = await self.docker_manager.is_container_running(
-                    sc.container_name
-                )
-                if not is_running:
-                    if self._server_state.get(sc.name, {}).get("is_running"):
-                        self._server_state[sc.name]["is_running"] = False
+                if not self._server_state.get(sc.name, {}).get("is_running"):
                     continue
 
-                self._server_state[sc.name]["is_running"] = True
                 player_count = await self._get_player_count(sc)
                 log.debug("Player count check", server=sc.name, players=player_count)
 
-                if player_count > 0:
-                    self._server_state[sc.name]["last_activity"] = time.time()
-                else:
+                # The `_update_activity` function, called upon actual packet
+                # receipt, is now the only source of truth for last_activity.
+                if player_count == 0:
                     idle_time = (
                         time.time() - self._server_state[sc.name]["last_activity"]
                     )
@@ -389,7 +377,6 @@ class BedrockProtocol(asyncio.DatagramProtocol):
 
     async def _create_backend_connection(self, client_addr: tuple, initial_data: bytes):
         await self.proxy._ensure_server_started(self.server_config)
-
         loop = asyncio.get_running_loop()
         try:
             transport, protocol = await loop.create_datagram_endpoint(
