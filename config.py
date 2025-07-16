@@ -30,7 +30,9 @@ class GameServerConfig(BaseModel):
     container_name: str = Field(
         ..., description="The Docker container name of the Minecraft server."
     )
-    host: str = Field("127.0.0.1", description="The internal IP the server runs on.")
+    host: Optional[str] = Field(
+        None, description="The internal IP or hostname the server runs on."
+    )
     port: int = Field(
         ...,
         alias="internal_port",
@@ -52,9 +54,12 @@ class GameServerConfig(BaseModel):
     )
 
     def model_post_init(self, __context):
-        """Set query_port to port if it's not explicitly defined."""
+        """Set query_port and host to sane defaults if not defined."""
         if self.query_port is None:
             self.query_port = self.port
+        # CORRECTED: Default to container_name for Docker DNS resolution
+        if self.host is None:
+            self.host = self.container_name
 
 
 class AppConfig(BaseModel):
@@ -91,7 +96,7 @@ def load_app_config() -> AppConfig:
                 "name": os.getenv(f"NB_{i}_NAME", f"Server-{i}"),
                 "game_type": os.getenv(f"NB_{i}_GAME_TYPE"),
                 "container_name": os.getenv(f"NB_{i}_CONTAINER_NAME"),
-                "host": os.getenv(f"NB_{i}_HOST", "127.0.0.1"),
+                "host": os.getenv(f"NB_{i}_HOST"),
                 "port": os.getenv(f"NB_{i}_PORT"),
                 "proxy_port": os.getenv(f"NB_{i}_PROXY_PORT"),
                 "proxy_host": os.getenv(f"NB_{i}_PROXY_HOST", "0.0.0.0"),
