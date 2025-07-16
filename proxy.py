@@ -8,7 +8,6 @@ import signal
 import time
 
 import structlog
-from mcstatus import BedrockServer, JavaServer
 
 from config import AppConfig, GameServerConfig, load_app_config
 from docker_manager import DockerManager
@@ -29,6 +28,7 @@ class AsyncProxy:
         self.metrics_manager = MetricsManager(app_config, docker_manager)
         self.server_tasks = {}
         self.active_tcp_sessions = set()
+        self.udp_protocols = {}
         self._reload_requested = False
 
         self._server_state = {
@@ -75,6 +75,7 @@ class AsyncProxy:
             task.cancel()
         await asyncio.gather(*listener_tasks, return_exceptions=True)
         log.info("Old listeners and connections shut down.")
+        self.udp_protocols.clear()
 
         self.app_config = load_app_config()
         self.docker_manager.app_config = self.app_config
@@ -90,6 +91,7 @@ class AsyncProxy:
         self._ready_events = {
             s.name: asyncio.Event() for s in self.app_config.game_servers
         }
+        await self._ensure_all_servers_stopped_on_startup()
 
         self.server_tasks["listeners"] = [
             asyncio.create_task(self._start_listener(sc))
@@ -97,12 +99,27 @@ class AsyncProxy:
         ]
         log.info("New listeners started. Reload complete.")
 
+    async def _ensure_all_servers_stopped_on_startup(self):
+        """Ensures all managed servers are stopped when the proxy starts."""
+        log.info("Ensuring all managed servers are initially stopped.")
+        for srv_conf in self.app_config.game_servers:
+            if await self.docker_manager.is_container_running(srv_conf.container_name):
+                log.warning(
+                    "Server found running at startup. Stopping now.",
+                    server=srv_conf.name,
+                )
+                await self.docker_manager.stop_server(
+                    srv_conf.container_name, self.app_config.server_stop_timeout
+                )
+
     async def start(self):
         """Starts all proxy services and manages their lifecycle."""
         log.info("Starting async proxy...")
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, self._shutdown_handler, sig)
+
+        await self._ensure_all_servers_stopped_on_startup()
 
         for server_config in self.app_config.game_servers:
             if server_config.pre_warm:
@@ -143,10 +160,12 @@ class AsyncProxy:
                     server_config.proxy_port,
                 )
                 await server.serve_forever()
-            else:  # 'bedrock'
+            else:
                 loop = asyncio.get_running_loop()
+                protocol = BedrockProtocol(self, server_config)
+                self.udp_protocols[server_config.name] = protocol
                 transport, _ = await loop.create_datagram_endpoint(
-                    lambda: BedrockProtocol(self, server_config),
+                    lambda: protocol,
                     local_addr=(server_config.proxy_host, server_config.proxy_port),
                 )
                 await asyncio.Future()
@@ -158,6 +177,8 @@ class AsyncProxy:
                 await server.wait_closed()
             if transport:
                 transport.close()
+            if server_config.name in self.udp_protocols:
+                del self.udp_protocols[server_config.name]
 
     async def _ensure_server_started(self, server_config: GameServerConfig):
         """Ensures a server is running, handling startup logic concurrently."""
@@ -175,10 +196,7 @@ class AsyncProxy:
 
         async with self._startup_locks[server_config.name]:
             if not self._ready_events[server_config.name].is_set():
-                log.info(
-                    "Server not running. Initiating startup...",
-                    server=server_config.name,
-                )
+                log.info("Server not running. Initiating startup...")
                 start_time = time.time()
                 await self.docker_manager.start_server(server_config)
                 duration = time.time() - start_time
@@ -187,10 +205,7 @@ class AsyncProxy:
                 )
                 self._server_state[server_config.name]["is_running"] = True
                 self._ready_events[server_config.name].set()
-                log.info(
-                    "Server startup complete. Event is set.",
-                    server=server_config.name,
-                )
+                log.info("Server startup complete.", server=server_config.name)
 
         await self._ready_events[server_config.name].wait()
 
@@ -251,9 +266,7 @@ class AsyncProxy:
             self.active_tcp_sessions.add(task)
             await task
         except (ConnectionRefusedError, asyncio.TimeoutError) as e:
-            log.error(
-                "Could not connect to backend.", server=server_config.name, error=str(e)
-            )
+            log.error("Could not connect to backend.", error=e)
         finally:
             if task:
                 self.active_tcp_sessions.discard(task)
@@ -261,25 +274,6 @@ class AsyncProxy:
             client_writer.close()
             await client_writer.wait_closed()
             self.metrics_manager.dec_active_connections(server_config.name)
-
-    async def _get_player_count(self, server_config: GameServerConfig) -> int:
-        """Asynchronously queries a server and returns the player count."""
-        try:
-            lookup_str = f"{server_config.host}:{server_config.query_port}"
-            if server_config.game_type == "java":
-                server = await JavaServer.async_lookup(lookup_str, timeout=3)
-            else:
-                server = await asyncio.to_thread(
-                    BedrockServer.lookup, lookup_str, timeout=3
-                )
-
-            status = await server.async_status()
-            return status.players.online
-        except Exception:
-            log.warning(
-                "Could not query player count for server", server=server_config.name
-            )
-            return 1
 
     async def _monitor_server_activity(self):
         """Periodically checks for idle servers and reload requests."""
@@ -295,20 +289,28 @@ class AsyncProxy:
                 continue
 
             for sc in self.app_config.game_servers:
-                if not self._server_state.get(sc.name, {}).get("is_running"):
+                is_running = await self.docker_manager.is_container_running(
+                    sc.container_name
+                )
+                if not is_running:
+                    if self._server_state.get(sc.name, {}).get("is_running"):
+                        self._server_state[sc.name]["is_running"] = False
                     continue
 
-                player_count = await self._get_player_count(sc)
-                log.debug("Player count check", server=sc.name, players=player_count)
+                self._server_state[sc.name]["is_running"] = True
 
-                if player_count == 0:
+                # Restore original behavior: check internal session maps for activity
+                has_tcp_sessions = any(task for task in self.active_tcp_sessions)
+                udp_protocol = self.udp_protocols.get(sc.name)
+                has_udp_sessions = udp_protocol and udp_protocol.client_map
+
+                if not has_tcp_sessions and not has_udp_sessions:
                     idle_time = (
                         time.time() - self._server_state[sc.name]["last_activity"]
                     )
                     if idle_time > self.app_config.idle_timeout:
                         log.info(
-                            "Server empty and idle timeout exceeded. Stopping.",
-                            server=sc.name,
+                            "Server idle with 0 sessions. Stopping.", server=sc.name
                         )
                         await self.docker_manager.stop_server(
                             sc.container_name,
