@@ -8,6 +8,7 @@ import signal
 import time
 
 import structlog
+from mcstatus import BedrockServer, JavaServer
 
 from config import AppConfig, GameServerConfig, load_app_config
 from docker_manager import DockerManager
@@ -160,7 +161,7 @@ class AsyncProxy:
                     server_config.proxy_port,
                 )
                 await server.serve_forever()
-            else:  # 'bedrock'
+            else:
                 loop = asyncio.get_running_loop()
                 protocol = BedrockProtocol(self, server_config)
                 self.udp_protocols[server_config.name] = protocol
@@ -279,6 +280,26 @@ class AsyncProxy:
             await client_writer.wait_closed()
             self.metrics_manager.dec_active_connections(server_config.name)
 
+    async def _get_player_count(self, server_config: GameServerConfig) -> int:
+        """Asynchronously queries a server and returns the player count."""
+        try:
+            lookup_str = f"{server_config.host}:{server_config.query_port}"
+            if server_config.game_type == "java":
+                server = await JavaServer.async_lookup(lookup_str, timeout=3)
+            else:
+                server = await asyncio.to_thread(
+                    BedrockServer.lookup, lookup_str, timeout=3
+                )
+
+            status = await server.async_status()
+            return status.players.online
+        except Exception:
+            log.warning(
+                "Could not query player count for server, assuming 0 for idle check.",
+                server=server_config.name,
+            )
+            return 0
+
     async def _monitor_server_activity(self):
         """Periodically checks for idle servers and reload requests."""
         log.info("Starting server activity monitor.")
@@ -303,18 +324,15 @@ class AsyncProxy:
 
                 self._server_state[sc.name]["is_running"] = True
 
-                # Restore original behavior: check internal session maps for activity
-                has_tcp_sessions = any(task for task in self.active_tcp_sessions)
-                udp_protocol = self.udp_protocols.get(sc.name)
-                has_udp_sessions = udp_protocol and udp_protocol.client_map
+                player_count = await self._get_player_count(sc)
 
-                if not has_tcp_sessions and not has_udp_sessions:
+                if player_count == 0:
                     idle_time = (
                         time.time() - self._server_state[sc.name]["last_activity"]
                     )
                     if idle_time > self.app_config.idle_timeout:
                         log.info(
-                            "Server idle with 0 sessions. Stopping.", server=sc.name
+                            "Server idle with 0 players. Stopping.", server=sc.name
                         )
                         await self.docker_manager.stop_server(
                             sc.container_name,
