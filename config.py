@@ -11,13 +11,15 @@ from typing import List, Literal, Optional
 
 import structlog
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 log = structlog.get_logger()
 
 
 class GameServerConfig(BaseModel):
     """Configuration for a single game server."""
+
+    model_config = ConfigDict(populate_by_name=True)
 
     name: str = Field(..., description="A friendly name for the server.")
     game_type: Literal["java", "bedrock"] = Field(
@@ -49,9 +51,6 @@ class GameServerConfig(BaseModel):
         False, description="If true, start this server when the proxy starts."
     )
 
-    class Config:
-        populate_by_name = True
-
     def model_post_init(self, __context):
         """Set query_port to port if it's not explicitly defined."""
         if self.query_port is None:
@@ -60,6 +59,8 @@ class GameServerConfig(BaseModel):
 
 class AppConfig(BaseModel):
     """Main application configuration model."""
+
+    model_config = ConfigDict(case_sensitive=False, populate_by_name=True)
 
     game_servers: List[GameServerConfig] = []
     log_level: str = Field("INFO", alias="LOG_LEVEL")
@@ -71,10 +72,6 @@ class AppConfig(BaseModel):
     query_timeout: int = Field(5, alias="NB_QUERY_TIMEOUT")
     is_prometheus_enabled: bool = Field(True, alias="NB_PROMETHEUS_ENABLED")
     prometheus_port: int = Field(8000, alias="NB_PROMETHEUS_PORT")
-
-    class Config:
-        case_sensitive = False
-        populate_by_name = True
 
 
 def load_app_config() -> AppConfig:
@@ -88,17 +85,15 @@ def load_app_config() -> AppConfig:
     # 1. Load Server Definitions (Prioritizing Environment)
     game_servers = []
     i = 1
-    while True:
-        if f"NB_{i}_CONTAINER_NAME" not in os.environ:
-            break
+    while f"NB_{i}_CONTAINER_NAME" in os.environ:
         try:
             server_data = {
                 "name": os.getenv(f"NB_{i}_NAME", f"Server-{i}"),
-                "server_type": os.getenv(f"NB_{i}_GAME_TYPE"),
+                "game_type": os.getenv(f"NB_{i}_GAME_TYPE"),
                 "container_name": os.getenv(f"NB_{i}_CONTAINER_NAME"),
                 "host": os.getenv(f"NB_{i}_HOST", "127.0.0.1"),
-                "internal_port": os.getenv(f"NB_{i}_PORT"),
-                "listen_port": os.getenv(f"NB_{i}_PROXY_PORT"),
+                "port": os.getenv(f"NB_{i}_PORT"),
+                "proxy_port": os.getenv(f"NB_{i}_PROXY_PORT"),
                 "proxy_host": os.getenv(f"NB_{i}_PROXY_HOST", "0.0.0.0"),
                 "query_port": os.getenv(f"NB_{i}_QUERY_PORT"),
                 "pre_warm": os.getenv(f"NB_{i}_PRE_WARM", "false"),
@@ -127,17 +122,21 @@ def load_app_config() -> AppConfig:
                 log.error("Failed to load or parse servers.json", error=e)
 
     # 2. Load Global Settings (Env > JSON > Defaults)
+    final_settings = {}
     settings_file = Path("settings.json")
-    json_settings = {}
     if settings_file.is_file():
         try:
-            json_settings = json.loads(settings_file.read_text())
+            final_settings = json.loads(settings_file.read_text())
         except json.JSONDecodeError:
             log.error("Could not parse settings.json", path=settings_file)
 
-    # Pydantic validates the final merged dictionary
+    # Overwrite with any environment variables, respecting aliases
+    for field_name, field_info in AppConfig.model_fields.items():
+        if field_info.alias and field_info.alias in os.environ:
+            final_settings[field_name] = os.environ[field_info.alias]
+
     try:
-        app_config = AppConfig(game_servers=game_servers, **json_settings)
+        app_config = AppConfig(game_servers=game_servers, **final_settings)
         log.info(
             "Application configuration loaded successfully.",
             server_count=len(game_servers),
