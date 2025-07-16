@@ -100,7 +100,6 @@ class AsyncProxy:
         self._ready_events = {
             s.name: asyncio.Event() for s in self.app_config.game_servers
         }
-        # You may want to stop any servers that are no longer in the config
         await self._ensure_all_servers_stopped_on_startup()
 
         # 5. Start new listeners
@@ -111,17 +110,44 @@ class AsyncProxy:
         log.info("New listeners started. Reload complete.")
 
     async def _ensure_all_servers_stopped_on_startup(self):
-        """Ensures all managed servers are stopped when the proxy starts."""
+        """
+        Ensures all managed servers are stopped and confirms their exit before
+        proceeding, preventing race conditions.
+        """
         log.info("Ensuring all managed servers are initially stopped.")
-        for srv_conf in self.app_config.game_servers:
-            if await self.docker_manager.is_container_running(srv_conf.container_name):
-                log.warning(
-                    "Server found running at startup. Stopping now.",
-                    server=srv_conf.name,
+        servers_to_stop = [
+            sc
+            for sc in self.app_config.game_servers
+            if await self.docker_manager.is_container_running(sc.container_name)
+        ]
+
+        if not servers_to_stop:
+            log.info("No running servers found. Startup check complete.")
+            return
+
+        stop_tasks = []
+        for sc in servers_to_stop:
+            log.warning(
+                "Server found running at startup. Stopping now.", server=sc.name
+            )
+            stop_tasks.append(
+                self.docker_manager.stop_server(
+                    sc.container_name, self.app_config.server_stop_timeout
                 )
-                await self.docker_manager.stop_server(
-                    srv_conf.container_name, self.app_config.server_stop_timeout
-                )
+            )
+        await asyncio.gather(*stop_tasks)
+
+        log.info("Confirming all specified servers are stopped...")
+        for sc in servers_to_stop:
+            for i in range(self.app_config.server_stop_timeout):
+                if not await self.docker_manager.is_container_running(
+                    sc.container_name
+                ):
+                    log.info("Server confirmed stopped.", server=sc.name)
+                    break
+                await asyncio.sleep(1)
+            else:
+                log.error("Timeout waiting for server to stop!", server=sc.name)
 
     async def start(self):
         """Starts all proxy services and manages their lifecycle."""
