@@ -101,7 +101,6 @@ def docker_compose_fixture(request, docker_compose_project_name, env_config):
         check=True,
     )
 
-    # Wait for the nether-bridge container to be healthy before running tests
     print("Waiting for nether-bridge to become healthy...")
     start_time = time.time()
     timeout = 120
@@ -123,7 +122,7 @@ def docker_compose_fixture(request, docker_compose_project_name, env_config):
                 print("Nether-bridge is healthy.")
                 break
         except subprocess.CalledProcessError:
-            pass  # Container might not exist yet
+            pass
         time.sleep(5)
     else:
         pytest.fail("Timeout waiting for nether-bridge to become healthy.")
