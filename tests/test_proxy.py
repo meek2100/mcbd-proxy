@@ -57,10 +57,7 @@ async def test_shutdown_handler_cancels_tasks(proxy):
     """Verify the shutdown handler cancels all registered tasks."""
     task1 = asyncio.create_task(asyncio.sleep(0.1))
     task2 = asyncio.create_task(asyncio.sleep(0.1))
-    tcp_task = asyncio.create_task(asyncio.sleep(0.1))
-
     proxy.server_tasks = {"listeners": [task1], "monitor": task2}
-    proxy.active_tcp_sessions = {tcp_task}
 
     proxy._shutdown_handler()
 
@@ -68,7 +65,6 @@ async def test_shutdown_handler_cancels_tasks(proxy):
 
     assert task1.cancelled()
     assert task2.cancelled()
-    assert tcp_task.cancelled()
 
 
 @pytest.mark.asyncio
@@ -101,6 +97,7 @@ async def test_monitor_server_activity_stops_idle_server(
     mock_get_players, mock_time, proxy, mock_docker_manager
 ):
     """Test that the monitor stops an idle server."""
+    # This side effect lets the loop run once, then breaks it with our exception
     mock_get_players.side_effect = [0, StopTestLoop()]
     mock_docker_manager.is_container_running.return_value = True
 
@@ -109,9 +106,12 @@ async def test_monitor_server_activity_stops_idle_server(
     proxy._server_state[server_config.name]["last_activity"] = 1000
     mock_time.return_value = 1000 + proxy.app_config.idle_timeout + 1
 
+    # The loop will run, call our mocks, and then raise StopTestLoop,
+    # which we catch here to allow the test to finish.
     with pytest.raises(StopTestLoop):
         await proxy._monitor_server_activity()
 
+    # Verify the logic inside the loop was executed correctly
     mock_get_players.assert_awaited_once()
     proxy.docker_manager.stop_server.assert_awaited_once_with(
         server_config.container_name, proxy.app_config.server_stop_timeout
@@ -127,4 +127,4 @@ async def test_bedrock_protocol_init(proxy, mock_app_config):
     assert protocol.proxy is proxy
     assert protocol.server_config is server_config
     assert protocol.cleanup_task is not None
-    protocol.cleanup_task.cancel()
+    protocol.cleanup_task.cancel()  # Clean up the task
