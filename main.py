@@ -4,6 +4,7 @@ The main entrypoint for the Nether-bridge application.
 """
 
 import asyncio
+import logging
 import signal
 import sys
 import time
@@ -21,17 +22,32 @@ HEARTBEAT_FILE = Path("proxy_heartbeat.tmp")
 
 def configure_logging(log_level: str, log_format: str):
     """Configures structured logging for the application."""
+    logging.basicConfig(
+        format="%(message)s",
+        stream=sys.stdout,
+        level=log_level.upper(),
+    )
+
+    shared_processors = [
+        structlog.contextvars.merge_contextvars,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.stdlib.PositionalArgumentsFormatter(),
+    ]
+
+    if log_format == "json":
+        processors = shared_processors + [
+            structlog.processors.format_exc_info,
+            structlog.processors.JSONRenderer(),
+        ]
+    else:
+        processors = shared_processors + [
+            structlog.dev.ConsoleRenderer(colors=True),
+        ]
+
     structlog.configure(
-        processors=[
-            structlog.contextvars.merge_contextvars,
-            structlog.stdlib.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso"),
-            (
-                structlog.processors.JSONRenderer()
-                if log_format == "json"
-                else structlog.dev.ConsoleRenderer()
-            ),
-        ],
+        processors=processors,
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
@@ -106,6 +122,9 @@ def health_check():
 
 def main():
     """Main entrypoint function to be called by the script."""
+    # Early configuration to ensure healthcheck can log errors
+    configure_logging("INFO", "console")
+
     if "--healthcheck" in sys.argv:
         health_check()
     else:

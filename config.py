@@ -20,17 +20,23 @@ class GameServerConfig(BaseModel):
 
     name: str = Field(..., description="A friendly name for the server.")
     game_type: Literal["java", "bedrock"] = Field(
-        ..., description="The type of Minecraft server: 'java' or 'bedrock'."
+        ...,
+        alias="server_type",
+        description="The type of Minecraft server: 'java' or 'bedrock'.",
     )
     container_name: str = Field(
         ..., description="The Docker container name of the Minecraft server."
     )
     host: str = Field("127.0.0.1", description="The internal IP the server runs on.")
     port: int = Field(
-        ..., description="The internal port the server listens on inside Docker."
+        ...,
+        alias="internal_port",
+        description="The internal port the server listens on inside Docker.",
     )
     proxy_port: int = Field(
-        ..., description="The public port the proxy listens on for this server."
+        ...,
+        alias="listen_port",
+        description="The public port the proxy listens on for this server.",
     )
     proxy_host: str = Field(
         "0.0.0.0", description="The host interface the proxy will bind to."
