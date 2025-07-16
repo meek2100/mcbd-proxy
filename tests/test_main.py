@@ -53,9 +53,8 @@ def test_health_check_fails_if_heartbeat_is_stale(
     Tests that the health check fails if the heartbeat file is too old.
     """
     mock_heartbeat_file.exists.return_value = True
-    mock_time.return_value = 1000  # Current time
-    # Mock stat().st_mtime to return a stale timestamp
-    mock_heartbeat_file.stat.return_value.st_mtime = 900
+    mock_time.return_value = 1000
+    mock_heartbeat_file.read_text.return_value = "900"  # Stale timestamp
 
     with pytest.raises(SystemExit) as e:
         health_check()
@@ -71,9 +70,9 @@ def test_health_check_passes_with_fresh_heartbeat(
     Tests that the health check passes if the heartbeat file is recent.
     """
     mock_heartbeat_file.exists.return_value = True
-    mock_time.return_value = 1000  # Current time
-    # Mock stat().st_mtime to return a fresh timestamp
-    mock_heartbeat_file.stat.return_value.st_mtime = 990
+    mock_time.return_value = 1000
+    # Correctly mock the return value of read_text()
+    mock_heartbeat_file.read_text.return_value = "990"  # Fresh timestamp
 
     with pytest.raises(SystemExit) as e:
         health_check()
