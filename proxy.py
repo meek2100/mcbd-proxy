@@ -42,6 +42,7 @@ class AsyncProxy:
     def schedule_reload(self):
         """Sets a flag to trigger a reload on the next monitor cycle."""
         self._reload_requested = True
+        log.warning("Configuration reload has been scheduled.")
 
     def _shutdown_handler(self, sig=None):
         """Initiates a graceful shutdown of all tasks."""
@@ -66,22 +67,29 @@ class AsyncProxy:
         log.info("Starting configuration reload. Active connections will be dropped.")
         self._reload_requested = False
 
+        # 1. Cancel all active TCP connection tasks
         for task in self.active_tcp_sessions:
             task.cancel()
-        await asyncio.gather(*self.active_tcp_sessions, return_exceptions=True)
+        if self.active_tcp_sessions:
+            await asyncio.gather(*self.active_tcp_sessions, return_exceptions=True)
         self.active_tcp_sessions.clear()
 
+        # 2. Cancel the old listener tasks
         listener_tasks = self.server_tasks.get("listeners", [])
         for task in listener_tasks:
             task.cancel()
-        await asyncio.gather(*listener_tasks, return_exceptions=True)
-        log.info("Old listeners and connections shut down.")
+        if listener_tasks:
+            await asyncio.gather(*listener_tasks, return_exceptions=True)
         self.udp_protocols.clear()
+        log.info("Old listeners and connections shut down.")
 
+        # 3. Reload config and update all dependent components
         self.app_config = load_app_config()
         self.docker_manager.app_config = self.app_config
+        self.metrics_manager.app_config = self.app_config
         log.info("Config reloaded.", servers=len(self.app_config.game_servers))
 
+        # 4. Re-initialize state based on the new configuration
         self._server_state = {
             s.name: {"last_activity": 0.0, "is_running": False}
             for s in self.app_config.game_servers
@@ -92,8 +100,10 @@ class AsyncProxy:
         self._ready_events = {
             s.name: asyncio.Event() for s in self.app_config.game_servers
         }
+        # You may want to stop any servers that are no longer in the config
         await self._ensure_all_servers_stopped_on_startup()
 
+        # 5. Start new listeners
         self.server_tasks["listeners"] = [
             asyncio.create_task(self._start_listener(sc))
             for sc in self.app_config.game_servers
@@ -169,7 +179,7 @@ class AsyncProxy:
                     lambda: protocol,
                     local_addr=(server_config.proxy_host, server_config.proxy_port),
                 )
-                await asyncio.Future()
+                await asyncio.Future()  # Keep the listener alive
         except asyncio.CancelledError:
             log.info("Listener task cancelled.", server=server_config.name)
         finally:
@@ -287,6 +297,8 @@ class AsyncProxy:
             if server_config.game_type == "java":
                 server = await JavaServer.async_lookup(lookup_str, timeout=3)
             else:
+                # The mcstatus library's Bedrock lookup is a synchronous,
+                # blocking operation. Run it in a separate thread.
                 server = await asyncio.to_thread(
                     BedrockServer.lookup, lookup_str, timeout=3
                 )
@@ -295,7 +307,7 @@ class AsyncProxy:
             return status.players.online
         except Exception:
             log.warning(
-                "Could not query player count for server, assuming 0 for idle check.",
+                "Could not query player count, assuming 0 for idle check.",
                 server=server_config.name,
             )
             return 0
@@ -325,26 +337,27 @@ class AsyncProxy:
                 self._server_state[sc.name]["is_running"] = True
 
                 player_count = await self._get_player_count(sc)
+                if player_count > 0:
+                    self._update_activity(sc.name)
+                    continue
 
-                if player_count == 0:
-                    idle_time = (
-                        time.time() - self._server_state[sc.name]["last_activity"]
+                idle_time = time.time() - self._server_state[sc.name]["last_activity"]
+                if idle_time > self.app_config.idle_timeout:
+                    log.info("Server idle with 0 players. Stopping.", server=sc.name)
+                    await self.docker_manager.stop_server(
+                        sc.container_name,
+                        self.app_config.server_stop_timeout,
                     )
-                    if idle_time > self.app_config.idle_timeout:
-                        log.info(
-                            "Server idle with 0 players. Stopping.", server=sc.name
-                        )
-                        await self.docker_manager.stop_server(
-                            sc.container_name,
-                            self.app_config.server_stop_timeout,
-                        )
-                        self._server_state[sc.name]["is_running"] = False
-                        self._ready_events[sc.name].clear()
-                        log.info("Server stopped.", server=sc.name)
+                    self._server_state[sc.name]["is_running"] = False
+                    self._ready_events[sc.name].clear()
+                    log.info("Server stopped.", server=sc.name)
 
 
 class BedrockProtocol(asyncio.DatagramProtocol):
-    """Protocol for handling UDP traffic for Bedrock servers."""
+    """
+    Handles UDP traffic for Bedrock servers. It creates a "UDP session" for
+    each new client address, routing traffic to a dedicated backend socket.
+    """
 
     def __init__(self, proxy: AsyncProxy, server_config: GameServerConfig):
         self.proxy = proxy
@@ -359,7 +372,8 @@ class BedrockProtocol(asyncio.DatagramProtocol):
         client_info = self.client_map.pop(addr, None)
         if client_info:
             log.info("Cleaning up idle UDP client", client=addr)
-            client_info.get("task").cancel()
+            if client_info.get("task"):
+                client_info.get("task").cancel()
             protocol = client_info.get("protocol")
             if protocol and protocol.transport:
                 protocol.transport.close()
@@ -371,8 +385,9 @@ class BedrockProtocol(asyncio.DatagramProtocol):
             try:
                 await asyncio.sleep(30)
                 idle_timeout = self.proxy.app_config.idle_timeout
+                now = time.time()
                 for addr, info in list(self.client_map.items()):
-                    if time.time() - info.get("last_activity", 0) > idle_timeout:
+                    if now - info.get("last_activity", 0) > idle_timeout:
                         self._cleanup_client(addr)
             except asyncio.CancelledError:
                 break
