@@ -127,4 +127,5 @@ class MetricsManager:
                         server=server.name,
                         exc_info=True,
                     )
-            await asyncio.sleep(self.app_config.server_check_interval)
+            # CORRECTED: Use the correct attribute from the AppConfig model
+            await asyncio.sleep(self.app_config.player_check_interval)
