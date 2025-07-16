@@ -106,6 +106,7 @@ async def test_monitor_server_activity_stops_idle_server(
     mock_get_players, mock_time, proxy, mock_docker_manager
 ):
     """Test that the monitor stops an idle server."""
+    # This side effect lets the loop run once, then breaks it with our exception
     mock_get_players.side_effect = [0, StopTestLoop()]
     mock_docker_manager.is_container_running.return_value = True
 
@@ -117,10 +118,12 @@ async def test_monitor_server_activity_stops_idle_server(
     with pytest.raises(StopTestLoop):
         await proxy._monitor_server_activity()
 
+    # Verify the logic inside the loop was executed correctly
     mock_get_players.assert_awaited_once()
     proxy.docker_manager.stop_server.assert_awaited_once_with(
         server_config.container_name, proxy.app_config.server_stop_timeout
     )
+    assert not proxy._server_state[server_config.name]["is_running"]
 
 
 @pytest.mark.asyncio
@@ -129,5 +132,6 @@ async def test_bedrock_protocol_init(proxy, mock_app_config):
     server_config = mock_app_config.game_servers[0]
     protocol = BedrockProtocol(proxy, server_config)
     assert protocol.proxy is proxy
+    assert protocol.server_config is server_config
     assert protocol.cleanup_task is not None
-    protocol.cleanup_task.cancel()
+    protocol.cleanup_task.cancel()  # Clean up the task
