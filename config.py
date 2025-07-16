@@ -89,6 +89,7 @@ def load_app_config() -> AppConfig:
 
         log.debug(f"Found configuration for server index {i} in environment.")
         try:
+            # Use the correct environment variable keys that align with the aliases
             server_data = {
                 "name": os.getenv(f"NB_{i}_NAME", f"Server-{i}"),
                 "server_type": os.getenv(f"NB_{i}_GAME_TYPE"),

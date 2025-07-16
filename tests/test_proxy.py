@@ -36,7 +36,10 @@ def mock_app_config():
 @pytest.fixture
 def mock_docker_manager():
     """Fixture for a mock DockerManager."""
-    return AsyncMock()
+    manager = AsyncMock()
+    # Configure the mock for the monitor test
+    manager.stop_server.side_effect = StopTestLoop()
+    return manager
 
 
 @pytest.fixture
@@ -91,7 +94,6 @@ async def test_ensure_server_already_running(proxy, mock_docker_manager):
     """Test that start is not called if the server is already running."""
     server_config = proxy.app_config.game_servers[0]
     proxy._ready_events[server_config.name].set()
-    # Add the necessary mock for the new validation check
     mock_docker_manager.is_container_running.return_value = True
 
     await proxy._ensure_server_started(server_config)
@@ -106,8 +108,7 @@ async def test_monitor_server_activity_stops_idle_server(
     mock_get_players, mock_time, proxy, mock_docker_manager
 ):
     """Test that the monitor stops an idle server."""
-    # This side effect lets the loop run once, then breaks it with our exception
-    mock_get_players.side_effect = [0, StopTestLoop()]
+    mock_get_players.return_value = 0
     mock_docker_manager.is_container_running.return_value = True
 
     server_config = proxy.app_config.game_servers[0]
@@ -119,7 +120,7 @@ async def test_monitor_server_activity_stops_idle_server(
         await proxy._monitor_server_activity()
 
     mock_get_players.assert_awaited_once()
-    proxy.docker_manager.stop_server.assert_awaited_once_with(
+    mock_docker_manager.stop_server.assert_awaited_once_with(
         server_config.container_name, proxy.app_config.server_stop_timeout
     )
 
