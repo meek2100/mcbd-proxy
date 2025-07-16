@@ -160,7 +160,7 @@ class AsyncProxy:
                     server_config.proxy_port,
                 )
                 await server.serve_forever()
-            else:
+            else:  # 'bedrock'
                 loop = asyncio.get_running_loop()
                 protocol = BedrockProtocol(self, server_config)
                 self.udp_protocols[server_config.name] = protocol
@@ -198,7 +198,11 @@ class AsyncProxy:
             if not self._ready_events[server_config.name].is_set():
                 log.info("Server not running. Initiating startup...")
                 start_time = time.time()
-                await self.docker_manager.start_server(server_config)
+                success = await self.docker_manager.start_server(server_config)
+                if not success:
+                    log.error("Server failed to start, aborting connection.")
+                    return
+
                 duration = time.time() - start_time
                 self.metrics_manager.observe_startup_duration(
                     server_config.name, duration
@@ -299,7 +303,6 @@ class AsyncProxy:
 
                 self._server_state[sc.name]["is_running"] = True
 
-                # Restore original behavior: check internal session maps for activity
                 has_tcp_sessions = any(task for task in self.active_tcp_sessions)
                 udp_protocol = self.udp_protocols.get(sc.name)
                 has_udp_sessions = udp_protocol and udp_protocol.client_map
