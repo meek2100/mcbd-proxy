@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from config import AppConfig, GameServerConfig
-from proxy import AsyncProxy
+from proxy import AsyncProxy, BedrockProtocol
 
 pytestmark = pytest.mark.unit
 
@@ -84,6 +84,16 @@ def mock_tcp_streams():
     writer = AsyncMock(spec=asyncio.StreamWriter)
     writer.get_extra_info.return_value = ("127.0.0.1", 12345)
     return reader, writer
+
+
+@pytest.fixture
+def bedrock_protocol(proxy, mock_bedrock_server_config):
+    """Fixture for a BedrockProtocol instance with a mocked proxy."""
+    protocol = BedrockProtocol(proxy, mock_bedrock_server_config)
+    protocol.transport = AsyncMock()
+    # Cancel the real cleanup task so we can test it in isolation
+    protocol.cleanup_task.cancel()
+    return protocol
 
 
 @pytest.mark.asyncio
@@ -186,20 +196,74 @@ async def test_proxy_data_flow(proxy, mock_metrics_manager):
     mock_writer = AsyncMock(spec=asyncio.StreamWriter)
 
     test_data = b"some test data"
-    # Simulate reading data once, then EOF
     mock_reader.read.side_effect = [test_data, b""]
     mock_reader.at_eof.side_effect = [False, True]
 
     await proxy._proxy_data(mock_reader, mock_writer, "test_server", "c2s")
 
-    # Verify data flow
     mock_reader.read.assert_awaited_once_with(4096)
     mock_writer.write.assert_called_once_with(test_data)
     mock_writer.drain.assert_awaited_once()
-
-    # Verify metrics and cleanup
     mock_metrics_manager.inc_bytes_transferred.assert_called_once_with(
         "test_server", "c2s", len(test_data)
     )
     mock_writer.close.assert_awaited_once()
     mock_writer.wait_closed.assert_awaited_once()
+
+
+# --- BedrockProtocol Unit Tests ---
+
+
+@pytest.mark.asyncio
+@patch("asyncio.get_running_loop")
+def test_bedrock_datagram_received_new_client(mock_get_loop, bedrock_protocol, proxy):
+    """Test BedrockProtocol handles a packet from a new client."""
+    mock_loop = mock_get_loop.return_value
+    addr = ("1.2.3.4", 12345)
+    data = b"new client data"
+
+    bedrock_protocol.datagram_received(data, addr)
+
+    proxy.metrics_manager.inc_active_connections.assert_called_once_with(
+        bedrock_protocol.server_config.name
+    )
+    assert addr in bedrock_protocol.client_map
+    mock_loop.create_task.assert_called_once()
+
+
+@pytest.mark.asyncio
+def test_bedrock_datagram_received_existing_client(bedrock_protocol):
+    """Test BedrockProtocol forwards packet for an existing client."""
+    addr = ("1.2.3.4", 12345)
+    data = b"existing client data"
+    mock_backend_protocol = MagicMock()
+    mock_backend_protocol.transport.sendto = MagicMock()
+    bedrock_protocol.client_map[addr] = {"protocol": mock_backend_protocol}
+
+    bedrock_protocol.datagram_received(data, addr)
+
+    mock_backend_protocol.transport.sendto.assert_called_once_with(data)
+
+
+@pytest.mark.asyncio
+@patch("proxy.time.time", return_value=2000)
+@patch("proxy.asyncio.sleep", new_callable=AsyncMock)
+async def test_bedrock_monitor_idle_clients(
+    mock_sleep, mock_time, bedrock_protocol, proxy
+):
+    """Test that the idle client monitor correctly cleans up stale sessions."""
+    # This side effect will allow the loop to run once, then exit cleanly.
+    mock_sleep.side_effect = StopTestLoop
+
+    idle_addr = ("1.1.1.1", 11111)
+    active_addr = ("2.2.2.2", 22222)
+    bedrock_protocol.client_map = {
+        idle_addr: {"last_activity": 1000},  # Stale
+        active_addr: {"last_activity": 2000},  # Fresh
+    }
+    bedrock_protocol._cleanup_client = MagicMock()
+
+    with pytest.raises(StopTestLoop):
+        await bedrock_protocol._monitor_idle_clients()
+
+    bedrock_protocol._cleanup_client.assert_called_once_with(idle_addr)
