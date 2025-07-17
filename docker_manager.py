@@ -43,15 +43,20 @@ class DockerManager:
             yield container
         except aiodocker.exceptions.DockerError as e:
             if e.status == 404:
+                # This is an expected condition, so debug level is appropriate.
+                log.debug("Container not found.", container_name=container_name)
                 yield None
             else:
+                # An API error is unexpected and should be logged as an error.
                 log.error(
-                    "Docker error on get_container",
+                    "API error getting container",
                     container_name=container_name,
+                    status=e.status,
                     exc_info=True,
                 )
                 yield None
         except Exception:
+            # Catch any other unexpected exceptions.
             log.error(
                 "Unexpected error in get_container",
                 container_name=container_name,
@@ -65,23 +70,25 @@ class DockerManager:
         """
         log.debug("Checking container status", container_name=container_name)
         async with self.get_container(container_name) as container:
-            if container:
-                try:
-                    container_info = await container.show()
-                    is_running = container_info.get("State", {}).get("Running", False)
-                    log.debug(
-                        "Container state",
-                        container_name=container_name,
-                        is_running=is_running,
-                    )
-                    return is_running
-                except aiodocker.exceptions.DockerError:
-                    log.error(
-                        "Could not get container info",
-                        container_name=container_name,
-                        exc_info=True,
-                    )
-            return False
+            if not container:
+                return False  # get_container already logged the 404
+
+            try:
+                container_info = await container.show()
+                is_running = container_info.get("State", {}).get("Running", False)
+                log.debug(
+                    "Container state",
+                    container_name=container_name,
+                    is_running=is_running,
+                )
+                return is_running
+            except aiodocker.exceptions.DockerError:
+                log.error(
+                    "Could not get container info",
+                    container_name=container_name,
+                    exc_info=True,
+                )
+        return False
 
     async def start_server(self, server_config: GameServerConfig) -> bool:
         """
@@ -92,10 +99,6 @@ class DockerManager:
         log.info("Starting container", container_name=container_name)
         async with self.get_container(container_name) as container:
             if not container:
-                log.error(
-                    "Container not found, cannot start",
-                    container_name=container_name,
-                )
                 return False
 
             try:
@@ -105,6 +108,7 @@ class DockerManager:
                 )
                 return await self.wait_for_server_query_ready(server_config)
             except aiodocker.exceptions.DockerError as e:
+                # The original had good handling for this specific case.
                 if "already started" in str(e).lower():
                     log.warning(
                         "Container is already running",
@@ -165,7 +169,7 @@ class DockerManager:
                     server = await JavaServer.async_lookup(
                         lookup_str, timeout=query_timeout
                     )
-                else:  # bedrock
+                else:
                     server = await asyncio.to_thread(
                         BedrockServer.lookup, lookup_str, timeout=query_timeout
                     )
