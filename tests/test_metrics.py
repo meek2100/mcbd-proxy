@@ -92,7 +92,7 @@ def test_inc_bytes_transferred(mock_counter, metrics_manager):
 @pytest.mark.asyncio
 @patch("metrics.start_http_server")
 @patch("metrics.asyncio.create_task")
-@patch("metrics.log")
+@patch("metrics.log")  # Patch metrics.log directly
 async def test_metrics_manager_start_handles_http_server_failure(
     mock_log, mock_create_task, mock_start_http_server, metrics_manager
 ):
@@ -121,7 +121,9 @@ async def test_metrics_manager_start_handles_http_server_failure(
 @patch("metrics.server_status_gauge")
 @patch("metrics.total_running_servers_gauge")
 @patch("metrics.asyncio.sleep")
+@patch("metrics.log")  # Patch metrics.log to check cancellation info
 async def test_update_server_status_periodically(
+    mock_log,  # New mock
     mock_sleep,
     mock_total_running_gauge,
     mock_server_status_gauge,
@@ -132,19 +134,25 @@ async def test_update_server_status_periodically(
     """
     Tests that _update_server_status_periodically correctly updates gauges.
     """
-    mock_sleep.side_effect = asyncio.CancelledError  # Allow task to exit
-
-    # Simulate server running then stopped
+    # Simulate first iteration: server is running
     mock_docker_manager.is_container_running.side_effect = [
-        True,  # First check, server is running
-        False,  # Second check, server is stopped (after re-loop)
+        True,  # For first iteration
+        False,  # For second iteration
     ]
 
-    # Run loop for a short time, then cancel
+    # Simulate app_config.game_servers being a list with one server
+    mock_app_config.game_servers = [MagicMock(name="test_server_1")]
+
+    # Trigger one loop iteration then a CancelledError to stop the infinite loop
+    mock_sleep.side_effect = [
+        None,  # Allow first sleep to complete
+        asyncio.CancelledError,  # Cancel on second sleep
+    ]
+
     try:
         await metrics_manager._update_server_status_periodically()
     except asyncio.CancelledError:
-        pass
+        pass  # Expected
 
     # Assertions for first iteration (server is running)
     mock_server_status_gauge.labels.assert_any_call(
@@ -152,12 +160,18 @@ async def test_update_server_status_periodically(
     )
     mock_server_status_gauge.labels.return_value.set.assert_any_call(1)
     mock_total_running_gauge.set.assert_any_call(1)
+    mock_sleep.assert_awaited_with(mock_app_config.player_check_interval)
 
-    # Reset mocks for next check (or use assert_has_calls for sequence)
+    # Reset mocks for next logical check (second iteration)
     mock_server_status_gauge.labels.return_value.set.reset_mock()
     mock_total_running_gauge.set.reset_mock()
+    mock_docker_manager.is_container_running.reset_mock()  # Reset side_effect pointer
 
-    # Simulate another iteration (server is stopped)
+    # Configure for second iteration: server is stopped
+    mock_docker_manager.is_container_running.side_effect = [False]
+
+    # Trigger second loop iteration to check server status becomes 0
+    mock_sleep.side_effect = asyncio.CancelledError  # Ensure it exits after 1 loop
     try:
         await metrics_manager._update_server_status_periodically()
     except asyncio.CancelledError:
@@ -166,8 +180,10 @@ async def test_update_server_status_periodically(
     mock_server_status_gauge.labels.return_value.set.assert_any_call(0)
     mock_total_running_gauge.set.assert_any_call(0)
 
-    # Assert sleep uses correct interval
-    mock_sleep.assert_awaited_with(mock_app_config.player_check_interval)
-
     # Test cancellation handling
-    metrics_manager.log.info.assert_called_with("Metrics manager task cancelled.")
+    mock_log.info.assert_called_with(
+        "Starting periodic server status updater for metrics."
+    )  # Initial log
+    mock_log.info.assert_any_call(
+        "Metrics manager task cancelled."
+    )  # Final cancellation log
