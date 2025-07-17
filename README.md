@@ -92,23 +92,30 @@ Nether-bridge is configured using a hierarchy:
 
 These settings control the proxy's global behavior. They can be set in a `settings.json` file or overridden with environment variables.
 
-| Environment Variable       | `settings.json` Key      | Default   | Description                                                                   |
-| :------------------------- | :----------------------- | :-------- | :---------------------------------------------------------------------------- |
-| `LOG_LEVEL`                | `log_level`              | `INFO`    | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR`.                       |
-| `NB_LOG_FORMATTER`         | `log_format`             | `console` | Log format: `console` or `json`.                                              |
-| `NB_IDLE_TIMEOUT`          | `idle_timeout`           | `600`     | Seconds a server must be idle (0 players) to be stopped.                      |
-| `NB_PLAYER_CHECK_INTERVAL` | `player_check_interval`  | `60`      | How often (seconds) to check for idle servers.                                |
-| `NB_SERVER_READY_MAX_WAIT` | `server_startup_timeout` | `300`     | Max time (seconds) to wait for a server to respond to a query after starting. |
-| `NB_SERVER_STOP_TIMEOUT`   | `server_stop_timeout`    | `60`      | Time (seconds) Docker will wait for a server to stop gracefully.              |
-| `NB_QUERY_TIMEOUT`         | `query_timeout`          | `5`       | Timeout (seconds) for a single `mcstatus` query.                              |
-| `NB_PROMETHEUS_ENABLED`    | `is_prometheus_enabled`  | `true`    | Set to `false` to disable the Prometheus metrics endpoint.                    |
-| `NB_PROMETHEUS_PORT`       | `prometheus_port`        | `8000`    | Port for the Prometheus metrics server.                                       |
+| Environment Variable             | `settings.json` Key           | Default   | Description                                                        |
+| :------------------------------- | :---------------------------- | :-------- | :----------------------------------------------------------------- |
+| `LOG_LEVEL`                      | `log_level`                   | `INFO`    | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR`.            |
+| `NB_LOG_FORMATTER`               | `log_format`                  | `console` | Log format: `console` or `json`.                                   |
+| `NB_IDLE_TIMEOUT`                | `idle_timeout`                | `600`     | Seconds a server must be idle (0 players) to be stopped.           |
+| `NB_PLAYER_CHECK_INTERVAL`       | `player_check_interval`       | `60`      | How often (seconds) to check for idle servers.                     |
+| `NB_SERVER_READY_MAX_WAIT`       | `server_startup_timeout`      | `300`     | Max time (seconds) to wait for a server to respond after starting. |
+| `NB_SERVER_STOP_TIMEOUT`         | `server_stop_timeout`         | `60`      | Time (seconds) Docker will wait for a server to stop gracefully.   |
+| `NB_QUERY_TIMEOUT`               | `query_timeout`               | `5`       | Timeout (seconds) for a single `mcstatus` query.                   |
+| `NB_INITIAL_BOOT_READY_MAX_WAIT` | `initial_boot_ready_max_wait` | `180`     | Max wait time for a server found running on initial proxy boot.    |
+| `NB_SERVER_STARTUP_DELAY`        | `server_startup_delay`        | `5`       | Delay (seconds) after starting a server before the first query.    |
+| `NB_INITIAL_SERVER_QUERY_DELAY`  | `initial_server_query_delay`  | `10`      | Delay (seconds) before querying a server found running at startup. |
+| `NB_PROMETHEUS_ENABLED`          | `is_prometheus_enabled`       | `true`    | Set to `false` to disable the Prometheus metrics endpoint.         |
+| `NB_PROMETHEUS_PORT`             | `prometheus_port`             | `8000`    | Port for the Prometheus metrics server.                            |
+| `NB_HEALTHCHECK_STALE_THRESHOLD` | `healthcheck_stale_threshold` | `60`      | Seconds before the heartbeat is considered stale.                  |
+| `NB_TCP_LISTEN_BACKLOG`          | `tcp_listen_backlog`          | `128`     | Max number of queued TCP connections for Java servers.             |
+| `NB_MAX_SESSIONS`                | `max_concurrent_sessions`     | `-1`      | Max concurrent sessions. `-1` means unlimited.                     |
 
 **Example `settings.json`:**
 ```json
 {
   "log_level": "DEBUG",
-  "idle_timeout": 900
+  "idle_timeout": 900,
+  "max_concurrent_sessions": 50
 }
 ```
 
