@@ -337,7 +337,7 @@ class AsyncProxy:
             )
         finally:
             if not writer.is_closing():
-                await writer.close()
+                await writer.close()  # THIS WAS MISSING AWAIT IN SOME CALLS IN TEST
             await writer.wait_closed()
 
     async def _handle_tcp_connection(
@@ -357,7 +357,7 @@ class AsyncProxy:
                 client=client_addr,
                 max_sessions=max_sessions,
             )
-            client_writer.close()
+            await client_writer.close()  # ADDED AWAIT
             await client_writer.wait_closed()
             return
 
