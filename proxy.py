@@ -125,25 +125,23 @@ class AsyncProxy:
             log.info("No running servers found. Startup check complete.")
             return
 
-        stop_tasks = []
-        for sc in servers_to_stop:
-            log.warning(
-                "Server found running at startup. Stopping now.", server=sc.name
+        stop_tasks = [
+            self.docker_manager.stop_server(
+                sc.container_name, self.app_config.server_stop_timeout
             )
-            stop_tasks.append(
-                self.docker_manager.stop_server(
-                    sc.container_name, self.app_config.server_stop_timeout
-                )
-            )
+            for sc in servers_to_stop
+        ]
         await asyncio.gather(*stop_tasks)
 
         log.info("Confirming all specified servers are stopped...")
         for sc in servers_to_stop:
-            for i in range(self.app_config.server_stop_timeout):
+            for _ in range(self.app_config.server_stop_timeout):
                 if not await self.docker_manager.is_container_running(
                     sc.container_name
                 ):
                     log.info("Server confirmed stopped.", server=sc.name)
+                    # THIS IS THE FIX: Explicitly clear the ready event
+                    self._ready_events[sc.name].clear()
                     break
                 await asyncio.sleep(1)
             else:
