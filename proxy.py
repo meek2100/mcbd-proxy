@@ -6,9 +6,7 @@ Core asynchronous proxy logic for TCP (Java) and UDP (Bedrock) servers.
 import asyncio
 import signal
 import time
-from unittest.mock import (
-    MagicMock,
-)
+from unittest.mock import MagicMock
 
 import structlog
 
@@ -50,7 +48,8 @@ class AsyncProxy:
         """Initiates a graceful shutdown of all tasks."""
         if sig:
             log.warning(
-                "Shutdown signal received. Cancelling tasks...", signal=sig.name
+                "Shutdown signal received",
+                signal=sig.name,
             )
         else:
             log.warning("Shutdown requested. Cancelling tasks...")
@@ -133,8 +132,8 @@ class AsyncProxy:
         for sc in self.app_config.game_servers:
             if await self.docker_manager.is_container_running(sc.container_name):
                 log.warning(
-                    "Server found running. Waiting for it to be queryable before "
-                    "issuing a safe stop.",
+                    "Server found running. Waiting for it to be queryable "
+                    "before issuing a safe stop.",
                     server=sc.name,
                 )
                 await asyncio.sleep(self.app_config.initial_server_query_delay)
@@ -235,13 +234,12 @@ class AsyncProxy:
                 await asyncio.Future()
         except asyncio.CancelledError:
             log.info("Listener task cancelled.", server=server_config.name)
-        except Exception as e:
+        except Exception:
             log.critical(
                 "Failed to start listener. Port might be in use or "
                 "permissions missing.",
                 server=server_config.name,
                 port=server_config.proxy_port,
-                error=str(e),
                 exc_info=True,
             )
             raise
@@ -327,17 +325,16 @@ class AsyncProxy:
                 server=server_name,
                 direction=direction,
             )
-        except Exception as e:
+        except Exception:
             log.error(
                 "Error during data proxy.",
                 server=server_name,
                 direction=direction,
-                error=str(e),
                 exc_info=True,
             )
         finally:
             if not writer.is_closing():
-                await writer.close()  # THIS WAS MISSING AWAIT IN SOME CALLS IN TEST
+                writer.close()
             await writer.wait_closed()
 
     async def _handle_tcp_connection(
@@ -357,7 +354,7 @@ class AsyncProxy:
                 client=client_addr,
                 max_sessions=max_sessions,
             )
-            await client_writer.close()  # ADDED AWAIT
+            client_writer.close()
             await client_writer.wait_closed()
             return
 
@@ -397,10 +394,9 @@ class AsyncProxy:
             )
         except asyncio.CancelledError:
             log.info("TCP session cancelled.", client=client_addr)
-        except Exception as e:
+        except Exception:
             log.error(
                 "Unhandled error in TCP session.",
-                error=e,
                 exc_info=True,
                 client=client_addr,
             )
@@ -408,7 +404,7 @@ class AsyncProxy:
             if proxy_task:
                 self.active_tcp_sessions.pop(proxy_task, None)
             if not client_writer.is_closing():
-                await client_writer.close()
+                client_writer.close()
             await client_writer.wait_closed()
             self.metrics_manager.dec_active_connections(server_config.name)
             log.info("TCP session closed", client=client_addr)
@@ -438,7 +434,8 @@ class AsyncProxy:
 
                 # Count active sessions for this specific server
                 udp_protocols_for_server = self.udp_protocols.get(
-                    sc.name, MagicMock(client_map={})
+                    sc.name,
+                    MagicMock(client_map={}),
                 )
                 udp_sessions = len(udp_protocols_for_server.client_map)
                 tcp_sessions = sum(
@@ -509,7 +506,8 @@ class BedrockProtocol(asyncio.DatagramProtocol):
                 await asyncio.sleep(self.proxy.app_config.player_check_interval)
             except asyncio.CancelledError:
                 log.info(
-                    "UDP client monitor task cancelled.", server=self.server_config.name
+                    "UDP client monitor task cancelled.",
+                    server=self.server_config.name,
                 )
                 break
             # Use per-server idle_timeout if defined, else global idle_timeout
@@ -585,12 +583,11 @@ class BedrockProtocol(asyncio.DatagramProtocol):
         except asyncio.CancelledError:
             log.debug("Backend connection task cancelled.", client=client_addr)
             self._cleanup_client(client_addr)
-        except Exception as e:
+        except Exception:
             log.error(
                 "Unhandled error creating backend UDP connection.",
                 client=client_addr,
                 server=self.server_config.name,
-                error=str(e),
                 exc_info=True,
             )
             self._cleanup_client(client_addr)
