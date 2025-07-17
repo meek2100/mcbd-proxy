@@ -9,6 +9,7 @@ import main as main_module  # Import main as module to patch its internal log
 
 # Imports from the module being tested
 from main import amain, health_check, main
+from metrics import MetricsManager  # Import MetricsManager to use as spec
 
 
 @pytest.mark.unit
@@ -24,8 +25,8 @@ def test_main_runs_health_check(mock_health_check):
 
 
 @pytest.mark.unit
-@patch("main.DockerManager", spec=main_module.DockerManager)  # Apply spec here
-@patch("main.AsyncProxy", spec=main_module.AsyncProxy)  # Apply spec here
+@patch("main.DockerManager", spec=main_module.DockerManager)
+@patch("main.AsyncProxy", spec=main_module.AsyncProxy)
 @patch("main.configure_logging")
 @patch("main.asyncio.create_task")
 @patch("main.load_app_config")
@@ -37,8 +38,8 @@ async def test_amain_orchestration_and_shutdown(
     mock_load_config,
     mock_create_task,
     mock_configure_logging,
-    mock_async_proxy_class,  # This is now the mocked class with spec
-    mock_docker_manager_class,  # This is now the mocked class with spec
+    mock_async_proxy_class,
+    mock_docker_manager_class,
 ):
     """
     Verify `amain` orchestrates startup and that `finally` block cleans up.
@@ -47,18 +48,13 @@ async def test_amain_orchestration_and_shutdown(
     mock_get_running_loop.return_value = mock_loop
     mock_loop.add_signal_handler = MagicMock()
 
-    # Configure the mocked classes to return AsyncMock instances
     mock_docker_instance = mock_docker_manager_class.return_value = AsyncMock()
     mock_proxy_instance = mock_async_proxy_class.return_value = AsyncMock()
 
-    # Manually set internal mocks if AsyncProxy's __init__ is not mocked
-    # If AsyncProxy's __init__ is *not* mocked,
-    # it will create real DockerManager/MetricsManager
-    # Here, AsyncProxy is mocked, so we just set its *mocked instance's* attributes
     mock_proxy_instance.docker_manager = mock_docker_instance
-    mock_proxy_instance.metrics_manager = (
-        AsyncMock()
-    )  # Ensure metrics_manager is AsyncMock
+    mock_proxy_instance.metrics_manager = AsyncMock(
+        spec=MetricsManager  # Use imported MetricsManager for spec
+    )
 
     mock_app_config = MagicMock()
     mock_app_config.game_servers = [MagicMock()]
@@ -123,9 +119,9 @@ async def test_amain_logs_app_image_metadata(
     mock_docker_instance = mock_docker_manager_class.return_value = AsyncMock()
     mock_proxy_instance = mock_async_proxy_class.return_value = AsyncMock()
     mock_proxy_instance.docker_manager = mock_docker_instance
-    mock_proxy_instance.metrics_manager = (
-        AsyncMock()
-    )  # Ensure metrics_manager is AsyncMock
+    mock_proxy_instance.metrics_manager = AsyncMock(
+        spec=MetricsManager  # Use imported MetricsManager for spec
+    )
 
     mock_app_config = MagicMock()
     mock_app_config.game_servers = [MagicMock()]
@@ -135,24 +131,50 @@ async def test_amain_logs_app_image_metadata(
 
     # Test with valid JSON metadata
     mock_os_environ_get.side_effect = [
-        # First call for test_amain_logs_app_image_metadata (valid JSON)
-        '{"version": "1.0.0", "build": "abc"}',
-        # Second call within amain if it calls os.environ.get again (e.g. for config)
-        None,  # Default for other env vars
+        '{"version": "1.0.0", "build": "abc"}',  # APP_IMAGE_METADATA
+        # Subsequent calls from load_app_config, needs to return None for other env vars
+        # as load_app_config calls os.environ.get for each AppConfig field
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,  # For AppConfig fields
+        None,  # For second call to amain() below
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,  # For AppConfig fields on second call
     ]
-
     await amain()
     mock_log.info.assert_any_call(
         "Application build metadata", version="1.0.0", build="abc"
     )
-    mock_log.info.reset_mock()  # Reset mock to check for next call
+    mock_log.info.reset_mock()
 
     # Test with malformed JSON metadata
     mock_os_environ_get.side_effect = [
-        # First call for test_amain_logs_app_image_metadata (invalid JSON)
-        "invalid json",
-        # Second call within amain
+        "invalid json",  # APP_IMAGE_METADATA
         None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,  # For AppConfig fields
     ]
     await amain()
     mock_log.warning.assert_any_call(
@@ -297,49 +319,41 @@ async def test_amain_handles_metrics_manager_start_failure(
     mock_proxy_instance = mock_async_proxy_class.return_value = AsyncMock()
     mock_proxy_instance.docker_manager = mock_docker_instance
 
-    # Mock the MetricsManager class that AsyncProxy's __init__ uses
-    mock_metrics_manager_class = AsyncMock(
-        spec=main_module.MetricsManager
-    )  # Apply spec here
+    mock_metrics_manager_class = AsyncMock(spec=MetricsManager)
     mock_metrics_manager_instance = AsyncMock()
     mock_metrics_manager_class.return_value = mock_metrics_manager_instance
 
-    # Patch the MetricsManager class where AsyncProxy imports it from
-    # main.py imports MetricsManager from metrics,
-    # but AsyncProxy imports it from proxy.metrics
-    # For this test, AsyncProxy's __init__ is called,
-    # so we need to ensure *it* gets the correct mock.
-    # The patch on 'main.MetricsManager' below ensures that
-    # if amain directly creates one, it's mocked.
-    # But since AsyncProxy's __init__ is called, we must
-    # ensure *its* view of MetricsManager is mocked.
-    # The simplest way is to ensure
-    # mock_proxy_instance.metrics_manager is already mocked.
-    mock_proxy_instance.metrics_manager = (
-        mock_metrics_manager_instance  # Assign the mocked instance
-    )
+    # Patch MetricsManager class where AsyncProxy's __init__ looks for it
+    with patch("proxy.MetricsManager", new=mock_metrics_manager_class):
+        mock_proxy_instance.metrics_manager = mock_metrics_manager_instance
 
-    mock_app_config = MagicMock()
-    mock_app_config.game_servers = [MagicMock()]
-    mock_app_config.log_level = "INFO"
-    mock_app_config.log_format = "console"
-    mock_load_config.return_value = mock_app_config
+        mock_app_config = MagicMock()
+        mock_app_config.game_servers = [MagicMock()]
+        mock_app_config.log_level = "INFO"
+        mock_app_config.log_format = "console"
+        mock_load_config.return_value = mock_app_config
 
-    original_os_environ_get = os.environ.get
-    mock_os_environ_get.side_effect = lambda key, default=None: (
-        None if key == "APP_IMAGE_METADATA" else original_os_environ_get(key, default)
-    )
+        # Configure os.environ.get.side_effect for this test's specific needs
+        # Needs to return None for APP_IMAGE_METADATA, and then default for others
+        original_os_environ_get = os.environ.get
+        mock_os_environ_get.side_effect = lambda key, default=None: (
+            None
+            if key == "APP_IMAGE_METADATA"
+            else original_os_environ_get(key, default)
+        )
 
-    mock_metrics_manager_instance.start.side_effect = Exception(
-        "Metrics server failed to bind"
-    )
-    mock_proxy_instance.start.side_effect = asyncio.CancelledError
+        mock_metrics_manager_instance.start.side_effect = Exception(
+            "Metrics server failed to bind"
+        )
+        mock_proxy_instance.start.side_effect = asyncio.CancelledError
 
-    mock_create_task.return_value = AsyncMock()
+        mock_create_task.return_value = AsyncMock()
 
-    await amain()
+        await amain()
 
-    mock_log.error.assert_any_call("Failed to start Prometheus server", exc_info=True)
-    mock_docker_instance.close.assert_awaited_once()
-    mock_create_task.return_value.cancel.assert_called_once()
-    assert mock_loop.add_signal_handler.call_count >= 2
+        mock_log.error.assert_any_call(
+            "Failed to start Prometheus server", exc_info=True
+        )
+        mock_docker_instance.close.assert_awaited_once()
+        mock_create_task.return_value.cancel.assert_called_once()
+        assert mock_loop.add_signal_handler.call_count >= 2
