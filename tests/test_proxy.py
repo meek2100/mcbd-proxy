@@ -52,7 +52,7 @@ def mock_app_config(mock_java_server_config, mock_bedrock_server_config):
     config.server_stop_timeout = 10
     config.idle_timeout = 60
     config.tcp_listen_backlog = 128
-    config.max_concurrent_sessions = -1  # Default to unlimited
+    config.max_concurrent_sessions = -1
     return config
 
 
@@ -177,3 +177,29 @@ async def test_handle_tcp_connection_backend_fails(
     mock_open_conn.assert_awaited_once()
     client_writer.close.assert_awaited_once()
     proxy.metrics_manager.dec_active_connections.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_proxy_data_flow(proxy, mock_metrics_manager):
+    """Test the _proxy_data method forwards data and updates metrics."""
+    mock_reader = AsyncMock(spec=asyncio.StreamReader)
+    mock_writer = AsyncMock(spec=asyncio.StreamWriter)
+
+    test_data = b"some test data"
+    # Simulate reading data once, then EOF
+    mock_reader.read.side_effect = [test_data, b""]
+    mock_reader.at_eof.side_effect = [False, True]
+
+    await proxy._proxy_data(mock_reader, mock_writer, "test_server", "c2s")
+
+    # Verify data flow
+    mock_reader.read.assert_awaited_once_with(4096)
+    mock_writer.write.assert_called_once_with(test_data)
+    mock_writer.drain.assert_awaited_once()
+
+    # Verify metrics and cleanup
+    mock_metrics_manager.inc_bytes_transferred.assert_called_once_with(
+        "test_server", "c2s", len(test_data)
+    )
+    mock_writer.close.assert_awaited_once()
+    mock_writer.wait_closed.assert_awaited_once()
