@@ -90,25 +90,27 @@ Nether-bridge is configured using a hierarchy:
 
 ### Main Proxy Settings
 
-These settings control the proxy's global behavior. They can be set in a `settings.json` file or overridden with environment variables.
+These settings control the proxy's global behavior. They can be set in a
+`settings.json` file or overridden with environment variables.
 
-| Environment Variable             | `settings.json` Key           | Default   | Description                                                        |
-| :------------------------------- | :---------------------------- | :-------- | :----------------------------------------------------------------- |
-| `LOG_LEVEL`                      | `log_level`                   | `INFO`    | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR`.            |
-| `NB_LOG_FORMATTER`               | `log_format`                  | `console` | Log format: `console` or `json`.                                   |
-| `NB_IDLE_TIMEOUT`                | `idle_timeout`                | `600`     | Seconds a server must be idle (0 players) to be stopped.           |
-| `NB_PLAYER_CHECK_INTERVAL`       | `player_check_interval`       | `60`      | How often (seconds) to check for idle servers.                     |
-| `NB_SERVER_READY_MAX_WAIT`       | `server_startup_timeout`      | `300`     | Max time (seconds) to wait for a server to respond after starting. |
-| `NB_SERVER_STOP_TIMEOUT`         | `server_stop_timeout`         | `60`      | Time (seconds) Docker will wait for a server to stop gracefully.   |
-| `NB_QUERY_TIMEOUT`               | `query_timeout`               | `5`       | Timeout (seconds) for a single `mcstatus` query.                   |
-| `NB_INITIAL_BOOT_READY_MAX_WAIT` | `initial_boot_ready_max_wait` | `180`     | Max wait time for a server found running on initial proxy boot.    |
-| `NB_SERVER_STARTUP_DELAY`        | `server_startup_delay`        | `5`       | Delay (seconds) after starting a server before the first query.    |
-| `NB_INITIAL_SERVER_QUERY_DELAY`  | `initial_server_query_delay`  | `10`      | Delay (seconds) before querying a server found running at startup. |
-| `NB_PROMETHEUS_ENABLED`          | `is_prometheus_enabled`       | `true`    | Set to `false` to disable the Prometheus metrics endpoint.         |
-| `NB_PROMETHEUS_PORT`             | `prometheus_port`             | `8000`    | Port for the Prometheus metrics server.                            |
-| `NB_HEALTHCHECK_STALE_THRESHOLD` | `healthcheck_stale_threshold` | `60`      | Seconds before the heartbeat is considered stale.                  |
-| `NB_TCP_LISTEN_BACKLOG`          | `tcp_listen_backlog`          | `128`     | Max number of queued TCP connections for Java servers.             |
-| `NB_MAX_SESSIONS`                | `max_concurrent_sessions`     | `-1`      | Max concurrent sessions. `-1` means unlimited.                     |
+| Environment Variable             | `settings.json` Key              | Default   | Description                                                         |
+| :------------------------------- | :------------------------------- | :-------- | :------------------------------------------------------------------ |
+| `LOG_LEVEL`                      | `log_level`                      | `INFO`    | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR`.             |
+| `NB_LOG_FORMATTER`               | `log_format`                     | `console` | Log format: `console` or `json`.                                    |
+| `NB_IDLE_TIMEOUT`                | `idle_timeout`                   | `600`     | Seconds a server must be idle (0 players) to be stopped.            |
+| `NB_PLAYER_CHECK_INTERVAL`       | `player_check_interval`          | `60`      | How often (seconds) to check for idle servers.                      |
+| `NB_SERVER_READY_MAX_WAIT`       | `server_startup_timeout`         | `120`     | Max time (seconds) to wait for a newly started server to respond.   |
+| `NB_SERVER_STOP_TIMEOUT`         | `server_stop_timeout`            | `60`      | Time (seconds) Docker will wait for a server to stop gracefully.    |
+| `NB_QUERY_TIMEOUT`               | `query_timeout`                  | `5`       | Timeout (seconds) for a single `mcstatus` query.                    |
+| `NB_PROMETHEUS_ENABLED`          | `is_prometheus_enabled`          | `true`    | Set to `false` to disable the Prometheus metrics endpoint.          |
+| `NB_PROMETHEUS_PORT`             | `prometheus_port`                | `8000`    | Port for the Prometheus metrics server.                             |
+| `NB_HEALTHCHECK_STALE_THRESHOLD` | `healthcheck_stale_threshold`    | `60`      | Seconds before the heartbeat is considered stale.                   |
+| `NB_HEARTBEAT_INTERVAL`          | `healthcheck_heartbeat_interval` | `15`      | How often (seconds) the main proxy loop updates its heartbeat file. |
+| `NB_INITIAL_BOOT_READY_MAX_WAIT` | `initial_boot_ready_max_wait`    | `180`     | Max wait time for a server found running on initial proxy boot.     |
+| `NB_SERVER_STARTUP_DELAY`        | `server_startup_delay`           | `5`       | Delay (seconds) after starting a server before the first query.     |
+| `NB_INITIAL_SERVER_QUERY_DELAY`  | `initial_server_query_delay`     | `10`      | Delay (seconds) before querying a server found running at startup.  |
+| `NB_TCP_LISTEN_BACKLOG`          | `tcp_listen_backlog`             | `128`     | Max number of queued TCP connections for Java servers.              |
+| `NB_MAX_SESSIONS`                | `max_concurrent_sessions`        | `-1`      | Max concurrent sessions. `-1` means unlimited.                      |
 
 **Example `settings.json`:**
 ```json
@@ -184,10 +186,68 @@ The connection flow for consoles is:
 
 5.  **Connect**: Launch Minecraft on your console, navigate to the "Servers" tab, and any of the featured servers should now show your custom server list.
 
+## License
+
+[MIT License](LICENSE)
+
 ## Contributing
 
 Contributions are welcome! Please feel free to open issues or pull requests on the GitHub repository.
 
-## License
+## Developer Guide
 
-[MIT License](LICENSE)
+This section contains information for developers working on the
+Nether-bridge project, specifically regarding advanced testing environments.
+
+### Testing with a Remote Docker Host
+
+The test suite can be configured to run on a local machine (e.g., Windows
+with VS Code) while targeting a Docker daemon running on a remote machine
+(e.g., a Debian VM). This is controlled by the `tests/.env` file.
+
+#### Remote Host (Debian VM) Setup
+
+1.  **Expose Docker Daemon**: Configure the Docker daemon to listen for
+    remote connections by editing or creating `/etc/docker/daemon.json`:
+
+    ```json
+    {
+      "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2375"]
+    }
+    ```
+
+    Then, restart Docker: `sudo systemctl restart docker`.
+
+2.  **Configure Firewall**: Allow connections to the Docker port (e.g.,
+    using `ufw`):
+
+    ```bash
+    sudo ufw allow 2375/tcp
+    sudo ufw reload
+    ```
+
+> **Note:** This setup assumes that your remote Docker host is located
+> within a private network. For security best practices, refer to the
+> official guide on [protecting access to the Docker daemon
+> socket](https://docs.docker.com/engine/security/protect-access/).
+
+#### Client Host (Windows/Linux) Setup
+
+1.  **Create `.env` file**: In the `tests/` directory, create a file named
+    `.env` (if it doesn't exist already) based on `tests/.env.example`.
+
+2.  **Configure `.env`**: In `tests/.env`, set the `DOCKER_HOST_IP`,
+    `DOCKER_CONNECTION_TYPE`, `DOCKER_CONNECTION_PORT`, and optionally
+    `DOCKER_SSH_USER` variables to match your remote Docker host setup.
+
+    Example for TCP connection:
+    ```
+    DOCKER_HOST_IP="192.168.1.100"
+    DOCKER_CONNECTION_TYPE="tcp"
+    DOCKER_CONNECTION_PORT="2375"
+    ```
+
+3.  **Run Tests**: With this `.env` file in place, running `pytest` from
+    your local machine will automatically target the remote Docker daemon.
+    To switch back to using a local Docker installation, simply remove or
+    comment out these variables in `tests/.env`.
