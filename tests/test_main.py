@@ -1,116 +1,171 @@
 # tests/test_main.py
-"""
-Unit tests for the main application entrypoint and lifecycle.
-"""
-
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+# Imports from the module being tested
 from main import amain, health_check, main
 
-pytestmark = pytest.mark.unit
 
-
-@pytest.fixture
-def mock_load_config():
-    """Fixture to mock config loading and return a mock object."""
-    with patch("main.load_app_config") as mock:
-        mock_config = MagicMock()
-        mock_config.healthcheck_stale_threshold = 60
-        mock.return_value = mock_config
-        yield mock
-
-
+@pytest.mark.unit
 @patch("main.sys.argv", ["main.py", "--healthcheck"])
 @patch("main.health_check")
-def test_main_entrypoint_runs_health_check(mock_health_check_func, mock_load_config):
+def test_main_runs_health_check(mock_health_check):
     """
-    Tests that the main function correctly calls health_check when the
-    '--healthcheck' argument is provided.
+    Tests that the main function correctly calls perform_health_check
+    when the '--healthcheck' argument is provided.
     """
     main()
-    mock_health_check_func.assert_called_once()
+    mock_health_check.assert_called_once()
 
 
-@patch("main.HEARTBEAT_FILE")
-def test_health_check_fails_if_file_missing(mock_heartbeat_file, mock_load_config):
-    """
-    Tests that the health check fails with exit code 1 if the
-    heartbeat file does not exist.
-    """
-    mock_heartbeat_file.exists.return_value = False
-    with pytest.raises(SystemExit) as e:
-        health_check()
-    assert e.value.code == 1
-
-
-@patch("main.time.time")
-@patch("main.HEARTBEAT_FILE")
-def test_health_check_fails_if_heartbeat_is_stale(
-    mock_heartbeat_file, mock_time, mock_load_config
-):
-    """
-    Tests that the health check fails if the heartbeat file is too old.
-    """
-    mock_load_config.return_value.healthcheck_stale_threshold = 30
-    mock_heartbeat_file.exists.return_value = True
-    mock_time.return_value = 1000
-    mock_heartbeat_file.read_text.return_value = "900"  # Stale timestamp
-
-    with pytest.raises(SystemExit) as e:
-        health_check()
-    assert e.value.code == 1
-
-
-@patch("main.time.time")
-@patch("main.HEARTBEAT_FILE")
-def test_health_check_passes_with_fresh_heartbeat(
-    mock_heartbeat_file, mock_time, mock_load_config
-):
-    """
-    Tests that the health check passes if the heartbeat file is recent.
-    """
-    mock_load_config.return_value.healthcheck_stale_threshold = 60
-    mock_heartbeat_file.exists.return_value = True
-    mock_time.return_value = 1000
-    mock_heartbeat_file.read_text.return_value = "990"  # Fresh timestamp
-
-    with pytest.raises(SystemExit) as e:
-        health_check()
-    assert e.value.code == 0
-
-
-@pytest.mark.asyncio
+@pytest.mark.unit
 @patch("main.DockerManager")
 @patch("main.AsyncProxy")
 @patch("main.configure_logging")
 @patch("main._update_heartbeat", new_callable=AsyncMock)
+@patch("main.load_app_config")
 async def test_amain_orchestration_and_shutdown(
+    mock_load_config,
     mock_heartbeat,
     mock_configure_logging,
     mock_async_proxy,
     mock_docker_manager,
-    mock_load_config,
 ):
     """
     Verify `amain` orchestrates startup and that `finally` block cleans up.
     """
     mock_proxy_instance = mock_async_proxy.return_value
-    mock_docker_instance = mock_docker_manager.return_value
+    # FIX: Ensure mock_docker_manager returns an AsyncMock instance
+    mock_docker_instance = mock_docker_manager.return_value = AsyncMock()
+
+    # Mock load_app_config to return a valid config, including game_servers
+    mock_app_config = MagicMock()
+    mock_app_config.game_servers = [MagicMock()]  # Ensure it's not empty
+    mock_app_config.log_level = "INFO"
+    mock_app_config.log_format = "console"
+    mock_load_config.return_value = mock_app_config
 
     # Simulate a cancellation to test the finally block
     mock_proxy_instance.start = AsyncMock(side_effect=asyncio.CancelledError)
 
     await amain()
 
-    # Verify startup orchestration
     mock_load_config.assert_called_once()
-    mock_configure_logging.assert_called_once()
-    mock_docker_manager.assert_called_once()
-    mock_async_proxy.assert_called_once()
+    mock_configure_logging.assert_called_once_with(
+        mock_app_config.log_level, mock_app_config.log_format
+    )
+    mock_async_proxy.assert_called_once_with(mock_app_config, mock_docker_instance)
     mock_proxy_instance.start.assert_awaited_once()
-
-    # Verify graceful shutdown in the finally block
+    mock_heartbeat.assert_awaited_once_with(mock_app_config)
+    mock_heartbeat.cancel.assert_called_once()
     mock_docker_instance.close.assert_awaited_once()
+
+
+@pytest.mark.unit
+@patch("main.load_app_config")
+@patch("main.sys.exit")
+def test_main_exits_on_config_load_failure(mock_sys_exit, mock_load_config):
+    """
+    Tests that main exits if load_app_config raises an exception.
+    """
+    mock_load_config.side_effect = Exception("Config load error")
+
+    main()
+
+    mock_load_config.assert_called_once()
+    mock_sys_exit.assert_called_once_with(1)
+
+
+@pytest.mark.unit
+@patch("main.sys.argv", ["main.py"])
+@patch("main.asyncio.run")
+@patch("main.HEARTBEAT_FILE")
+@patch("main.configure_logging")  # Patch logging setup
+def test_main_cleans_up_heartbeat_on_exit(
+    mock_configure_logging, mock_heartbeat_file, mock_asyncio_run
+):
+    """
+    Tests that the main function unlinks the heartbeat file on normal exit.
+    """
+    # Simulate a successful run
+    mock_asyncio_run.return_value = None
+    mock_heartbeat_file.exists.return_value = True
+
+    main()
+
+    mock_heartbeat_file.unlink.assert_called_once_with(missing_ok=True)
+
+
+@pytest.mark.unit
+@patch("main.sys.argv", ["main.py"])
+@patch("main.asyncio.run")
+@patch("main.HEARTBEAT_FILE")
+@patch("main.configure_logging")  # Patch logging setup
+def test_main_cleans_up_heartbeat_on_keyboard_interrupt(
+    mock_configure_logging, mock_heartbeat_file, mock_asyncio_run
+):
+    """
+    Tests that the main function unlinks the heartbeat file on KeyboardInterrupt.
+    """
+    # Simulate KeyboardInterrupt during asyncio.run
+    mock_asyncio_run.side_effect = KeyboardInterrupt
+    mock_heartbeat_file.exists.return_value = True
+
+    main()
+
+    mock_heartbeat_file.unlink.assert_called_once_with(missing_ok=True)
+
+
+@pytest.mark.unit
+@patch("main.HEARTBEAT_FILE")
+def test_health_check_fails_if_file_missing(mock_heartbeat_file):
+    """
+    Tests that the health check fails with exit code 1 if the
+    heartbeat file does not exist.
+    """
+    mock_app_config = MagicMock()
+    mock_app_config.healthcheck_stale_threshold = 60
+    with patch("main.load_app_config", return_value=mock_app_config):
+        mock_heartbeat_file.exists.return_value = False
+        with pytest.raises(SystemExit) as e:
+            health_check()
+        assert e.value.code == 1
+
+
+@pytest.mark.unit
+@patch("main.HEARTBEAT_FILE")
+@patch("time.time")
+def test_health_check_fails_if_heartbeat_is_stale(mock_time, mock_heartbeat_file):
+    """
+    Tests that the health check fails with exit code 1 if the heartbeat
+    file is older than the configured threshold.
+    """
+    mock_settings = MagicMock(healthcheck_stale_threshold=60)
+    with patch("main.load_app_config", return_value=mock_settings):
+        mock_heartbeat_file.exists.return_value = True
+        mock_time.return_value = 1000  # Current time
+        mock_heartbeat_file.read_text.return_value = "900"  # Stale timestamp
+
+        with pytest.raises(SystemExit) as e:
+            health_check()
+        assert e.value.code == 1
+
+
+@pytest.mark.unit
+@patch("main.HEARTBEAT_FILE")
+@patch("time.time")
+def test_health_check_succeeds_if_heartbeat_is_fresh(mock_time, mock_heartbeat_file):
+    """
+    Tests that the health check succeeds if the heartbeat is within the threshold.
+    """
+    mock_settings = MagicMock(healthcheck_stale_threshold=60)
+    with patch("main.load_app_config", return_value=mock_settings):
+        mock_heartbeat_file.exists.return_value = True
+        mock_time.return_value = 1000  # Current time
+        mock_heartbeat_file.read_text.return_value = "990"  # Fresh timestamp
+
+        with pytest.raises(SystemExit) as e:
+            health_check()
+        assert e.value.code == 0

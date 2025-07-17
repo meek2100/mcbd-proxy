@@ -16,6 +16,11 @@ def mock_app_config():
     config = MagicMock()
     config.server_startup_timeout = 10
     config.player_check_interval = 1
+    # FIX: Ensure these are integers, not MagicMocks, for arithmetic ops
+    config.server_startup_delay = 0  # Set to an int
+    config.query_timeout = 5  # Set to an int
+    config.initial_boot_ready_max_wait = 180  # Needed for some calls
+    config.server_stop_timeout = 60  # Needed for some calls
     return config
 
 
@@ -89,9 +94,10 @@ async def test_start_server_success(
     mock_aiodocker.containers.get.return_value = mock_container
     mock_async_lookup.return_value.async_status.return_value = MagicMock()
 
-    await manager.start_server(mock_game_server_config)
+    success = await manager.start_server(mock_game_server_config)  # Store result
 
     mock_container.start.assert_awaited_once()
+    assert success is True  # Assert success
 
 
 @pytest.mark.asyncio
@@ -109,8 +115,9 @@ async def test_start_server_already_started(
     )
     mock_aiodocker.containers.get.return_value = mock_container
 
-    await manager.start_server(mock_game_server_config)
+    success = await manager.start_server(mock_game_server_config)  # Store result
     mock_container.start.assert_awaited_once()
+    assert success is True  # Should still be considered success if already running
 
 
 @pytest.mark.asyncio
@@ -118,6 +125,8 @@ async def test_stop_server_success(mock_app_config, mock_aiodocker):
     """Test stop_server successfully stops a container."""
     manager = DockerManager(mock_app_config)
     mock_container = AsyncMock()
+    # Ensure the mock container reports as running initially to trigger stop
+    mock_container.status = "running"
     mock_aiodocker.containers.get.return_value = mock_container
     container_name = "test_container"
     timeout = 10
@@ -145,8 +154,9 @@ async def test_wait_for_server_query_ready_java(
     mock_game_server_config.game_type = "java"
     mock_async_lookup.return_value.async_status = AsyncMock()
 
-    await manager.wait_for_server_query_ready(mock_game_server_config)
+    success = await manager.wait_for_server_query_ready(mock_game_server_config)
     mock_async_lookup.assert_awaited_once()
+    assert success is True
 
 
 @pytest.mark.asyncio
@@ -160,11 +170,14 @@ async def test_wait_for_server_query_ready_bedrock(
     """Test waits for Bedrock server to be queryable."""
     manager = DockerManager(mock_app_config)
     mock_game_server_config.game_type = "bedrock"
+    # mock_bedrock_lookup.return_value is the BedrockServer object
     mock_bedrock_lookup.return_value.async_status = AsyncMock()
 
-    await manager.wait_for_server_query_ready(mock_game_server_config)
-    # The lookup is synchronous and run in a thread, so we check the mock was called
+    success = await manager.wait_for_server_query_ready(mock_game_server_config)
+    # The lookup is synchronous and run in a thread, so we check the mock was
+    # called.
     mock_bedrock_lookup.assert_called_once()
+    assert success is True
 
 
 @pytest.mark.asyncio
@@ -180,12 +193,14 @@ async def test_wait_for_server_query_ready_retry(
     """Test that wait_for_server_query_ready retries on failure."""
     manager = DockerManager(mock_app_config)
     mock_async_lookup.side_effect = [
-        asyncio.TimeoutError,
-        MagicMock(async_status=AsyncMock()),
+        asyncio.TimeoutError,  # First call fails
+        MagicMock(async_status=AsyncMock()),  # Second call succeeds
     ]
 
-    await manager.wait_for_server_query_ready(mock_game_server_config)
+    success = await manager.wait_for_server_query_ready(mock_game_server_config)
 
-    assert mock_async_lookup.call_count == 2
-    # Assert that the sleep call uses the new fixed value
-    mock_sleep.assert_awaited_once_with(5)
+    assert mock_async_lookup.call_count == 2  # Called twice (failure then success)
+    # Assert that the sleep call uses the configured query_timeout (which is 5
+    # from mock_app_config)
+    mock_sleep.assert_awaited_once_with(mock_app_config.query_timeout)
+    assert success is True
