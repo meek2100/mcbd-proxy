@@ -6,7 +6,7 @@ Manages Docker containers for Minecraft servers using asynchronous operations.
 import asyncio
 import time
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 
 import aiodocker
 import structlog
@@ -32,7 +32,7 @@ class DockerManager:
     @asynccontextmanager
     async def get_container(
         self, container_name: str
-    ) -> AsyncGenerator[DockerContainer | None, None]:
+    ) -> AsyncGenerator[Optional[DockerContainer], None]:
         """
         An async context manager to safely get a container object.
         Handles exceptions gracefully if the container is not found.
@@ -110,7 +110,7 @@ class DockerManager:
                         "Container is already running",
                         container_name=container_name,
                     )
-                    return True  # If already started, consider it a success
+                    return True
                 else:
                     log.error(
                         "Failed to start container",
@@ -143,22 +143,22 @@ class DockerManager:
                     )
 
     async def wait_for_server_query_ready(
-        self, server_config: GameServerConfig
+        self, server_config: GameServerConfig, timeout: Optional[int] = None
     ) -> bool:
         """
         Asynchronously waits for a Minecraft server to become queryable.
         Returns True if ready, False if it times out.
         """
         start_time = time.time()
-        timeout = self.app_config.server_startup_timeout
+        wait_timeout = timeout or self.app_config.server_startup_timeout
         query_timeout = self.app_config.query_timeout
         log.info(
             "Waiting for server to be queryable",
             container_name=server_config.container_name,
-            timeout=timeout,
+            timeout=wait_timeout,
         )
 
-        while time.time() - start_time < timeout:
+        while time.time() - start_time < wait_timeout:
             try:
                 lookup_str = f"{server_config.host}:{server_config.query_port}"
                 if server_config.game_type == "java":

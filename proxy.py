@@ -67,14 +67,12 @@ class AsyncProxy:
         log.info("Starting configuration reload. Active connections will be dropped.")
         self._reload_requested = False
 
-        # 1. Cancel all active TCP connection tasks
         for task in self.active_tcp_sessions:
             task.cancel()
         if self.active_tcp_sessions:
             await asyncio.gather(*self.active_tcp_sessions, return_exceptions=True)
         self.active_tcp_sessions.clear()
 
-        # 2. Cancel the old listener tasks
         listener_tasks = self.server_tasks.get("listeners", [])
         for task in listener_tasks:
             task.cancel()
@@ -83,13 +81,11 @@ class AsyncProxy:
         self.udp_protocols.clear()
         log.info("Old listeners and connections shut down.")
 
-        # 3. Reload config and update all dependent components
         self.app_config = load_app_config()
         self.docker_manager.app_config = self.app_config
         self.metrics_manager.app_config = self.app_config
         log.info("Config reloaded.", servers=len(self.app_config.game_servers))
 
-        # 4. Re-initialize state based on the new configuration
         self._server_state = {
             s.name: {"last_activity": 0.0, "is_running": False}
             for s in self.app_config.game_servers
@@ -102,7 +98,6 @@ class AsyncProxy:
         }
         await self._ensure_all_servers_stopped_on_startup()
 
-        # 5. Start new listeners
         self.server_tasks["listeners"] = [
             asyncio.create_task(self._start_listener(sc))
             for sc in self.app_config.game_servers
@@ -118,24 +113,17 @@ class AsyncProxy:
         for sc in self.app_config.game_servers:
             if await self.docker_manager.is_container_running(sc.container_name):
                 log.warning(
-                    "Server found running. Waiting for it to be queryable before "
-                    "issuing a safe stop.",
+                    "Server found running. Waiting up to 30s for it to be "
+                    "queryable before issuing a safe stop.",
                     server=sc.name,
                 )
-                # THIS IS THE RESTORED LOGIC: Wait for the server to be stable
-                # before trying to stop it.
-                ready = await self.docker_manager.wait_for_server_query_ready(sc)
-                if not ready:
-                    log.warning(
-                        "Server did not become ready, attempting stop anyway.",
-                        server=sc.name,
-                    )
+                # Give the server a chance to become stable, but don't wait forever
+                await self.docker_manager.wait_for_server_query_ready(sc, timeout=30)
 
                 await self.docker_manager.stop_server(
                     sc.container_name, self.app_config.server_stop_timeout
                 )
-
-                # Now, confirm it has fully stopped.
+                # Confirm it stopped to avoid race conditions in tests
                 for _ in range(self.app_config.server_stop_timeout):
                     if not await self.docker_manager.is_container_running(
                         sc.container_name
@@ -321,8 +309,6 @@ class AsyncProxy:
             if server_config.game_type == "java":
                 server = await JavaServer.async_lookup(lookup_str, timeout=3)
             else:
-                # The mcstatus library's Bedrock lookup is a synchronous,
-                # blocking operation. Run it in a separate thread.
                 server = await asyncio.to_thread(
                     BedrockServer.lookup, lookup_str, timeout=3
                 )
