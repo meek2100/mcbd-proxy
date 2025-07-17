@@ -1,4 +1,6 @@
-name: Reusable Build
+# .github/workflows/reusable-build.yml
+
+name: Reusable Docker Build and Push
 
 on:
   workflow_call:
@@ -11,20 +13,27 @@ on:
         description: "The path to the Dockerfile."
         required: false
         type: string
-        default: "Dockerfile"
+        default: "Dockerfile" # Added default
       target:
         description: "The target build stage from the Dockerfile."
         required: false
         type: string
+        # No default for 'target' as it's optional depending on Dockerfile
       push:
         description: "Whether to push the built image."
         required: false
         type: boolean
-        default: false
+        default: false # Added default
       tags:
         description: "A comma-separated list of tags for the image."
         required: false
         type: string
+        # This input will be populated by docker/metadata-action outputs in caller
+      app_version: # Reinstated this input
+        description: "Application version string for image labels."
+        required: false
+        type: string
+        default: "unknown"
 
     outputs:
       image_id:
@@ -56,24 +65,50 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # REINSTATED: Extract Docker metadata for dynamic tags and labels
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ inputs.image_name }}
+          # Use provided tags input, otherwise default to metadata action's dynamic tags
+          tags: |
+            ${{ inputs.tags || '' }} # Allow caller to provide raw tags
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+          # Explicitly define OCI labels including app_version
+          labels: |
+            org.opencontainers.image.version=${{ inputs.app_version }}
+            org.opencontainers.image.source=${{ github.event.repository.html_url }}
+            org.opencontainers.image.created=${{ steps.build-and-push.outputs.date }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
       - name: Build and push Docker image
         id: build-and-push
+        # Changed to v6 to ensure latest features and fixes
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ${{ inputs.dockerfile }}
           push: ${{ inputs.push }}
-          tags: ${{ inputs.tags }}
-          # The fix: Appending a version suffix to the cache scope.
-          # This invalidates the old cache and creates a new one.
-          cache-from: type=gh,scope=${{ github.workflow }}-${{ inputs.image_name }}-v2
-          cache-to: type=gh,scope=${{ github.workflow }}-${{ inputs.image_name }}-v2,mode=max
+          # Use tags and labels from metadata action
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Refined caching strategy using GitHub Actions cache (type=gh)
+          # Scope is dynamic by repository, workflow, and branch/tag name
+          # This provides precise caching per branch/tag and avoids pollution.
+          # -v2 suffix is for cache versioning.
+          cache-from: type=gh,scope=${{ github.repository }}-${{ github.workflow }}-\
+            ${{ github.ref_name }}
+          cache-to: type=gh,scope=${{ github.repository }}-${{ github.workflow }}-\
+            ${{ github.ref_name }},mode=max
           target: ${{ inputs.target }}
-          platforms: linux/amd64
+          platforms: linux/amd64 # Assuming linux/amd64 is desired platform
 
       - name: Set image outputs
         if: ${{ inputs.push == true }}
         id: set-outputs
         run: |
-          echo "image_id=${{ inputs.tags }}" >> $GITHUB_OUTPUT
+          # Use primary tag from metadata action for image_id output
+          echo "image_id=${{ steps.meta.outputs.tags }}" >> $GITHUB_OUTPUT
           echo "digest=${{ steps.build-and-push.outputs.digest }}" >> $GITHUB_OUTPUT
