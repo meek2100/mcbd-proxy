@@ -4,6 +4,7 @@ The main entrypoint for the Nether-bridge application.
 """
 
 import asyncio
+import json
 import logging
 import os
 import signal
@@ -39,6 +40,7 @@ def configure_logging(log_level: str, log_format: str):
 
     if log_format == "json":
         processors = shared_processors + [
+            structlog.processors.StackInfoRenderer(),  # Re-introduced
             structlog.processors.format_exc_info,
             structlog.processors.JSONRenderer(),
         ]
@@ -75,10 +77,19 @@ async def _update_heartbeat(app_config):
 
 async def amain():
     """The main asynchronous entrypoint for the application."""
-    app_config = load_app_config()  # Configuration now validated via Pydantic
+    app_config = load_app_config()
 
     # Configure logging based on the loaded app_config
     configure_logging(app_config.log_level, app_config.log_format)
+
+    # Add back APP_IMAGE_METADATA logging
+    app_metadata = os.environ.get("APP_IMAGE_METADATA")
+    if app_metadata:
+        try:
+            meta = json.loads(app_metadata)
+            log.info("Application build metadata", **meta)
+        except json.JSONDecodeError:
+            log.warning("Could not parse APP_IMAGE_METADATA", metadata=app_metadata)
 
     # Add check for loaded game servers as per the plan
     if not app_config.game_servers:
@@ -94,6 +105,8 @@ async def amain():
         proxy_server.schedule_reload()
 
     loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, proxy_server._shutdown_handler, sig)
     if hasattr(signal, "SIGHUP"):
         loop.add_signal_handler(signal.SIGHUP, sighup_handler)
 
@@ -154,16 +167,12 @@ def main():
             asyncio.run(amain())
         except KeyboardInterrupt:
             log.info("Application interrupted by user.")
-        except Exception as e:  # Catch unhandled exceptions from amain()
+        except Exception as e:
             log.critical(
                 "Unhandled exception in main application loop.", exc_info=True, error=e
             )
-            sys.exit(1)  # Exit with a non-zero code on unhandled errors
+            sys.exit(1)
         finally:
             if HEARTBEAT_FILE.exists():
                 HEARTBEAT_FILE.unlink(missing_ok=True)
                 log.info("Removed heartbeat file on shutdown.")
-
-
-if __name__ == "__main__":
-    main()

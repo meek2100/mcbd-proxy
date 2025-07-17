@@ -7,7 +7,7 @@ import asyncio
 import signal
 import time
 from unittest.mock import (
-    MagicMock,  # Added for use in proxy.py for robust client_map access
+    MagicMock,
 )
 
 import structlog
@@ -73,7 +73,6 @@ class AsyncProxy:
         self._reload_requested = False
 
         # Cancel all existing TCP sessions
-        # Use gather to await their completion gracefully
         if self.active_tcp_sessions:
             log.info(
                 "Cancelling active TCP sessions for reload.",
@@ -149,7 +148,7 @@ class AsyncProxy:
                     sc.container_name, self.app_config.server_stop_timeout
                 )
                 # Wait for container to actually be stopped/exited
-                for _ in range(self.app_config.server_stop_timeout + 5):  # Added buffer
+                for _ in range(self.app_config.server_stop_timeout + 5):
                     if not await self.docker_manager.is_container_running(
                         sc.container_name
                     ):
@@ -199,8 +198,6 @@ class AsyncProxy:
             self.server_tasks.get("monitor"),
             self.server_tasks.get("metrics"),
         ]
-        # Filter out None in case some tasks were not created
-        # (e.g. pre_warm_tasks)
         await asyncio.gather(*filter(None, all_tasks), return_exceptions=True)
 
     async def _start_listener(self, server_config: GameServerConfig):
@@ -247,14 +244,12 @@ class AsyncProxy:
                 error=str(e),
                 exc_info=True,
             )
-            # Re-raise to ensure main loop handles fatal listener errors
             raise
         finally:
             if server and server.is_serving():
                 server.close()
                 await server.wait_closed()
             if server_config.name in self.udp_protocols:
-                # Remove protocol if listener is closed
                 del self.udp_protocols[server_config.name]
 
     async def _ensure_server_started(self, server_config: GameServerConfig):
@@ -315,13 +310,13 @@ class AsyncProxy:
         try:
             while not reader.at_eof():
                 data = await reader.read(4096)
-                if not data:  # EOF or connection closed
+                if not data:
                     break
                 self.metrics_manager.inc_bytes_transferred(
                     server_name, direction, len(data)
                 )
                 writer.write(data)
-                await writer.drain()  # Ensure data is sent
+                await writer.drain()
         except asyncio.CancelledError:
             log.debug(
                 "Proxy data task cancelled.", server=server_name, direction=direction
@@ -341,9 +336,8 @@ class AsyncProxy:
                 exc_info=True,
             )
         finally:
-            # Ensure writers are closed even on error
             if not writer.is_closing():
-                await writer.close()  # FIX: Await writer.close()
+                await writer.close()
             await writer.wait_closed()
 
     async def _handle_tcp_connection(
@@ -357,7 +351,6 @@ class AsyncProxy:
         log.info("New TCP connection", client=client_addr, server=server_config.name)
 
         max_sessions = self.app_config.max_concurrent_sessions
-        # Only check max sessions if limit is set (> -1)
         if max_sessions != -1 and len(self.active_tcp_sessions) >= max_sessions:
             log.warning(
                 "Max concurrent TCP sessions reached. Rejecting connection.",
@@ -373,16 +366,13 @@ class AsyncProxy:
 
         proxy_task = None
         try:
-            # Ensure the backend server is running and ready
             await self._ensure_server_started(server_config)
 
-            # Establish connection to the backend Minecraft server
             server_reader, server_writer = await asyncio.open_connection(
                 server_config.host, server_config.port
             )
             log.info("Connected to backend server", server=server_config.name)
 
-            # Create tasks for bidirectional data proxying
             to_client_task = asyncio.create_task(
                 self._proxy_data(
                     server_reader, client_writer, server_config.name, "s2c"
@@ -396,7 +386,7 @@ class AsyncProxy:
 
             proxy_task = asyncio.gather(to_client_task, to_server_task)
             self.active_tcp_sessions[proxy_task] = server_config.name
-            await proxy_task  # Wait for both proxying tasks to complete
+            await proxy_task
         except (ConnectionRefusedError, asyncio.TimeoutError) as e:
             log.error(
                 "Could not connect to backend.",
@@ -416,10 +406,9 @@ class AsyncProxy:
             )
         finally:
             if proxy_task:
-                # Remove from active sessions regardless of how it ended
                 self.active_tcp_sessions.pop(proxy_task, None)
             if not client_writer.is_closing():
-                await client_writer.close()  # FIX: Await client_writer.close()
+                await client_writer.close()
             await client_writer.wait_closed()
             self.metrics_manager.dec_active_connections(server_config.name)
             log.info("TCP session closed", client=client_addr)
@@ -432,24 +421,22 @@ class AsyncProxy:
                 await asyncio.sleep(self.app_config.player_check_interval)
             except asyncio.CancelledError:
                 log.info("Server activity monitor task cancelled.")
-                break  # Exit loop on cancellation
+                break
 
             if self._reload_requested:
                 await self._reload_configuration()
-                continue  # Restart loop after reload
+                continue
 
             for sc in self.app_config.game_servers:
                 is_running = await self.docker_manager.is_container_running(
                     sc.container_name
                 )
-                # Update internal state based on actual container status
                 self._server_state[sc.name]["is_running"] = is_running
 
                 if not is_running:
-                    continue  # Server is already stopped, no need to check idle
+                    continue
 
                 # Count active sessions for this specific server
-                # FIX: Ensure default value has client_map for len() check
                 udp_protocols_for_server = self.udp_protocols.get(
                     sc.name, MagicMock(client_map={})
                 )
@@ -459,22 +446,29 @@ class AsyncProxy:
                 )
 
                 if (tcp_sessions + udp_sessions) > 0:
-                    self._update_activity(sc.name)  # Update activity if players present
+                    self._update_activity(sc.name)
                     continue
 
                 # Server is running but has no active sessions, check idle timeout
+                # Use per-server idle_timeout if defined, else global idle_timeout
+                idle_timeout_for_server = (
+                    sc.idle_timeout
+                    if sc.idle_timeout is not None
+                    else self.app_config.idle_timeout
+                )
                 idle_time = time.time() - self._server_state[sc.name]["last_activity"]
-                if idle_time > self.app_config.idle_timeout:
+                if idle_time > idle_timeout_for_server:
                     log.info(
                         "Server idle with 0 players. Stopping.",
                         server=sc.name,
                         idle_seconds=int(idle_time),
+                        configured_idle_timeout=idle_timeout_for_server,
                     )
                     await self.docker_manager.stop_server(
                         sc.container_name, self.app_config.server_stop_timeout
                     )
                     self._server_state[sc.name]["is_running"] = False
-                    self._ready_events[sc.name].clear()  # Clear ready state
+                    self._ready_events[sc.name].clear()
                     log.info("Server stopped.", server=sc.name)
 
 
@@ -487,10 +481,8 @@ class BedrockProtocol(asyncio.DatagramProtocol):
     def __init__(self, proxy: AsyncProxy, server_config: GameServerConfig):
         self.proxy = proxy
         self.server_config = server_config
-        self.transport = None  # The transport for the *listening* UDP socket
-        self.client_map = {}  # Maps client_addr -> {'task': task,
-        # 'last_activity': float, 'protocol': BackendProtocol}
-        # Start background task to monitor and cleanup idle UDP clients
+        self.transport = None
+        self.client_map = {}
         self.cleanup_task = asyncio.create_task(self._monitor_idle_clients())
         super().__init__()
 
@@ -504,10 +496,10 @@ class BedrockProtocol(asyncio.DatagramProtocol):
                 server=self.server_config.name,
             )
             if client_info.get("task"):
-                client_info.get("task").cancel()  # Cancel backend connection task
+                client_info.get("task").cancel()
             protocol = client_info.get("protocol")
             if protocol and protocol.transport:
-                protocol.transport.close()  # Close backend transport
+                protocol.transport.close()
             self.proxy.metrics_manager.dec_active_connections(self.server_config.name)
 
     async def _monitor_idle_clients(self):
@@ -519,10 +511,14 @@ class BedrockProtocol(asyncio.DatagramProtocol):
                 log.info(
                     "UDP client monitor task cancelled.", server=self.server_config.name
                 )
-                break  # Exit loop on cancellation
-            idle_timeout = self.proxy.app_config.idle_timeout
+                break
+            # Use per-server idle_timeout if defined, else global idle_timeout
+            idle_timeout = (
+                self.server_config.idle_timeout
+                if self.server_config.idle_timeout is not None
+                else self.proxy.app_config.idle_timeout
+            )
             now = time.time()
-            # Iterate over a copy of keys to allow modification during iteration
             for addr, info in list(self.client_map.items()):
                 if now - info.get("last_activity", 0) > idle_timeout:
                     self._cleanup_client(addr)
@@ -546,27 +542,24 @@ class BedrockProtocol(asyncio.DatagramProtocol):
                     max_sessions=max_sessions,
                     server=self.server_config.name,
                 )
-                return  # Drop packet if max sessions reached
+                return
 
             log.info("New UDP client", client=addr, server=self.server_config.name)
             self.proxy.metrics_manager.inc_active_connections(self.server_config.name)
             loop = asyncio.get_running_loop()
-            # Create a task to handle backend connection and initial data send
             task = loop.create_task(self._create_backend_connection(addr, data))
             self.client_map[addr] = {"task": task, "last_activity": time.time()}
         else:
-            # Update last activity and forward data for existing clients
             self.client_map[addr]["last_activity"] = time.time()
             backend_protocol = self.client_map[addr].get("protocol")
             if backend_protocol and backend_protocol.transport:
-                backend_protocol.transport.sendto(data)  # Forward to backend
+                backend_protocol.transport.sendto(data)
 
     async def _create_backend_connection(self, client_addr: tuple, initial_data: bytes):
         """
         Establishes a backend UDP connection and sends initial data.
         """
         try:
-            # Ensure the backend server is running and ready before connecting
             await self.proxy._ensure_server_started(self.server_config)
 
             loop = asyncio.get_running_loop()
@@ -576,10 +569,8 @@ class BedrockProtocol(asyncio.DatagramProtocol):
                 ),
                 remote_addr=(self.server_config.host, self.server_config.port),
             )
-            # Store the backend protocol for future data forwarding
-            if client_addr in self.client_map:  # Check if client still active
+            if client_addr in self.client_map:
                 self.client_map[client_addr]["protocol"] = protocol
-            # Send the initial buffered data
             if transport and not transport.is_closing():
                 transport.sendto(initial_data)
         except (ConnectionRefusedError, asyncio.TimeoutError) as e:
@@ -590,7 +581,7 @@ class BedrockProtocol(asyncio.DatagramProtocol):
                 error=str(e),
                 exc_info=True,
             )
-            self._cleanup_client(client_addr)  # Clean up client if backend fails
+            self._cleanup_client(client_addr)
         except asyncio.CancelledError:
             log.debug("Backend connection task cancelled.", client=client_addr)
             self._cleanup_client(client_addr)
@@ -605,7 +596,6 @@ class BedrockProtocol(asyncio.DatagramProtocol):
             self._cleanup_client(client_addr)
 
     def connection_lost(self, exc):
-        # This is called when the *listening* UDP socket is closed.
         if exc:
             log.error(
                 "UDP listener connection lost due to error.",
@@ -616,11 +606,10 @@ class BedrockProtocol(asyncio.DatagramProtocol):
             log.info("UDP listener connection lost.", server=self.server_config.name)
 
         if self.transport and not self.transport.is_closing():
-            self.transport.close()  # Close the listening transport
-        self.cleanup_task.cancel()  # Cancel the idle client monitor task
+            self.transport.close()
+        self.cleanup_task.cancel()
 
-        # Clean up all active UDP client sessions for this server
-        for addr in list(self.client_map.keys()):  # Iterate over copy
+        for addr in list(self.client_map.keys()):
             self._cleanup_client(addr)
 
 
@@ -636,9 +625,9 @@ class BackendProtocol(asyncio.DatagramProtocol):
     ):
         self.proxy = proxy
         self.server_config = server_config
-        self.client_transport = client_transport  # The main listening proxy transport
-        self.client_addr = client_addr  # Original client's address
-        self.transport = None  # This protocol's transport (to backend server)
+        self.client_transport = client_transport
+        self.client_addr = client_addr
+        self.transport = None
         super().__init__()
 
     def connection_made(self, transport: asyncio.DatagramTransport):
@@ -650,7 +639,6 @@ class BackendProtocol(asyncio.DatagramProtocol):
         )
 
     def datagram_received(self, data: bytes, _addr: tuple):
-        # Data received from the backend Minecraft server, forward to client
         self.proxy.metrics_manager.inc_bytes_transferred(
             self.server_config.name, "s2c", len(data)
         )
@@ -663,7 +651,6 @@ class BackendProtocol(asyncio.DatagramProtocol):
             )
 
     def connection_lost(self, exc):
-        # This is called when the backend UDP socket is closed.
         if exc:
             log.error(
                 "Backend UDP connection lost due to error.",
@@ -679,5 +666,3 @@ class BackendProtocol(asyncio.DatagramProtocol):
             )
         if self.transport and not self.transport.is_closing():
             self.transport.close()
-        # No need to cleanup client via proxy._cleanup_client here,
-        # as it's the backend side. Client cleanup is handled by idle monitor.

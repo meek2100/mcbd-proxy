@@ -52,6 +52,14 @@ class GameServerConfig(BaseModel):
     pre_warm: bool = Field(
         False, description="If true, start this server when the proxy starts."
     )
+    idle_timeout: Optional[int] = Field(
+        None,
+        alias="idle_timeout_seconds",
+        description=(
+            "Seconds a server must be idle (0 players) to be stopped. "
+            "Overrides global idle_timeout."
+        ),
+    )
 
     def model_post_init(self, __context):
         """Set query_port and host to sane defaults if not defined."""
@@ -112,6 +120,7 @@ def load_app_config() -> AppConfig:
                 "query_port": os.getenv(f"NB_{i}_QUERY_PORT"),
                 "pre_warm": os.getenv(f"NB_{i}_PRE_WARM", "false").lower()
                 in ("true", "1", "yes"),
+                "idle_timeout_seconds": os.getenv(f"NB_{i}_IDLE_TIMEOUT"),
             }
             game_servers.append(
                 GameServerConfig.model_validate(
