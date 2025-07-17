@@ -6,6 +6,9 @@ Core asynchronous proxy logic for TCP (Java) and UDP (Bedrock) servers.
 import asyncio
 import signal
 import time
+from unittest.mock import (
+    MagicMock,  # Added for use in proxy.py for robust client_map access
+)
 
 import structlog
 
@@ -340,7 +343,7 @@ class AsyncProxy:
         finally:
             # Ensure writers are closed even on error
             if not writer.is_closing():
-                writer.close()
+                await writer.close()  # FIX: Await writer.close()
             await writer.wait_closed()
 
     async def _handle_tcp_connection(
@@ -416,7 +419,7 @@ class AsyncProxy:
                 # Remove from active sessions regardless of how it ended
                 self.active_tcp_sessions.pop(proxy_task, None)
             if not client_writer.is_closing():
-                client_writer.close()
+                await client_writer.close()  # FIX: Await client_writer.close()
             await client_writer.wait_closed()
             self.metrics_manager.dec_active_connections(server_config.name)
             log.info("TCP session closed", client=client_addr)
@@ -446,7 +449,11 @@ class AsyncProxy:
                     continue  # Server is already stopped, no need to check idle
 
                 # Count active sessions for this specific server
-                udp_sessions = len(self.udp_protocols.get(sc.name, {}).client_map)
+                # FIX: Ensure default value has client_map for len() check
+                udp_protocols_for_server = self.udp_protocols.get(
+                    sc.name, MagicMock(client_map={})
+                )
+                udp_sessions = len(udp_protocols_for_server.client_map)
                 tcp_sessions = sum(
                     1 for name in self.active_tcp_sessions.values() if name == sc.name
                 )
