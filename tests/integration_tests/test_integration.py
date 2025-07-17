@@ -14,12 +14,13 @@ import tarfile
 
 import pytest
 import pytest_asyncio
-import structlog  # Import structlog
+import structlog
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from docker_manager import DockerManager
 from tests.helpers import (
+    BEDROCK_UNCONNECTED_PING,  # Import the consolidated constant
     check_port_listening,
     get_active_sessions_metric,
     get_proxy_host,
@@ -145,7 +146,7 @@ async def test_bedrock_server_lifecycle(
     transport, _ = await loop.create_datagram_endpoint(
         lambda: asyncio.DatagramProtocol(), remote_addr=(PROXY_HOST, proxy_port)
     )
-    transport.sendto(b"\x01\x00\x00\x00\x00\x01\x23\x45\x67\x89\xab\xcd\xef")
+    transport.sendto(BEDROCK_UNCONNECTED_PING)  # Use the consolidated constant
     transport.close()
 
     # Assert proxy logs the startup

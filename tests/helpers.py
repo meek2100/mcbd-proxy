@@ -4,21 +4,97 @@ Asynchronous helper functions for testing.
 """
 
 import asyncio
-import os
+import os  # Added for path manipulation
 import re
+import sys  # Added for sys.path manipulation
 
 import aiodocker
-import requests  # Import requests for metrics querying
+import requests
 import structlog
 from mcstatus import BedrockServer, JavaServer
 
 log = structlog.get_logger()
 
 
+def add_project_root_to_path():
+    """
+    Adds the project's root directory to sys.path.
+    This allows test files in subdirectories to import modules from the root.
+    Should be called once at the beginning of each test script that needs it.
+    """
+    # Get the directory of the current file (helpers.py)
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    # Go up two levels to reach the project root
+    project_root = os.path.abspath(os.path.join(current_dir, "..", ".."))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+
+
+# --- Minecraft Protocol Constants and Helpers ---
+
+# The raw packet for a Bedrock Edition "Unconnected Ping".
+BEDROCK_UNCONNECTED_PING = (
+    b"\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\x00\xfe\xfe\xfe\xfe"
+    b"\xfd\xfd\xfd\xfd\x12\x34\x56\x78\x00\x00\x00\x00\x00\x00\x00\x00"
+)
+
+
+def encode_varint(value: int) -> bytes:
+    """Helper to encode VarInt for Java protocol."""
+    buf = b""
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if value != 0:
+            byte |= 0x80
+        buf += bytes([byte])
+        if value == 0:
+            break
+    return buf
+
+
+def get_java_handshake_and_status_request_packets(
+    host: str, port: int
+) -> tuple[bytes, bytes]:
+    """
+    Constructs the two packets needed to request a status from a Java server.
+    """
+    server_address_bytes = host.encode("utf-8")
+    # Protocol version for 1.20.1 is 754. Adapt this if targeting different
+    # Minecraft Java versions that change protocol.
+    protocol_version = 754
+    next_state_status = 1  # Next state for status request
+
+    handshake_payload = (
+        encode_varint(protocol_version)
+        + encode_varint(len(server_address_bytes))
+        + server_address_bytes
+        + port.to_bytes(2, byteorder="big")
+        + encode_varint(next_state_status)
+    )
+    # Packet ID for Handshake is 0x00
+    handshake_packet = (
+        encode_varint(len(handshake_payload) + 1) + b"\x00" + handshake_payload
+    )
+
+    status_request_payload = b""
+    # Packet ID for Status Request is 0x00 (within status state)
+    status_request_packet = (
+        encode_varint(len(status_request_payload) + 1)
+        + b"\x00"
+        + status_request_payload
+    )
+
+    return handshake_packet, status_request_packet
+
+
+# --- Test Environment Specific Helpers ---
+
+
 def get_proxy_host() -> str:
     """
     Determines the correct IP address or hostname for the proxy.
-    This restores the logic from the original test suite to support
+    It checks the environment in a specific order of precedence to support
     different testing scenarios (in-container, remote host, CI).
     """
     # In CI or when tests run inside a container, use the service name.
@@ -41,7 +117,7 @@ async def wait_for_container_status(
     docker_client: aiodocker.Docker,
     container_name: str,
     expected_status: str,
-    timeout=60,
+    timeout: int = 60,
 ) -> bool:
     """Asynchronously waits for a container to reach the expected status."""
     log.info(
@@ -80,7 +156,7 @@ async def wait_for_container_status(
 
 
 async def wait_for_mc_server_ready(
-    server_type: str, host: str, port: int, timeout=120, initial_delay=5
+    server_type: str, host: str, port: int, timeout: int = 120, initial_delay: int = 5
 ) -> bool:
     """Asynchronously waits for a Minecraft server to become queryable."""
     log.info(
@@ -122,7 +198,9 @@ async def wait_for_mc_server_ready(
     return False
 
 
-async def check_port_listening(host: str, port: int, protocol="tcp", timeout=1) -> bool:
+async def check_port_listening(
+    host: str, port: int, protocol: str = "tcp", timeout: int = 1
+) -> bool:
     """Asynchronously checks if a port is actively listening."""
     if protocol == "tcp":
         try:
