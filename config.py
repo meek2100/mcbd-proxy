@@ -77,6 +77,14 @@ class AppConfig(BaseModel):
     is_prometheus_enabled: bool = Field(True, alias="NB_PROMETHEUS_ENABLED")
     prometheus_port: int = Field(8000, alias="NB_PROMETHEUS_PORT")
     healthcheck_stale_threshold: int = Field(60, alias="NB_HEALTHCHECK_STALE_THRESHOLD")
+    # Restored from original implementation
+    initial_boot_ready_max_wait: int = Field(
+        180, alias="NB_INITIAL_BOOT_READY_MAX_WAIT"
+    )
+    server_startup_delay: int = Field(5, alias="NB_SERVER_STARTUP_DELAY")
+    initial_server_query_delay: int = Field(10, alias="NB_INITIAL_SERVER_QUERY_DELAY")
+    tcp_listen_backlog: int = Field(128, alias="NB_TCP_LISTEN_BACKLOG")
+    max_concurrent_sessions: int = Field(-1, alias="NB_MAX_SESSIONS")
 
 
 def load_app_config() -> AppConfig:
