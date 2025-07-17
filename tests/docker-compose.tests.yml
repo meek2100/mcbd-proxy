@@ -39,14 +39,14 @@ services:
     build:
       context: ./images/mc-bedrock
       dockerfile: Dockerfile.mc-bedrock
-      network: host
+      # network: host # CRITICAL FIX: Removed to use mc-network
       args:
         BEDROCK_VERSION: ${BEDROCK_VERSION}
         BEDROCK_DOWNLOAD_URL: ${BEDROCK_DOWNLOAD_URL}
     image: minecraft-bedrock-server:local
     restart: "no"
     container_name: mc-bedrock
-    networks:
+    networks: # CRITICAL FIX: Added to put on the correct network
       - mc-network
     # volumes:
     #   - mc-bedrock-data:/data
@@ -60,14 +60,14 @@ services:
     build:
       context: ./images/mc-java
       dockerfile: Dockerfile.mc-java
-      network: host
+      # network: host # CRITICAL FIX: Removed to use mc-network
       args:
         JAVA_TYPE: ${JAVA_TYPE}
         JAVA_VERSION: ${JAVA_VERSION}
     image: minecraft-server:local
     restart: "no"
     container_name: mc-java
-    networks:
+    networks: # CRITICAL FIX: Added to put on the correct network
       - mc-network
     # volumes:
     #   - mc-java-data:/data
@@ -80,7 +80,7 @@ services:
       - IDLE_TIMEOUT=-1
       - ONLINE_MODE=FALSE
       - SKIP_PAPER_PATCH_DOWNLOAD=TRUE
-      
+
   nb-tester:
     image: nb-tester:local
     container_name: nb-tester
