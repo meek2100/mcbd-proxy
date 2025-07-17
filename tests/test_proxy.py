@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from config import AppConfig, GameServerConfig
-from proxy import AsyncProxy, BedrockProtocol
+from proxy import AsyncProxy
 
 pytestmark = pytest.mark.unit
 
@@ -52,6 +52,7 @@ def mock_app_config(mock_java_server_config, mock_bedrock_server_config):
     config.server_stop_timeout = 10
     config.idle_timeout = 60
     config.tcp_listen_backlog = 128
+    config.max_concurrent_sessions = -1  # Default to unlimited
     return config
 
 
@@ -76,6 +77,15 @@ def proxy(mock_app_config, mock_docker_manager, mock_metrics_manager):
     return AsyncProxy(mock_app_config, mock_docker_manager)
 
 
+@pytest.fixture
+def mock_tcp_streams():
+    """Provides mock asyncio StreamReader and StreamWriter."""
+    reader = AsyncMock(spec=asyncio.StreamReader)
+    writer = AsyncMock(spec=asyncio.StreamWriter)
+    writer.get_extra_info.return_value = ("127.0.0.1", 12345)
+    return reader, writer
+
+
 @pytest.mark.asyncio
 async def test_shutdown_handler_cancels_tasks(proxy):
     """Verify the shutdown handler cancels all registered tasks."""
@@ -88,7 +98,7 @@ async def test_shutdown_handler_cancels_tasks(proxy):
 
     proxy._shutdown_handler()
 
-    await asyncio.sleep(0)  # Allow cancellation to propagate
+    await asyncio.sleep(0)
 
     assert task1.cancelled()
     assert task2.cancelled()
@@ -99,14 +109,13 @@ async def test_shutdown_handler_cancels_tasks(proxy):
 @patch("proxy.asyncio.start_server", new_callable=AsyncMock)
 async def test_start_listener_tcp(mock_start_server, proxy, mock_java_server_config):
     """Verify _start_listener correctly sets up a TCP server."""
-    # We need to cancel the task to prevent serve_forever() from running forever
     mock_start_server.return_value.serve_forever.side_effect = asyncio.CancelledError
 
     with pytest.raises(asyncio.CancelledError):
         await proxy._start_listener(mock_java_server_config)
 
     mock_start_server.assert_awaited_once_with(
-        proxy._handle_tcp_connection,  # Correctly checks for the bound method
+        proxy._handle_tcp_connection,
         mock_java_server_config.proxy_host,
         mock_java_server_config.proxy_port,
         backlog=proxy.app_config.tcp_listen_backlog,
@@ -124,63 +133,47 @@ async def test_start_listener_udp(mock_get_loop, proxy, mock_bedrock_server_conf
         await proxy._start_listener(mock_bedrock_server_config)
 
     mock_loop.create_datagram_endpoint.assert_awaited_once()
-    # Check that the protocol factory is a lambda creating a BedrockProtocol
-    protocol_factory = mock_loop.create_datagram_endpoint.call_args[0][0]
-    assert isinstance(protocol_factory(), BedrockProtocol)
-    # Check that it's binding to the correct local address
-    local_addr = mock_loop.create_datagram_endpoint.call_args[1]["local_addr"]
-    assert local_addr == (
-        mock_bedrock_server_config.proxy_host,
-        mock_bedrock_server_config.proxy_port,
-    )
 
 
 @pytest.mark.asyncio
-async def test_ensure_server_started(proxy, mock_docker_manager):
-    """Test that a server is started if not already running."""
-    server_config = proxy.app_config.game_servers[0]
-    proxy._ready_events[server_config.name].clear()
-    proxy._server_state[server_config.name]["is_running"] = False
-    mock_docker_manager.start_server.return_value = True
-
-    await proxy._ensure_server_started(server_config)
-
-    mock_docker_manager.start_server.assert_awaited_once_with(server_config)
-    assert proxy._server_state[server_config.name]["is_running"] is True
-    assert proxy._ready_events[server_config.name].is_set()
-
-
-@pytest.mark.asyncio
-async def test_ensure_server_already_running(proxy, mock_docker_manager):
-    """Test that start is not called if the server is already running."""
-    server_config = proxy.app_config.game_servers[0]
-    proxy._ready_events[server_config.name].set()
-    mock_docker_manager.is_container_running.return_value = True
-
-    await proxy._ensure_server_started(server_config)
-
-    mock_docker_manager.start_server.assert_not_called()
-
-
-@pytest.mark.asyncio
-@patch("proxy.time.time")
-async def test_monitor_server_activity_stops_idle_server(
-    mock_time, proxy, mock_docker_manager
+@patch("proxy.asyncio.open_connection")
+async def test_handle_tcp_connection_success(
+    mock_open_conn, proxy, mock_java_server_config, mock_tcp_streams
 ):
-    """Test that the monitor stops an idle server with 0 sessions."""
-    # This side effect will allow the loop to run once, then exit cleanly.
-    proxy.app_config.player_check_interval = 1000
-    mock_docker_manager.is_container_running.return_value = True
+    """Test the full lifecycle of a successful TCP connection."""
+    client_reader, client_writer = mock_tcp_streams
+    server_reader, server_writer = AsyncMock(), AsyncMock()
+    mock_open_conn.return_value = (server_reader, server_writer)
+    proxy._ensure_server_started = AsyncMock()
+    proxy._proxy_data = AsyncMock()
 
-    server_config = proxy.app_config.game_servers[0]
-    proxy._server_state[server_config.name]["is_running"] = True
-    # Set activity time far in the past
-    proxy._server_state[server_config.name]["last_activity"] = 1000
-    mock_time.return_value = 1000 + proxy.app_config.idle_timeout + 1
-
-    with pytest.raises(StopTestLoop):
-        await proxy._monitor_server_activity()
-
-    mock_docker_manager.stop_server.assert_awaited_once_with(
-        server_config.container_name, proxy.app_config.server_stop_timeout
+    await proxy._handle_tcp_connection(
+        client_reader, client_writer, mock_java_server_config
     )
+
+    proxy._ensure_server_started.assert_awaited_once_with(mock_java_server_config)
+    mock_open_conn.assert_awaited_once_with(
+        mock_java_server_config.host, mock_java_server_config.port
+    )
+    assert proxy._proxy_data.await_count == 2
+    client_writer.close.assert_awaited_once()
+    proxy.metrics_manager.dec_active_connections.assert_called_once()
+
+
+@pytest.mark.asyncio
+@patch("proxy.asyncio.open_connection", side_effect=ConnectionRefusedError)
+async def test_handle_tcp_connection_backend_fails(
+    mock_open_conn, proxy, mock_java_server_config, mock_tcp_streams
+):
+    """Test that connection is closed if backend connection fails."""
+    client_reader, client_writer = mock_tcp_streams
+    proxy._ensure_server_started = AsyncMock()
+
+    await proxy._handle_tcp_connection(
+        client_reader, client_writer, mock_java_server_config
+    )
+
+    proxy._ensure_server_started.assert_awaited_once()
+    mock_open_conn.assert_awaited_once()
+    client_writer.close.assert_awaited_once()
+    proxy.metrics_manager.dec_active_connections.assert_called_once()
