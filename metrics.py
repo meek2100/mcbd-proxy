@@ -29,6 +29,12 @@ server_status_gauge = Gauge(
     ["server"],
 )
 
+# New: Gauge for the total count of running servers (aggregate)
+total_running_servers_gauge = Gauge(
+    "netherbridge_total_running_servers",
+    "Total count of Minecraft server containers currently running",
+)
+
 # Histogram to track the time it takes for servers to start.
 server_startup_duration_histogram = Histogram(
     "netherbridge_server_startup_duration_seconds",
@@ -59,6 +65,8 @@ class MetricsManager:
             for server in self.app_config.game_servers:
                 active_connections_gauge.labels(server=server.name).set(0)
                 server_status_gauge.labels(server=server.name).set(0)
+            # Initialize aggregate gauge
+            total_running_servers_gauge.set(0)
             log.info("MetricsManager initialized for Prometheus.")
         else:
             log.info("Prometheus is disabled. MetricsManager will not run.")
@@ -109,10 +117,12 @@ class MetricsManager:
 
     async def _update_server_status_periodically(self):
         """
-        Periodically checks and updates the running status of each server container.
+        Periodically checks and updates the running status of each server
+        container and the total count.
         """
         log.info("Starting periodic server status updater for metrics.")
         while True:
+            running_count = 0
             for server in self.app_config.game_servers:
                 try:
                     is_running = await self.docker_manager.is_container_running(
@@ -121,11 +131,15 @@ class MetricsManager:
                     server_status_gauge.labels(server=server.name).set(
                         1 if is_running else 0
                     )
+                    if is_running:
+                        running_count += 1
                 except Exception:
                     log.error(
                         "Error updating server status metric",
                         server=server.name,
                         exc_info=True,
                     )
+            # Update the aggregate running servers count
+            total_running_servers_gauge.set(running_count)
             # CORRECTED: Use the correct attribute from the AppConfig model
             await asyncio.sleep(self.app_config.player_check_interval)
