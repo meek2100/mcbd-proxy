@@ -91,7 +91,6 @@ def bedrock_protocol(proxy, mock_bedrock_server_config):
     """Fixture for a BedrockProtocol instance with a mocked proxy."""
     protocol = BedrockProtocol(proxy, mock_bedrock_server_config)
     protocol.transport = AsyncMock()
-    # Cancel the real cleanup task so we can test it in isolation
     protocol.cleanup_task.cancel()
     return protocol
 
@@ -194,7 +193,6 @@ async def test_proxy_data_flow(proxy, mock_metrics_manager):
     """Test the _proxy_data method forwards data and updates metrics."""
     mock_reader = AsyncMock(spec=asyncio.StreamReader)
     mock_writer = AsyncMock(spec=asyncio.StreamWriter)
-
     test_data = b"some test data"
     mock_reader.read.side_effect = [test_data, b""]
     mock_reader.at_eof.side_effect = [False, True]
@@ -209,6 +207,37 @@ async def test_proxy_data_flow(proxy, mock_metrics_manager):
     )
     mock_writer.close.assert_awaited_once()
     mock_writer.wait_closed.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("proxy.load_app_config")
+@patch("proxy.asyncio.create_task")
+async def test_reload_configuration(
+    mock_create_task, mock_load_config, proxy, mock_bedrock_server_config
+):
+    """Verify the configuration reload process."""
+    # Setup initial state
+    old_listener_task = AsyncMock()
+    proxy.server_tasks["listeners"] = [old_listener_task]
+
+    # Setup new config to be loaded
+    new_config = MagicMock(spec=AppConfig)
+    new_config.game_servers = [mock_bedrock_server_config]  # Only one server
+    mock_load_config.return_value = new_config
+
+    proxy._ensure_all_servers_stopped_on_startup = AsyncMock()
+
+    await proxy._reload_configuration()
+
+    # Verify old tasks were cancelled
+    old_listener_task.cancel.assert_called_once()
+    # Verify new config was loaded and applied
+    mock_load_config.assert_called_once()
+    assert proxy.docker_manager.app_config == new_config
+    assert proxy.metrics_manager.app_config == new_config
+    # Verify cleanup and restart logic was called
+    proxy._ensure_all_servers_stopped_on_startup.assert_awaited_once()
+    mock_create_task.assert_called_once()  # For the new bedrock server listener
 
 
 # --- BedrockProtocol Unit Tests ---
@@ -238,7 +267,10 @@ def test_bedrock_datagram_received_existing_client(bedrock_protocol):
     data = b"existing client data"
     mock_backend_protocol = MagicMock()
     mock_backend_protocol.transport.sendto = MagicMock()
-    bedrock_protocol.client_map[addr] = {"protocol": mock_backend_protocol}
+    bedrock_protocol.client_map[addr] = {
+        "protocol": mock_backend_protocol,
+        "last_activity": 0,
+    }
 
     bedrock_protocol.datagram_received(data, addr)
 
@@ -252,14 +284,13 @@ async def test_bedrock_monitor_idle_clients(
     mock_sleep, mock_time, bedrock_protocol, proxy
 ):
     """Test that the idle client monitor correctly cleans up stale sessions."""
-    # This side effect will allow the loop to run once, then exit cleanly.
     mock_sleep.side_effect = StopTestLoop
 
     idle_addr = ("1.1.1.1", 11111)
     active_addr = ("2.2.2.2", 22222)
     bedrock_protocol.client_map = {
-        idle_addr: {"last_activity": 1000},  # Stale
-        active_addr: {"last_activity": 2000},  # Fresh
+        idle_addr: {"last_activity": 1000},
+        active_addr: {"last_activity": 2000},
     }
     bedrock_protocol._cleanup_client = MagicMock()
 
