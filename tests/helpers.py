@@ -4,12 +4,35 @@ Asynchronous helper functions for testing.
 """
 
 import asyncio
+import os
 
 import aiodocker
 import structlog
 from mcstatus import BedrockServer, JavaServer
 
 log = structlog.get_logger()
+
+
+def get_proxy_host() -> str:
+    """
+    Determines the correct IP address or hostname for the proxy.
+    This restores the logic from the original test suite to support
+    different testing scenarios (in-container, remote host, CI).
+    """
+    # In CI or when tests run inside a container, use the service name.
+    if os.environ.get("CI_MODE") or os.environ.get("NB_TEST_MODE") == "container":
+        return "nether-bridge"
+
+    # For remote testing, an explicit IP can be provided.
+    if "PROXY_IP" in os.environ:
+        return os.environ["PROXY_IP"]
+
+    # The original also correctly checked for DOCKER_HOST_IP for remote tests.
+    if "DOCKER_HOST_IP" in os.environ:
+        return os.environ["DOCKER_HOST_IP"]
+
+    # Fallback for local runs on the host machine.
+    return "127.0.0.1"
 
 
 async def wait_for_container_status(
