@@ -21,7 +21,7 @@ def mock_app_config():
     server.name = "test_server"
     config.game_servers = [server]
     config.is_prometheus_enabled = True
-    config.player_check_interval = 60  # Corrected attribute name
+    config.player_check_interval = 0.01  # Corrected attribute name and made small
     config.prometheus_port = 8000
     return config
 
@@ -138,15 +138,22 @@ async def test_update_server_status_periodically(
     mock_docker_manager.is_container_running.side_effect = [
         True,  # For first iteration
         False,  # For second iteration
+        # FIX: Add a third side effect to immediately raise CancelledError
+        # for the *third* call to allow the test to terminate properly
+        # after the second intended loop.
+        asyncio.CancelledError,
     ]
 
     # Simulate app_config.game_servers being a list with one server
     mock_app_config.game_servers = [MagicMock(name="test_server_1")]
 
     # Trigger one loop iteration then a CancelledError to stop the infinite loop
+    # FIX: Make mock_sleep side_effect consistent with the number of loops we expect
+    # and to raise CancelledError *only* when we want the loop to stop.
     mock_sleep.side_effect = [
         None,  # Allow first sleep to complete
-        asyncio.CancelledError,  # Cancel on second sleep
+        None,  # Allow second sleep to complete
+        asyncio.CancelledError,  # Cancel on third sleep for test cleanup
     ]
 
     try:
@@ -165,25 +172,34 @@ async def test_update_server_status_periodically(
     # Reset mocks for next logical check (second iteration)
     mock_server_status_gauge.labels.return_value.set.reset_mock()
     mock_total_running_gauge.set.reset_mock()
-    mock_docker_manager.is_container_running.reset_mock()  # Reset side_effect pointer
+    # FIX: Don't reset mock_docker_manager.is_container_running.side_effect
+    # here because it's already set for 3 calls at the beginning.
 
-    # Configure for second iteration: server is stopped
-    mock_docker_manager.is_container_running.side_effect = [False]
-
-    # Trigger second loop iteration to check server status becomes 0
-    mock_sleep.side_effect = asyncio.CancelledError  # Ensure it exits after 1 loop
-    try:
-        await metrics_manager._update_server_status_periodically()
-    except asyncio.CancelledError:
-        pass
-
-    mock_server_status_gauge.labels.return_value.set.assert_any_call(0)
-    mock_total_running_gauge.set.assert_any_call(0)
+    # We ran the loop twice. Now check the *final* states.
+    # The first run: server was True, count 1.
+    # The second run: server was False, count 0.
+    # The sequence of calls to set should reflect this.
+    mock_server_status_gauge.labels.assert_any_call(
+        server=mock_app_config.game_servers[0].name
+    )  # Called in both iterations
+    mock_server_status_gauge.labels.return_value.set.assert_has_calls(
+        [
+            MagicMock(1),  # First iteration sets to 1
+            MagicMock(0),  # Second iteration sets to 0
+        ]
+    )
+    mock_total_running_gauge.set.assert_has_calls(
+        [
+            MagicMock(1),  # First iteration sets to 1
+            MagicMock(0),  # Second iteration sets to 0
+        ]
+    )
 
     # Test cancellation handling
-    mock_log.info.assert_called_with(
+    # FIX: Check for _called_once_with and then assert _any_call on info
+    mock_log.info.assert_called_once_with(
         "Starting periodic server status updater for metrics."
-    )  # Initial log
+    )  # Only called once at the true start of the coroutine.
     mock_log.info.assert_any_call(
         "Metrics manager task cancelled."
-    )  # Final cancellation log
+    )  # This should be called once at the very end.

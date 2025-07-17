@@ -93,7 +93,11 @@ async def test_amain_orchestration_and_shutdown(
         # Mock create_task to return a cancellable AsyncMock
         mock_heartbeat_task = AsyncMock()
         # Ensure create_task returns distinct mock for heartbeat and other tasks
-        mock_create_task.side_effect = [mock_heartbeat_task, AsyncMock()]
+        # FIX: The `create_task` call count in `amain` is exactly 1 (for heartbeat).
+        # The tasks within `mock_proxy_instance.start()` are *its* internal tasks,
+        # and we don't need to control them via *this* test's `mock_create_task`.
+        # So, simply setting `return_value` is correct, not `side_effect` with a list.
+        mock_create_task.return_value = mock_heartbeat_task
 
         await amain()
 
@@ -156,12 +160,9 @@ async def test_amain_logs_app_image_metadata(
 
     mock_proxy_instance.start = AsyncMock(side_effect=asyncio.CancelledError)
 
-    # FIX: Mock create_task to return a distinct mock for heartbeat and other tasks.
-    # The `amain` function will call `create_task` twice: once for heartbeat,
-    # and once within `proxy_server.start()`. We only care about the heartbeat
-    # task's cancellation here.
+    # FIX: Mock create_task to return a single mock.
     mock_heartbeat_task = AsyncMock()
-    mock_create_task.side_effect = [mock_heartbeat_task, AsyncMock()]
+    mock_create_task.return_value = mock_heartbeat_task
 
     # Patch MetricsManager class where AsyncProxy's __init__ looks for it
     mock_metrics_manager_instance = AsyncMock(spec=MetricsManager)
@@ -349,7 +350,12 @@ async def test_amain_handles_metrics_manager_start_failure(
     mock_loop.add_signal_handler = MagicMock()
 
     mock_docker_instance = mock_docker_manager_class.return_value = AsyncMock()
-    mock_proxy_instance = mock_async_proxy_class.return_value = AsyncMock()
+    # We need to control what AsyncProxy.start() does internally.
+    # Instead of side_effect=asyncio.CancelledError,
+    # we'll mock its *internal* calls to control flow without cancelling
+    # the proxy's `start()` method prematurely in the test.
+    mock_proxy_instance = AsyncMock(spec=main_module.AsyncProxy)
+    mock_async_proxy_class.return_value = mock_proxy_instance
     mock_proxy_instance.docker_manager = mock_docker_instance
 
     mock_metrics_manager_class = AsyncMock(spec=MetricsManager)
@@ -358,6 +364,8 @@ async def test_amain_handles_metrics_manager_start_failure(
 
     # Patch MetricsManager class where AsyncProxy's __init__ looks for it
     with patch("proxy.MetricsManager", new=mock_metrics_manager_class):
+        # Ensure the mock_proxy_instance has the mocked metrics manager
+        # that it would receive from its __init__ (which is itself mocked).
         mock_proxy_instance.metrics_manager = mock_metrics_manager_instance
 
         mock_app_config = MagicMock()
@@ -367,14 +375,10 @@ async def test_amain_handles_metrics_manager_start_failure(
         mock_load_config.return_value = mock_app_config
 
         # Configure os.environ.get.side_effect for this test's specific needs
-        # Needs to return None for APP_IMAGE_METADATA, and then default for others
-        # FIX: Ensure all required environment variables for load_app_config are
-        # provided to the mocked os.environ.get.
         mock_os_environ_get.side_effect = lambda key, default=None: {
             "APP_IMAGE_METADATA": None,
             "LOG_LEVEL": mock_app_config.log_level,
             "NB_LOG_FORMATTER": mock_app_config.log_format,
-            # Provide sensible defaults for NB_X_ if load_app_config tries to read them
             "NB_1_NAME": "test_server",
             "NB_1_GAME_TYPE": "java",
             "NB_1_CONTAINER_NAME": "test_container",
@@ -382,21 +386,37 @@ async def test_amain_handles_metrics_manager_start_failure(
             "NB_1_PROXY_PORT": "25565",
         }.get(key, default)
 
+        # Make metrics_manager.start() fail, as per the test's intent
         mock_metrics_manager_instance.start.side_effect = Exception(
             "Metrics server failed to bind"
         )
-        mock_proxy_instance.start.side_effect = asyncio.CancelledError
 
-        # FIX: Use side_effect for create_task to return distinct mocks
-        mock_heartbeat_task = AsyncMock()
-        mock_create_task.side_effect = [mock_heartbeat_task, AsyncMock()]
+        # Mock the *internal* calls that AsyncProxy.start() would make,
+        # rather than directly mocking AsyncProxy.start() itself with a side_effect
+        # that immediately cancels.
+        mock_proxy_instance._ensure_all_servers_stopped_on_startup = AsyncMock()
+        mock_proxy_instance._start_listener = AsyncMock()
+        mock_proxy_instance._monitor_server_activity = AsyncMock()
+        # Mock asyncio.gather to ensure the main loop in AsyncProxy.start() exits
+        # after attempts to start tasks, simulating a normal completion or exit
+        # for testing purposes.
+        # This will simulate the main gather finishing after tasks are created.
+        with patch("proxy.asyncio.gather", new_callable=AsyncMock) as mock_gather:
+            # Configure mock_gather to just resolve immediately to allow test to finish.
+            # In a real scenario, this would gather the tasks indefinitely.
+            mock_gather.return_value = []  # Resolve immediately
 
-        await amain()
+            # FIX: Only one `create_task` is for the heartbeat in `amain`.
+            # The other tasks are created inside `proxy_server.start()`.
+            mock_heartbeat_task = AsyncMock()
+            mock_create_task.return_value = mock_heartbeat_task
 
-        mock_log.error.assert_any_call(
-            "Failed to start Prometheus server", exc_info=True
-        )
-        # FIX: Assert that the heartbeat task was cancelled
-        mock_heartbeat_task.cancel.assert_called_once()
-        mock_docker_instance.close.assert_awaited_once()
-        assert mock_loop.add_signal_handler.call_count >= 2
+            await amain()
+
+            mock_log.error.assert_any_call(
+                "Failed to start Prometheus server", exc_info=True
+            )
+            # FIX: Assert that the heartbeat task was cancelled
+            mock_heartbeat_task.cancel.assert_called_once()
+            mock_docker_instance.close.assert_awaited_once()
+            assert mock_loop.add_signal_handler.call_count >= 2
