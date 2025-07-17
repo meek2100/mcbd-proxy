@@ -52,9 +52,7 @@ async def test_amain_orchestration_and_shutdown(
     mock_proxy_instance = mock_async_proxy_class.return_value = AsyncMock()
 
     mock_proxy_instance.docker_manager = mock_docker_instance
-    mock_proxy_instance.metrics_manager = AsyncMock(
-        spec=MetricsManager  # Use imported MetricsManager for spec
-    )
+    mock_proxy_instance.metrics_manager = AsyncMock(spec=MetricsManager)
 
     mock_app_config = MagicMock()
     mock_app_config.game_servers = [MagicMock()]
@@ -119,9 +117,7 @@ async def test_amain_logs_app_image_metadata(
     mock_docker_instance = mock_docker_manager_class.return_value = AsyncMock()
     mock_proxy_instance = mock_async_proxy_class.return_value = AsyncMock()
     mock_proxy_instance.docker_manager = mock_docker_instance
-    mock_proxy_instance.metrics_manager = AsyncMock(
-        spec=MetricsManager  # Use imported MetricsManager for spec
-    )
+    mock_proxy_instance.metrics_manager = AsyncMock(spec=MetricsManager)
 
     mock_app_config = MagicMock()
     mock_app_config.game_servers = [MagicMock()]
@@ -129,57 +125,55 @@ async def test_amain_logs_app_image_metadata(
     mock_proxy_instance.start = AsyncMock(side_effect=asyncio.CancelledError)
     mock_create_task.return_value = AsyncMock()
 
+    # Configure mock_os_environ_get.side_effect to yield specific values in order
+    # It must account for *all* os.environ.get
+    # calls during amain(), including those in load_app_config
+    # This requires knowing the exact call sequence
+    # from load_app_config if it's not fully mocked.
+    # A simpler approach for mocking os.environ is to
+    # use patch.dict or simply set return_value for the relevant call.
+
+    # We need a more precise patch here. Patching
+    # os.environ *dict* for load_app_config is more reliable.
+    # The simplest way is to manually ensure the
+    # required env vars for load_app_config are set for the mock call.
+
     # Test with valid JSON metadata
-    mock_os_environ_get.side_effect = [
-        '{"version": "1.0.0", "build": "abc"}',  # APP_IMAGE_METADATA
-        # Subsequent calls from load_app_config, needs to return None for other env vars
-        # as load_app_config calls os.environ.get for each AppConfig field
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,  # For AppConfig fields
-        None,  # For second call to amain() below
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,  # For AppConfig fields on second call
-    ]
-    await amain()
-    mock_log.info.assert_any_call(
-        "Application build metadata", version="1.0.0", build="abc"
-    )
-    mock_log.info.reset_mock()
+    with patch.dict(
+        os.environ,
+        {"APP_IMAGE_METADATA": '{"version": "1.0.0", "build": "abc"}'},
+        clear=False,
+    ):
+        # We need to ensure load_app_config still gets its defaults,
+        # so clear=False and setting only APP_IMAGE_METADATA is key.
+        # This will be tricky if load_app_config also
+        # calls os.environ.get for its default fields.
+        # Let's adjust mock_os_environ_get to handle all expected calls.
+        mock_os_environ_get.side_effect = lambda key, default=None: (
+            '{"version": "1.0.0", "build": "abc"}'
+            if key == "APP_IMAGE_METADATA"
+            else os.environ.get(
+                key, default
+            )  # Fallback to real os.environ.get for other calls
+        )
+        await amain()
+        mock_log.info.assert_any_call(
+            "Application build metadata", version="1.0.0", build="abc"
+        )
+        mock_log.info.reset_mock()
+        mock_os_environ_get.reset_mock()  # Reset after first test run
 
     # Test with malformed JSON metadata
-    mock_os_environ_get.side_effect = [
-        "invalid json",  # APP_IMAGE_METADATA
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,  # For AppConfig fields
-    ]
-    await amain()
-    mock_log.warning.assert_any_call(
-        "Could not parse APP_IMAGE_METADATA", metadata="invalid json"
-    )
+    with patch.dict(os.environ, {"APP_IMAGE_METADATA": "invalid json"}, clear=False):
+        mock_os_environ_get.side_effect = lambda key, default=None: (
+            "invalid json"
+            if key == "APP_IMAGE_METADATA"
+            else os.environ.get(key, default)
+        )
+        await amain()
+        mock_log.warning.assert_any_call(
+            "Could not parse APP_IMAGE_METADATA", metadata="invalid json"
+        )
 
 
 @pytest.mark.unit
