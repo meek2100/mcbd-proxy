@@ -27,7 +27,6 @@ from tests.helpers import (
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
-# Use the helper function to determine the correct host for the test environment.
 PROXY_HOST = get_proxy_host()
 
 
@@ -47,13 +46,12 @@ async def test_java_server_lifecycle(
     """
     container_name = "mc-java"
     proxy_port = 25565
-    idle_timeout = 30  # As configured in docker-compose.tests.yml
+    idle_timeout = 30
 
     assert not await docker_manager.is_container_running(container_name), (
         "Java container should be initially stopped."
     )
 
-    # 1. Trigger server start by attempting a connection
     try:
         _, writer = await asyncio.wait_for(
             asyncio.open_connection(PROXY_HOST, proxy_port), timeout=10
@@ -61,16 +59,14 @@ async def test_java_server_lifecycle(
         writer.close()
         await writer.wait_closed()
     except (ConnectionRefusedError, asyncio.TimeoutError):
-        pass  # A timeout is acceptable as the server isn't fully ready yet
+        pass
 
-    # 2. Verify server starts and becomes queryable
     assert await wait_for_container_status(
         docker_manager.docker, container_name, "running", timeout=120
     ), "Java container failed to start."
     server = await JavaServer.async_lookup(f"{PROXY_HOST}:{proxy_port}")
     await server.async_status()
 
-    # 3. Wait for the server to be stopped due to idle timeout
     assert await wait_for_container_status(
         docker_manager.docker, container_name, "exited", timeout=idle_timeout + 20
     ), "Java container did not stop after the idle timeout."
@@ -84,13 +80,12 @@ async def test_bedrock_server_lifecycle(
     """
     container_name = "mc-bedrock"
     proxy_port = 19132
-    idle_timeout = 30  # As configured in docker-compose.tests.yml
+    idle_timeout = 30
 
     assert not await docker_manager.is_container_running(container_name), (
         "Bedrock container should be initially stopped."
     )
 
-    # 1. Trigger server start with a UDP packet
     loop = asyncio.get_running_loop()
     transport, _ = await loop.create_datagram_endpoint(
         lambda: asyncio.DatagramProtocol(), remote_addr=(PROXY_HOST, proxy_port)
@@ -98,14 +93,12 @@ async def test_bedrock_server_lifecycle(
     transport.sendto(b"\x01\x00\x00\x00\x00\x01\x23\x45\x67\x89\xab\xcd\xef")
     transport.close()
 
-    # 2. Verify server starts and becomes queryable
     assert await wait_for_container_status(
         docker_manager.docker, container_name, "running", timeout=120
     ), "Bedrock container failed to start."
     server = await BedrockServer.async_lookup(f"{PROXY_HOST}:{proxy_port}")
     await server.async_status()
 
-    # 3. Wait for the server to be stopped due to idle timeout
     assert await wait_for_container_status(
         docker_manager.docker, container_name, "exited", timeout=idle_timeout + 20
     ), "Bedrock container did not stop after the idle timeout."
@@ -182,3 +175,46 @@ async def test_proxy_restarts_crashed_server(
     assert await wait_for_container_status(
         docker_manager.docker, container_name, "running", timeout=120
     ), "Proxy did not restart the 'crashed' server on new connection."
+
+
+async def test_proxy_cleans_up_session_on_container_crash(
+    docker_manager: DockerManager, docker_compose_fixture
+):
+    """
+    Tests that the proxy correctly cleans up a session if the backend crashes.
+    """
+    container_name = "mc-java"
+    proxy_port = 25565
+
+    # 1. Pre-warm the server to ensure it is running
+    await check_port_listening(PROXY_HOST, proxy_port)
+    assert await wait_for_container_status(
+        docker_manager.docker, container_name, "running"
+    ), "Server did not start on first connection."
+
+    # 2. Establish the "victim" session
+    reader, writer = await asyncio.open_connection(PROXY_HOST, proxy_port)
+    writer.write(b"initial data")
+    await writer.drain()
+
+    # 3. Forcibly kill the server container
+    async with docker_manager.get_container(container_name) as container:
+        await container.kill()
+    assert await wait_for_container_status(
+        docker_manager.docker, container_name, "exited", timeout=15
+    )
+
+    # 4. Verify the proxy closes the connection
+    try:
+        # This write will fail as the proxy should have closed the socket
+        writer.write(b"data_after_crash")
+        await writer.drain()
+        # Reading should return EOF
+        data = await reader.read(1024)
+        assert not data, "Connection should be closed by proxy after crash."
+    except (ConnectionResetError, BrokenPipeError):
+        # This is the expected outcome, the connection is broken.
+        pass
+    finally:
+        writer.close()
+        await writer.wait_closed()
