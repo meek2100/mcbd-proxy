@@ -23,6 +23,7 @@ from tests.helpers import (
     BEDROCK_UNCONNECTED_PING,  # Import the consolidated constant
     check_port_listening,
     get_active_sessions_metric,
+    get_java_handshake_and_status_request_packets,
     get_proxy_host,
     wait_for_container_status,
     wait_for_log_message,
@@ -53,7 +54,8 @@ async def test_java_server_lifecycle(
     docker_manager: DockerManager, docker_compose_fixture
 ):
     """
-    Verifies the full lifecycle for a Java server: on-demand start and idle stop.
+    Verifies the full lifecycle for a Java server: on-demand start and idle
+    stop.
     """
     container_name = "mc-java"
     server_name = "Java Creative"  # Matches name in servers.json
@@ -71,20 +73,37 @@ async def test_java_server_lifecycle(
 
     # Trigger server startup by attempting a connection
     try:
-        _, writer = await asyncio.wait_for(
+        # Client connection to trigger startup
+        reader, writer = await asyncio.wait_for(
             asyncio.open_connection(PROXY_HOST, proxy_port), timeout=10
         )
-        writer.close()
-        await writer.wait_closed()
-    except (ConnectionRefusedError, asyncio.TimeoutError):
-        # Expected if server not yet started, proxy holds connection
-        pass
+        # Send a minimal handshake packet to fully establish the session
+        handshake_packet, _ = await asyncio.to_thread(
+            lambda h, p: get_java_handshake_and_status_request_packets(h, p),
+            PROXY_HOST,
+            proxy_port,
+        )
+        writer.write(handshake_packet)
+        await writer.drain()
+        log.info(
+            f"Sent initial handshake to {server_name} via proxy to trigger startup."
+        )
+    except (ConnectionRefusedError, asyncio.TimeoutError) as e:
+        # This is expected if the server isn't instantly ready, proxy holds conn
+        log.info(
+            f"Initial connection attempt to {server_name} got {type(e).__name__}. "
+            "Proceeding, proxy should be starting server."
+        )
+    finally:
+        if "writer" in locals() and writer is not None:
+            writer.close()
+            await writer.wait_closed()
 
     # Assert proxy logs the startup
     assert await wait_for_log_message(
         docker_manager.docker,
         "nether-bridge",
-        "First TCP connection for stopped server. Starting...",
+        "Server not running. Initiating startup...",
         timeout=10,
     ), "Proxy did not log start of Java server."
 
@@ -96,9 +115,9 @@ async def test_java_server_lifecycle(
         "Java server did not become query-ready through proxy."
     )
 
-    # Assert active sessions metric is 1 (or at least > 0)
-    assert await get_active_sessions_metric(PROXY_HOST, server_name) >= 0, (
-        "Failed to get active sessions metric."
+    # Assert active sessions metric is 0 after connection is closed
+    assert await get_active_sessions_metric(PROXY_HOST, server_name) == 0, (
+        "Active sessions metric did not reset to 0 after initial connection."
     )
 
     # Wait for idle shutdown
@@ -125,7 +144,8 @@ async def test_bedrock_server_lifecycle(
     docker_manager: DockerManager, docker_compose_fixture
 ):
     """
-    Verifies the full lifecycle for a Bedrock server: on-demand start and idle stop.
+    Verifies the full lifecycle for a Bedrock server: on-demand start and idle
+    stop.
     """
     container_name = "mc-bedrock"
     server_name = "Bedrock Survival"  # Matches name in servers.json
@@ -166,6 +186,7 @@ async def test_bedrock_server_lifecycle(
     )
 
     # Assert active sessions metric is 1 (or at least > 0)
+    # Note: UDP session count can be transient depending on test timing
     assert await get_active_sessions_metric(PROXY_HOST, server_name) >= 0, (
         "Failed to get active sessions metric for Bedrock."
     )
@@ -188,6 +209,83 @@ async def test_bedrock_server_lifecycle(
     assert await get_active_sessions_metric(PROXY_HOST, server_name) == 0, (
         "Active sessions metric did not reset to 0 after Bedrock idle shutdown."
     )
+
+
+async def test_java_server_pre_warm_startup(
+    docker_manager: DockerManager, docker_compose_fixture
+):
+    """
+    Verifies that a Java server configured with 'pre_warm: true' starts
+    automatically with the proxy, without requiring a client connection.
+    """
+    container_name = "mc-java"
+    # Note: This test requires 'Java Pre-warm' server to be configured
+    # in servers.json with pre_warm: true and listening on a distinct port.
+    # For now, it will re-use mc-java container by injecting config.
+    pre_warm_server_name = "Java Pre-warm"
+    pre_warm_proxy_port = 25566  # A new, dedicated port for the pre-warmed server
+
+    # 1. Ensure server is initially stopped
+    log.info(f"Ensuring {container_name} is stopped before pre-warm test.")
+    await docker_manager.stop_server(container_name, 10)
+    assert not await docker_manager.is_container_running(container_name), (
+        f"Java container {container_name} should be initially stopped."
+    )
+
+    # 2. Inject a servers.json with a pre_warm entry
+    log.info("Injecting servers.json with a pre_warm server entry...")
+    new_config = {
+        "servers": [
+            {
+                "name": pre_warm_server_name,
+                "game_type": "java",
+                "proxy_port": pre_warm_proxy_port,
+                "container_name": container_name,  # Reuse existing container
+                "port": 25565,
+                "pre_warm": True,  # This server should pre-warm
+            }
+        ]
+    }
+    async with docker_manager.get_container("nether-bridge") as proxy_container:
+        assert proxy_container is not None, "nether-bridge container not found"
+        tar_stream = io.BytesIO()
+        with tarfile.open(fileobj=tar_stream, mode="w") as tar:
+            config_bytes = json.dumps(new_config).encode("utf-8")
+            info = tarfile.TarInfo(name="servers.json")
+            info.size = len(config_bytes)
+            tar.addfile(info, io.BytesIO(config_bytes))
+        tar_stream.seek(0)
+        await proxy_container.put_archive("/app", tar_stream.read())
+        log.info(f"New servers.json injected into {proxy_container.id}.")
+
+        # 3. Send SIGHUP to proxy to reload config (which should trigger pre-warm)
+        log.info(f"Sending SIGHUP to nether-bridge {proxy_container.id} to reload.")
+        await proxy_container.kill(signal=signal.SIGHUP)
+        assert await wait_for_log_message(
+            docker_manager.docker,
+            "nether-bridge",
+            "Configuration reload complete.",
+            timeout=15,
+        ), "Proxy did not log completion of configuration reload after SIGHUP."
+
+    # 4. Assert proxy logs pre-warm startup and container is running
+    log.info(f"Waiting for proxy to log pre-warm startup for {pre_warm_server_name}.")
+    assert await wait_for_log_message(
+        docker_manager.docker,
+        "nether-bridge",
+        f"Pre-warming server. server={pre_warm_server_name}",
+        timeout=10,
+    ), "Proxy did not log pre-warming of Java server."
+
+    assert await wait_for_container_status(
+        docker_manager.docker, container_name, "running", timeout=120
+    ), f"Pre-warmed Java container {container_name} failed to start."
+
+    assert await wait_for_mc_server_ready("java", PROXY_HOST, pre_warm_proxy_port), (
+        f"Pre-warmed Java server {pre_warm_server_name} did not become "
+        "query-ready through proxy."
+    )
+    log.info(f"Pre-warmed server {pre_warm_server_name} is running and ready.")
 
 
 async def test_sighup_reloads_configuration(
@@ -265,7 +363,27 @@ async def test_proxy_restarts_crashed_server(
 
     # 1. Trigger initial server startup via proxy connection
     log.info("Triggering initial Java server start via proxy.")
-    await check_port_listening(PROXY_HOST, proxy_port)
+    # Establish a connection to trigger server startup
+    client_reader, client_writer = None, None
+    try:
+        client_reader, client_writer = await asyncio.open_connection(
+            PROXY_HOST, proxy_port
+        )
+        # Send a minimal handshake to ensure a session is established
+        handshake_packet, _ = await asyncio.to_thread(
+            lambda h, p: get_java_handshake_and_status_request_packets(h, p),
+            PROXY_HOST,
+            proxy_port,
+        )
+        client_writer.write(handshake_packet)
+        await client_writer.drain()
+    except (ConnectionRefusedError, asyncio.TimeoutError):
+        log.info("Initial connection attempt refused/timed out (expected).")
+    finally:
+        if client_writer:
+            client_writer.close()
+            await client_writer.wait_closed()
+
     assert await wait_for_container_status(
         docker_manager.docker, container_name, "running", timeout=120
     ), "Initial Java server did not start on connection."
@@ -291,7 +409,27 @@ async def test_proxy_restarts_crashed_server(
 
     # 3. Attempt a new connection to trigger proxy restart
     log.info(f"Attempting new connection to trigger restart for {container_name}.")
-    await check_port_listening(PROXY_HOST, proxy_port)  # This will trigger start
+    # The act of connecting will trigger the start
+    client_reader_2, client_writer_2 = None, None
+    try:
+        client_reader_2, client_writer_2 = await asyncio.open_connection(
+            PROXY_HOST, proxy_port
+        )
+        handshake_packet_2, _ = await asyncio.to_thread(
+            lambda h, p: get_java_handshake_and_status_request_packets(h, p),
+            PROXY_HOST,
+            proxy_port,
+        )
+        client_writer_2.write(handshake_packet_2)
+        await client_writer_2.drain()
+    except (ConnectionRefusedError, asyncio.TimeoutError):
+        log.info(
+            "Second connection attempt refused/timed out (expected during startup)."
+        )
+    finally:
+        if client_writer_2:
+            client_writer_2.close()
+            await client_writer_2.wait_closed()
 
     # 4. Assert proxy logs its intent to restart the server
     assert await wait_for_log_message(
@@ -317,12 +455,28 @@ async def test_proxy_cleans_up_session_on_container_crash(
     proxy_port = 25565
 
     # 1. Pre-warm the server and establish a connection
-    log.info("Pre-warming Java server for session cleanup test.")
+    log.info("Establishing connection to Java server for session cleanup test.")
     reader, writer = None, None
     try:
         reader, writer = await asyncio.open_connection(PROXY_HOST, proxy_port)
-        writer.write(b"\x00")  # Send a dummy byte to establish session
+        # Send a dummy byte/packet to ensure the session is fully
+        # established on the proxy's side
+        handshake_packet, status_request_packet = await asyncio.to_thread(
+            lambda h, p: get_java_handshake_and_status_request_packets(h, p),
+            PROXY_HOST,
+            proxy_port,
+        )
+        writer.write(handshake_packet)
+        writer.write(status_request_packet)
         await writer.drain()
+
+        # Wait for the server to be running and queryable via proxy
+        assert await wait_for_container_status(
+            docker_manager.docker, container_name, "running", timeout=60
+        ), "Java server did not start for session cleanup test."
+        assert await wait_for_mc_server_ready("java", PROXY_HOST, proxy_port), (
+            "Java server did not become query-ready through proxy."
+        )
 
         # Assert proxy logs new session
         assert await wait_for_log_message(
@@ -331,11 +485,6 @@ async def test_proxy_cleans_up_session_on_container_crash(
             "New TCP connection",
             timeout=10,
         ), "Proxy did not log new TCP connection."
-
-        # Assert server is running
-        assert await wait_for_container_status(
-            docker_manager.docker, container_name, "running", timeout=60
-        ), "Java server did not start for session cleanup test."
 
         log.info("Client connected and session established. Proxy is active.")
 
@@ -352,6 +501,7 @@ async def test_proxy_cleans_up_session_on_container_crash(
         # 3. Attempt to send data from client, which should now fail
         log.info("Attempting to send data to trigger proxy's error handling...")
         with pytest.raises((ConnectionResetError, BrokenPipeError, OSError)):
+            # Sending data on a broken pipe/reset connection will raise an error
             writer.write(b"data_after_crash")
             await writer.drain()
 
