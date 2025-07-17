@@ -5,11 +5,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 import pytest
 
 # Imports from the module being tested
-from main import (  # Import _update_heartbeat
-    amain,
-    health_check,
-    main,
-)
+from main import amain, health_check, main
 
 
 @pytest.mark.unit
@@ -72,13 +68,9 @@ async def test_amain_orchestration_and_shutdown(
     # The actual coroutine object returned by _update_heartbeat(mock_app_config)
     # is what create_task receives. We can check the function object that generates it.
     mock_create_task.assert_called_once_with(
-        ANY,  # The coroutine object itself
-        name=ANY,  # For named tasks if used, or just ANY
+        ANY,
+        # The coroutine object itself (it will be _update_heartbeat(mock_app_config))
     )
-    # Optionally, verify the first argument is indeed the _update_heartbeat coroutine
-    # This requires more complex inspection of the mock call args if needed.
-    # For now, assert that it was called once with something as its first arg.
-
     # Assert that the created task (mock_create_task.return_value) was cancelled
     mock_create_task.return_value.cancel.assert_called_once()
     mock_docker_instance.close.assert_awaited_once()
