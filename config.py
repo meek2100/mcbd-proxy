@@ -1,7 +1,7 @@
 # config.py
 """
-Handles application configuration using Pydantic for validation, while preserving
-the original project's configuration loading hierarchy.
+Handles application configuration using Pydantic for validation, while
+preserving the original project's configuration loading hierarchy.
 """
 
 import json
@@ -71,13 +71,13 @@ class AppConfig(BaseModel):
     log_format: str = Field("console", alias="NB_LOG_FORMATTER")
     idle_timeout: int = Field(600, alias="NB_IDLE_TIMEOUT")
     player_check_interval: int = Field(60, alias="NB_PLAYER_CHECK_INTERVAL")
-    server_startup_timeout: int = Field(300, alias="NB_SERVER_READY_MAX_WAIT")
+    server_startup_timeout: int = Field(120, alias="NB_SERVER_READY_MAX_WAIT")
     server_stop_timeout: int = Field(60, alias="NB_SERVER_STOP_TIMEOUT")
     query_timeout: int = Field(5, alias="NB_QUERY_TIMEOUT")
     is_prometheus_enabled: bool = Field(True, alias="NB_PROMETHEUS_ENABLED")
     prometheus_port: int = Field(8000, alias="NB_PROMETHEUS_PORT")
     healthcheck_stale_threshold: int = Field(60, alias="NB_HEALTHCHECK_STALE_THRESHOLD")
-    # Restored from original implementation
+    healthcheck_heartbeat_interval: int = Field(15, alias="NB_HEARTBEAT_INTERVAL")
     initial_boot_ready_max_wait: int = Field(
         180, alias="NB_INITIAL_BOOT_READY_MAX_WAIT"
     )
@@ -100,6 +100,7 @@ def load_app_config() -> AppConfig:
     i = 1
     while f"NB_{i}_CONTAINER_NAME" in os.environ:
         try:
+            # Pydantic handles type coercion from strings to appropriate types
             server_data = {
                 "name": os.getenv(f"NB_{i}_NAME", f"Server-{i}"),
                 "game_type": os.getenv(f"NB_{i}_GAME_TYPE"),
@@ -109,7 +110,8 @@ def load_app_config() -> AppConfig:
                 "proxy_port": os.getenv(f"NB_{i}_PROXY_PORT"),
                 "proxy_host": os.getenv(f"NB_{i}_PROXY_HOST", "0.0.0.0"),
                 "query_port": os.getenv(f"NB_{i}_QUERY_PORT"),
-                "pre_warm": os.getenv(f"NB_{i}_PRE_WARM", "false"),
+                "pre_warm": os.getenv(f"NB_{i}_PRE_WARM", "false").lower()
+                in ("true", "1", "yes"),
             }
             game_servers.append(
                 GameServerConfig.model_validate(
@@ -133,6 +135,7 @@ def load_app_config() -> AppConfig:
                 ]
             except (ValidationError, json.JSONDecodeError) as e:
                 log.error("Failed to load or parse servers.json", error=e)
+                raise  # Re-raise to ensure fatal config errors halt startup
 
     # 2. Load Global Settings (Env > JSON > Defaults)
     final_settings = {}
@@ -142,13 +145,26 @@ def load_app_config() -> AppConfig:
             final_settings = json.loads(settings_file.read_text())
         except json.JSONDecodeError:
             log.error("Could not parse settings.json", path=settings_file)
+            raise  # Re-raise to ensure fatal config errors halt startup
 
+    # Environment variables override JSON and defaults via Pydantic's aliases
+    # and direct lookup.
+    # Populate a temporary dictionary with environment variables,
+    # then pass to model_validate.
+    env_overrides = {}
     for field_name, field_info in AppConfig.model_fields.items():
-        if field_info.alias and field_info.alias in os.environ:
-            final_settings[field_name] = os.environ[field_info.alias]
+        # Use alias if available, otherwise assume field_name is the env var
+        env_var_name = field_info.alias or field_name.upper()
+        if env_var_name in os.environ:
+            # Pydantic will handle type coercion for values passed to .model_validate
+            env_overrides[field_name] = os.environ[env_var_name]
+
+    # Combine settings from file with environment overrides.
+    # Env overrides take precedence.
+    combined_settings = {**final_settings, **env_overrides}
 
     try:
-        app_config = AppConfig(game_servers=game_servers, **final_settings)
+        app_config = AppConfig(game_servers=game_servers, **combined_settings)
         log.info(
             "Application configuration loaded successfully.",
             server_count=len(game_servers),
