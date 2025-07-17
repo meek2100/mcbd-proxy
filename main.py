@@ -5,6 +5,7 @@ The main entrypoint for the Nether-bridge application.
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 import time
@@ -54,14 +55,19 @@ def configure_logging(log_level: str, log_format: str):
     )
 
 
-async def _update_heartbeat():
-    """Periodically writes a timestamp to the heartbeat file to signal liveness."""
+async def _update_heartbeat(app_config):
+    """
+    Periodically writes a timestamp to the heartbeat file to signal liveness.
+    Uses configurable interval from app_config.
+    """
     while True:
         try:
             current_time = int(time.time())
             HEARTBEAT_FILE.write_text(str(current_time))
-            await asyncio.sleep(15)
+            # Use configurable interval for heartbeat
+            await asyncio.sleep(app_config.healthcheck_heartbeat_interval)
         except asyncio.CancelledError:
+            log.info("Heartbeat task cancelled.")
             break
         except Exception:
             log.error("Failed to update heartbeat file.", exc_info=True)
@@ -69,7 +75,9 @@ async def _update_heartbeat():
 
 async def amain():
     """The main asynchronous entrypoint for the application."""
-    app_config = load_app_config()
+    app_config = load_app_config()  # Configuration now validated via Pydantic
+
+    # Configure logging based on the loaded app_config
     configure_logging(app_config.log_level, app_config.log_format)
 
     # Add check for loaded game servers as per the plan
@@ -89,7 +97,8 @@ async def amain():
     if hasattr(signal, "SIGHUP"):
         loop.add_signal_handler(signal.SIGHUP, sighup_handler)
 
-    heartbeat_task = asyncio.create_task(_update_heartbeat())
+    # Pass app_config to heartbeat task
+    heartbeat_task = asyncio.create_task(_update_heartbeat(app_config))
     try:
         await proxy_server.start()
     except asyncio.CancelledError:
@@ -125,14 +134,18 @@ def health_check():
         print(f"Health check failed during execution: {e}")
         sys.exit(1)
     except Exception as e:
+        # Catch configuration loading errors for health check
         print(f"Health check failed during config load: {e}")
         sys.exit(1)
 
 
 def main():
     """Main entrypoint function to be called by the script."""
-    # Early configuration to ensure healthcheck can log errors
-    configure_logging("INFO", "console")
+    # Early configuration to ensure healthcheck can log errors.
+    # Uses environment variables directly for initial logging setup.
+    early_log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+    early_log_format = os.environ.get("NB_LOG_FORMATTER", "console")
+    configure_logging(early_log_level, early_log_format)
 
     if "--healthcheck" in sys.argv:
         health_check()
@@ -141,9 +154,15 @@ def main():
             asyncio.run(amain())
         except KeyboardInterrupt:
             log.info("Application interrupted by user.")
+        except Exception as e:  # Catch unhandled exceptions from amain()
+            log.critical(
+                "Unhandled exception in main application loop.", exc_info=True, error=e
+            )
+            sys.exit(1)  # Exit with a non-zero code on unhandled errors
         finally:
             if HEARTBEAT_FILE.exists():
                 HEARTBEAT_FILE.unlink(missing_ok=True)
+                log.info("Removed heartbeat file on shutdown.")
 
 
 if __name__ == "__main__":
