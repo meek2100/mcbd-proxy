@@ -51,41 +51,70 @@ async def test_amain_orchestration_and_shutdown(
     mock_docker_instance = mock_docker_manager_class.return_value = AsyncMock()
     mock_proxy_instance = mock_async_proxy_class.return_value = AsyncMock()
 
-    mock_proxy_instance.docker_manager = mock_docker_instance
-    mock_proxy_instance.metrics_manager = AsyncMock(spec=MetricsManager)
-
+    # CRITICAL FIX: Ensure app_config is passed to DockerManager and
+    # MetricsManager in the mock setup, mimicking real app flow.
     mock_app_config = MagicMock()
     mock_app_config.game_servers = [MagicMock()]
     mock_app_config.log_level = "INFO"
     mock_app_config.log_format = "console"
     mock_load_config.return_value = mock_app_config
 
-    original_os_environ_get = os.environ.get
-    mock_os_environ_get.side_effect = lambda key, default=None: (
-        None if key == "APP_IMAGE_METADATA" else original_os_environ_get(key, default)
-    )
+    # Explicitly mock the instantiation of MetricsManager within AsyncProxy
+    # This prevents the real MetricsManager.__init__ from being called,
+    # which in turn prevents it from trying to instantiate Prometheus gauges
+    # before they are fully patched in other tests if this mock is not global.
+    mock_metrics_manager_instance = AsyncMock(spec=MetricsManager)
+    # Patch the MetricsManager class where AsyncProxy's __init__ looks for it
+    with patch("proxy.MetricsManager", return_value=mock_metrics_manager_instance):
+        # Assign the mocked metrics_manager to the mock proxy instance
+        mock_proxy_instance.metrics_manager = mock_metrics_manager_instance
+        # The AsyncProxy's __init__ will now receive our mock.
+        # However, because we already mocked AsyncProxy itself,
+        # we need to ensure the _proxy_instance.metrics_manager attribute
+        # is correctly set, as AsyncProxy.__init__ won't run here.
+        # This is already covered by `mock_proxy_instance.metrics_manager = ...` above.
 
-    mock_create_task.return_value = AsyncMock()
+        # Configure os.environ.get to ensure load_app_config functions correctly
+        # within the test environment.
+        mock_os_environ_get.side_effect = lambda key, default=None: {
+            "LOG_LEVEL": mock_app_config.log_level,
+            "NB_LOG_FORMATTER": mock_app_config.log_format,
+            # Ensure other NB_X_ variables, if loaded, return sensible defaults
+            "NB_1_NAME": "test_server",
+            "NB_1_GAME_TYPE": "java",
+            "NB_1_CONTAINER_NAME": "test_container",
+            "NB_1_PORT": "25565",
+            "NB_1_PROXY_PORT": "25565",
+            "APP_IMAGE_METADATA": None,  # No metadata for this test
+        }.get(key, default)
 
-    mock_proxy_instance.start = AsyncMock(side_effect=asyncio.CancelledError)
+        mock_proxy_instance.start = AsyncMock(side_effect=asyncio.CancelledError)
 
-    await amain()
+        # Mock create_task to return a cancellable AsyncMock
+        mock_heartbeat_task = AsyncMock()
+        # Ensure create_task returns distinct mock for heartbeat and other tasks
+        mock_create_task.side_effect = [mock_heartbeat_task, AsyncMock()]
 
-    mock_load_config.assert_called_once()
-    mock_configure_logging.assert_called_once_with(
-        mock_app_config.log_level, mock_app_config.log_format
-    )
-    mock_async_proxy_class.assert_called_once_with(
-        mock_app_config, mock_docker_instance
-    )
-    mock_proxy_instance.start.assert_awaited_once()
+        await amain()
 
-    mock_create_task.assert_called_once_with(ANY)
+        mock_load_config.assert_called_once()
+        mock_configure_logging.assert_called_once_with(
+            mock_app_config.log_level, mock_app_config.log_format
+        )
+        mock_async_proxy_class.assert_called_once_with(
+            mock_app_config, mock_docker_instance
+        )
+        mock_proxy_instance.start.assert_awaited_once()
 
-    mock_create_task.return_value.cancel.assert_called_once()
-    mock_docker_instance.close.assert_awaited_once()
+        mock_create_task.assert_called_once_with(
+            ANY
+        )  # Check for heartbeat task creation
 
-    assert mock_loop.add_signal_handler.call_count >= 2
+        # FIX: Ensure the heartbeat_task is actually the one cancelled
+        mock_heartbeat_task.cancel.assert_called_once()
+        mock_docker_instance.close.assert_awaited_once()
+
+        assert mock_loop.add_signal_handler.call_count >= 2
 
 
 @pytest.mark.unit
@@ -117,45 +146,47 @@ async def test_amain_logs_app_image_metadata(
     mock_docker_instance = mock_docker_manager_class.return_value = AsyncMock()
     mock_proxy_instance = mock_async_proxy_class.return_value = AsyncMock()
     mock_proxy_instance.docker_manager = mock_docker_instance
-    mock_proxy_instance.metrics_manager = AsyncMock(spec=MetricsManager)
 
     mock_app_config = MagicMock()
     mock_app_config.game_servers = [MagicMock()]
+    # FIX: Add mock log_level and log_format for load_app_config context
+    mock_app_config.log_level = "INFO"
+    mock_app_config.log_format = "console"
     mock_load_config.return_value = mock_app_config
+
     mock_proxy_instance.start = AsyncMock(side_effect=asyncio.CancelledError)
-    mock_create_task.return_value = AsyncMock()
 
-    # Configure mock_os_environ_get.side_effect to yield specific values in order
-    # It must account for *all* os.environ.get
-    # calls during amain(), including those in load_app_config
-    # This requires knowing the exact call sequence
-    # from load_app_config if it's not fully mocked.
-    # A simpler approach for mocking os.environ is to
-    # use patch.dict or simply set return_value for the relevant call.
+    # FIX: Mock create_task to return a distinct mock for heartbeat and other tasks.
+    # The `amain` function will call `create_task` twice: once for heartbeat,
+    # and once within `proxy_server.start()`. We only care about the heartbeat
+    # task's cancellation here.
+    mock_heartbeat_task = AsyncMock()
+    mock_create_task.side_effect = [mock_heartbeat_task, AsyncMock()]
 
-    # We need a more precise patch here. Patching
-    # os.environ *dict* for load_app_config is more reliable.
-    # The simplest way is to manually ensure the
-    # required env vars for load_app_config are set for the mock call.
+    # Patch MetricsManager class where AsyncProxy's __init__ looks for it
+    mock_metrics_manager_instance = AsyncMock(spec=MetricsManager)
+    with patch("proxy.MetricsManager", return_value=mock_metrics_manager_instance):
+        mock_proxy_instance.metrics_manager = mock_metrics_manager_instance
 
-    # Test with valid JSON metadata
-    with patch.dict(
-        os.environ,
-        {"APP_IMAGE_METADATA": '{"version": "1.0.0", "build": "abc"}'},
-        clear=False,
-    ):
-        # We need to ensure load_app_config still gets its defaults,
-        # so clear=False and setting only APP_IMAGE_METADATA is key.
-        # This will be tricky if load_app_config also
-        # calls os.environ.get for its default fields.
-        # Let's adjust mock_os_environ_get to handle all expected calls.
-        mock_os_environ_get.side_effect = lambda key, default=None: (
-            '{"version": "1.0.0", "build": "abc"}'
-            if key == "APP_IMAGE_METADATA"
-            else os.environ.get(
-                key, default
-            )  # Fallback to real os.environ.get for other calls
-        )
+        # We need a more precise patch here. Patching
+        # os.environ *dict* for load_app_config is more reliable.
+        # The simplest way is to manually ensure the
+        # required env vars for load_app_config are set for the mock call.
+
+        # Test with valid JSON metadata
+        # FIX: Adjust mock_os_environ_get.side_effect for all expected calls.
+        mock_os_environ_get.side_effect = lambda key, default=None: {
+            "APP_IMAGE_METADATA": '{"version": "1.0.0", "build": "abc"}',
+            "LOG_LEVEL": mock_app_config.log_level,
+            "NB_LOG_FORMATTER": mock_app_config.log_format,
+            # Ensure other NB_X_ variables, if loaded, return sensible defaults
+            "NB_1_NAME": "test_server",
+            "NB_1_GAME_TYPE": "java",
+            "NB_1_CONTAINER_NAME": "test_container",
+            "NB_1_PORT": "25565",
+            "NB_1_PROXY_PORT": "25565",
+        }.get(key, default)
+
         await amain()
         mock_log.info.assert_any_call(
             "Application build metadata", version="1.0.0", build="abc"
@@ -163,13 +194,20 @@ async def test_amain_logs_app_image_metadata(
         mock_log.info.reset_mock()
         mock_os_environ_get.reset_mock()  # Reset after first test run
 
-    # Test with malformed JSON metadata
-    with patch.dict(os.environ, {"APP_IMAGE_METADATA": "invalid json"}, clear=False):
-        mock_os_environ_get.side_effect = lambda key, default=None: (
-            "invalid json"
-            if key == "APP_IMAGE_METADATA"
-            else os.environ.get(key, default)
-        )
+        # Test with malformed JSON metadata
+        # FIX: Adjust mock_os_environ_get.side_effect for all expected calls.
+        mock_os_environ_get.side_effect = lambda key, default=None: {
+            "APP_IMAGE_METADATA": "invalid json",
+            "LOG_LEVEL": mock_app_config.log_level,
+            "NB_LOG_FORMATTER": mock_app_config.log_format,
+            # Ensure other NB_X_ variables, if loaded, return sensible defaults
+            "NB_1_NAME": "test_server",
+            "NB_1_GAME_TYPE": "java",
+            "NB_1_CONTAINER_NAME": "test_container",
+            "NB_1_PORT": "25565",
+            "NB_1_PROXY_PORT": "25565",
+        }.get(key, default)
+
         await amain()
         mock_log.warning.assert_any_call(
             "Could not parse APP_IMAGE_METADATA", metadata="invalid json"
@@ -269,7 +307,8 @@ def test_health_check_fails_if_heartbeat_is_stale(mock_time, mock_heartbeat_file
 @patch("time.time")
 def test_health_check_succeeds_if_heartbeat_is_fresh(mock_time, mock_heartbeat_file):
     """
-    Tests that the health check succeeds if the heartbeat is within the threshold.
+    Tests that the health check succeeds if the heartbeat is within the
+    threshold.
     """
     mock_settings = MagicMock(healthcheck_stale_threshold=60)
     with patch("main.load_app_config", return_value=mock_settings):
@@ -329,25 +368,35 @@ async def test_amain_handles_metrics_manager_start_failure(
 
         # Configure os.environ.get.side_effect for this test's specific needs
         # Needs to return None for APP_IMAGE_METADATA, and then default for others
-        original_os_environ_get = os.environ.get
-        mock_os_environ_get.side_effect = lambda key, default=None: (
-            None
-            if key == "APP_IMAGE_METADATA"
-            else original_os_environ_get(key, default)
-        )
+        # FIX: Ensure all required environment variables for load_app_config are
+        # provided to the mocked os.environ.get.
+        mock_os_environ_get.side_effect = lambda key, default=None: {
+            "APP_IMAGE_METADATA": None,
+            "LOG_LEVEL": mock_app_config.log_level,
+            "NB_LOG_FORMATTER": mock_app_config.log_format,
+            # Provide sensible defaults for NB_X_ if load_app_config tries to read them
+            "NB_1_NAME": "test_server",
+            "NB_1_GAME_TYPE": "java",
+            "NB_1_CONTAINER_NAME": "test_container",
+            "NB_1_PORT": "25565",
+            "NB_1_PROXY_PORT": "25565",
+        }.get(key, default)
 
         mock_metrics_manager_instance.start.side_effect = Exception(
             "Metrics server failed to bind"
         )
         mock_proxy_instance.start.side_effect = asyncio.CancelledError
 
-        mock_create_task.return_value = AsyncMock()
+        # FIX: Use side_effect for create_task to return distinct mocks
+        mock_heartbeat_task = AsyncMock()
+        mock_create_task.side_effect = [mock_heartbeat_task, AsyncMock()]
 
         await amain()
 
         mock_log.error.assert_any_call(
             "Failed to start Prometheus server", exc_info=True
         )
+        # FIX: Assert that the heartbeat task was cancelled
+        mock_heartbeat_task.cancel.assert_called_once()
         mock_docker_instance.close.assert_awaited_once()
-        mock_create_task.return_value.cancel.assert_called_once()
         assert mock_loop.add_signal_handler.call_count >= 2
