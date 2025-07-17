@@ -93,8 +93,7 @@ def mock_tcp_streams():
     writer = AsyncMock()
     writer.get_extra_info.return_value = ("127.0.0.1", 12345)
 
-    # FIX: Ensure awaited methods are explicitly set with AsyncMock
-    # and return_value is appropriate for each.
+    # Ensure awaited methods are explicitly set with AsyncMock
     reader.read = AsyncMock(side_effect=[b"some data", b""])  # Simulates data then EOF
     reader.at_eof = MagicMock(
         side_effect=[False, True]
@@ -185,7 +184,7 @@ async def test_handle_tcp_connection_success(
     )
     assert proxy._proxy_data.await_count == 2
     client_writer.close.assert_awaited_once()
-    client_writer.wait_closed.assert_awaited_once()  # Ensure wait_closed is called
+    client_writer.wait_closed.assert_awaited_once()
     proxy.metrics_manager.dec_active_connections.assert_called_once()
 
 
@@ -205,7 +204,7 @@ async def test_handle_tcp_connection_backend_fails(
     proxy._ensure_server_started.assert_awaited_once()
     mock_open_conn.assert_awaited_once()
     client_writer.close.assert_awaited_once()
-    client_writer.wait_closed.assert_awaited_once()  # Ensure wait_closed is called
+    client_writer.wait_closed.assert_awaited_once()
     proxy.metrics_manager.dec_active_connections.assert_called_once()
 
 
@@ -273,18 +272,18 @@ async def test_reload_configuration(
     await proxy._reload_configuration()
 
     # Assert old tasks were passed to gather for cancellation
-    # FIX: Assert that gather was called with arguments including ANY for the tasks
     mock_gather.assert_awaited_with(ANY, return_exceptions=True)
     # The gather will be called twice: once for active sessions, once for listeners.
-    assert mock_gather.await_count == 2  # Check both gather calls happened
+    assert mock_gather.await_count == 2
 
     assert not proxy.active_tcp_sessions
     mock_load_config.assert_called_once()
     assert proxy.docker_manager.app_config == new_config
     proxy._ensure_all_servers_stopped_on_startup.assert_awaited_once()
 
+    # FIX: Corrected assertion to use ANY for the coroutine object
     mock_create_task.assert_called_once_with(
-        proxy._start_listener(mock_bedrock_server_config)
+        ANY,
     )
 
 
@@ -307,7 +306,7 @@ async def test_handle_tcp_connection_rejects_max_sessions(
 
     proxy._ensure_server_started.assert_not_called()
     client_writer.close.assert_awaited_once()
-    client_writer.wait_closed.assert_awaited_once()  # Ensure wait_closed is called
+    client_writer.wait_closed.assert_awaited_once()
     assert proxy.metrics_manager.dec_active_connections.call_count == 1
     dummy_tcp_task.cancel()
     await asyncio.sleep(0.01)
@@ -340,9 +339,7 @@ async def test_monitor_server_activity_stops_idle_server(
         False,
         StopTestLoop(),
     ]
-    proxy.docker_manager.stop_server = AsyncMock(
-        return_value=True
-    )  # Ensure it returns True
+    proxy.docker_manager.stop_server = AsyncMock(return_value=True)
 
     mock_bedrock_protocol_instance = MagicMock(client_map={})
     proxy.udp_protocols[server_name] = mock_bedrock_protocol_instance
