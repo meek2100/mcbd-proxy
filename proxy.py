@@ -8,7 +8,6 @@ import signal
 import time
 
 import structlog
-from mcstatus import BedrockServer, JavaServer
 
 from config import AppConfig, GameServerConfig, load_app_config
 from docker_manager import DockerManager
@@ -28,7 +27,8 @@ class AsyncProxy:
         self.docker_manager = docker_manager
         self.metrics_manager = MetricsManager(app_config, docker_manager)
         self.server_tasks = {}
-        self.active_tcp_sessions = set()
+        # This now maps a session task to its server name for internal tracking
+        self.active_tcp_sessions = {}
         self.udp_protocols = {}
         self._reload_requested = False
 
@@ -53,9 +53,12 @@ class AsyncProxy:
         else:
             log.warning("Shutdown requested. Cancelling tasks...")
 
-        all_tasks = list(self.server_tasks.values())
-        all_tasks.extend(self.active_tcp_sessions)
-        for task in all_tasks:
+        # Cancel session tasks first
+        for task in self.active_tcp_sessions.keys():
+            task.cancel()
+
+        # Cancel main service tasks
+        for task in self.server_tasks.values():
             if isinstance(task, list):
                 for sub_task in task:
                     sub_task.cancel()
@@ -67,10 +70,12 @@ class AsyncProxy:
         log.info("Starting configuration reload. Active connections will be dropped.")
         self._reload_requested = False
 
-        for task in self.active_tcp_sessions:
+        for task in self.active_tcp_sessions.keys():
             task.cancel()
         if self.active_tcp_sessions:
-            await asyncio.gather(*self.active_tcp_sessions, return_exceptions=True)
+            await asyncio.gather(
+                *self.active_tcp_sessions.keys(), return_exceptions=True
+            )
         self.active_tcp_sessions.clear()
 
         listener_tasks = self.server_tasks.get("listeners", [])
@@ -113,18 +118,16 @@ class AsyncProxy:
         for sc in self.app_config.game_servers:
             if await self.docker_manager.is_container_running(sc.container_name):
                 log.warning(
-                    "Server found running. Waiting up to 30s for it to be "
+                    "Server found running at startup. Waiting up to 30s for it to be "
                     "queryable before issuing a safe stop.",
                     server=sc.name,
                 )
-                # Wait for the server to be stable before trying to stop it.
                 await self.docker_manager.wait_for_server_query_ready(sc, timeout=30)
 
                 await self.docker_manager.stop_server(
                     sc.container_name, self.app_config.server_stop_timeout
                 )
 
-                # Confirm it stopped to avoid race conditions in tests.
                 for _ in range(self.app_config.server_stop_timeout):
                     if not await self.docker_manager.is_container_running(
                         sc.container_name
@@ -160,11 +163,11 @@ class AsyncProxy:
         self.server_tasks["metrics"] = asyncio.create_task(self.metrics_manager.start())
 
         all_tasks = [
-            *self.server_tasks["listeners"],
-            self.server_tasks["monitor"],
-            self.server_tasks["metrics"],
+            *self.server_tasks.get("listeners", []),
+            self.server_tasks.get("monitor"),
+            self.server_tasks.get("metrics"),
         ]
-        await asyncio.gather(*all_tasks, return_exceptions=True)
+        await asyncio.gather(*filter(None, all_tasks), return_exceptions=True)
 
     async def _start_listener(self, server_config: GameServerConfig):
         """Starts a TCP or UDP listener for a specific game server."""
@@ -175,7 +178,6 @@ class AsyncProxy:
             port=server_config.proxy_port,
         )
         server = None
-        transport = None
         try:
             if server_config.game_type == "java":
                 server = await asyncio.start_server(
@@ -192,15 +194,15 @@ class AsyncProxy:
                     lambda: protocol,
                     local_addr=(server_config.proxy_host, server_config.proxy_port),
                 )
-                await asyncio.Future()  # Keep the listener alive
+                # Keep the listener alive until it's cancelled
+                await asyncio.Future()
         except asyncio.CancelledError:
             log.info("Listener task cancelled.", server=server_config.name)
         finally:
             if server and server.is_serving():
                 server.close()
                 await server.wait_closed()
-            if transport:
-                transport.close()
+            # UDP transport is closed by the protocol's connection_lost
             if server_config.name in self.udp_protocols:
                 del self.udp_protocols[server_config.name]
 
@@ -291,37 +293,17 @@ class AsyncProxy:
             )
 
             task = asyncio.gather(to_client, to_server)
-            self.active_tcp_sessions.add(task)
+            self.active_tcp_sessions[task] = server_config.name
             await task
         except (ConnectionRefusedError, asyncio.TimeoutError) as e:
             log.error("Could not connect to backend.", error=e, exc_info=True)
         finally:
             if task:
-                self.active_tcp_sessions.discard(task)
+                self.active_tcp_sessions.pop(task, None)
             log.info("Closing TCP connection", client=client_addr)
             client_writer.close()
             await client_writer.wait_closed()
             self.metrics_manager.dec_active_connections(server_config.name)
-
-    async def _get_player_count(self, server_config: GameServerConfig) -> int:
-        """Asynchronously queries a server and returns the player count."""
-        try:
-            lookup_str = f"{server_config.host}:{server_config.query_port}"
-            if server_config.game_type == "java":
-                server = await JavaServer.async_lookup(lookup_str, timeout=3)
-            else:
-                server = await asyncio.to_thread(
-                    BedrockServer.lookup, lookup_str, timeout=3
-                )
-
-            status = await server.async_status()
-            return status.players.online
-        except Exception:
-            log.warning(
-                "Could not query player count, assuming 0 for idle check.",
-                server=server_config.name,
-            )
-            return 0
 
     async def _monitor_server_activity(self):
         """Periodically checks for idle servers and reload requests."""
@@ -341,14 +323,18 @@ class AsyncProxy:
                     sc.container_name
                 )
                 if not is_running:
-                    if self._server_state.get(sc.name, {}).get("is_running"):
-                        self._server_state[sc.name]["is_running"] = False
+                    self._server_state[sc.name]["is_running"] = False
                     continue
 
                 self._server_state[sc.name]["is_running"] = True
 
-                player_count = await self._get_player_count(sc)
-                if player_count > 0:
+                # Check for active sessions for this server
+                udp_sessions = len(self.udp_protocols.get(sc.name, {}).client_map)
+                tcp_sessions = sum(
+                    1 for name in self.active_tcp_sessions.values() if name == sc.name
+                )
+
+                if (tcp_sessions + udp_sessions) > 0:
                     self._update_activity(sc.name)
                     continue
 
@@ -442,6 +428,8 @@ class BedrockProtocol(asyncio.DatagramProtocol):
             self._cleanup_client(client_addr)
 
     def connection_lost(self, exc):
+        if self.transport:
+            self.transport.close()
         log.info("UDP listener closed.", server=self.server_config.name)
         self.cleanup_task.cancel()
         for addr in list(self.client_map.keys()):
@@ -476,4 +464,6 @@ class BackendProtocol(asyncio.DatagramProtocol):
             self.client_transport.sendto(data, self.client_addr)
 
     def connection_lost(self, _exc):
+        if self.transport:
+            self.transport.close()
         log.info("Backend UDP connection closed", for_client=self.client_addr)
