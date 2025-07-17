@@ -47,6 +47,7 @@ def mock_bedrock_server_config():
 def mock_app_config(mock_java_server_config, mock_bedrock_server_config):
     """Fixture for a mock AppConfig."""
     config = MagicMock(spec=AppConfig)
+    # Default to having both servers for general proxy tests
     config.game_servers = [mock_java_server_config, mock_bedrock_server_config]
     config.player_check_interval = 0.01  # Small interval for faster tests
     config.server_stop_timeout = 10
@@ -62,10 +63,8 @@ def mock_app_config(mock_java_server_config, mock_bedrock_server_config):
 def mock_docker_manager():
     """Fixture for a mock DockerManager."""
     manager = AsyncMock()
-    # Mock stop_server to avoid actual Docker calls and allow test to control exit
-    # Manager will return false initially, then true after start attempt.
-    # We explicitly mock start_server for tests that need it.
     manager.is_container_running.side_effect = [False, True]
+    manager.stop_server.return_value = True  # Ensure stop_server succeeds by default
     return manager
 
 
@@ -73,7 +72,6 @@ def mock_docker_manager():
 def mock_metrics_manager():
     """Fixture for a mock MetricsManager."""
     with patch("proxy.MetricsManager") as mock:
-        # Configure the return value of the mock's methods correctly
         mock_instance = mock.return_value
         mock_instance.inc_active_connections = MagicMock()
         mock_instance.dec_active_connections = MagicMock()
@@ -91,17 +89,20 @@ def proxy(mock_app_config, mock_docker_manager, mock_metrics_manager):
 @pytest.fixture
 def mock_tcp_streams():
     """Provides mock asyncio StreamReader and StreamWriter."""
-    # FIX: Use generic AsyncMock and explicitly mock awaited methods
-    reader = AsyncMock()  # Not using spec=asyncio.StreamReader directly
-    writer = AsyncMock()  # Not using spec=asyncio.StreamWriter directly
+    reader = AsyncMock()
+    writer = AsyncMock()
     writer.get_extra_info.return_value = ("127.0.0.1", 12345)
 
-    reader.read = AsyncMock(return_value=b"some data")
-    reader.at_eof = MagicMock(side_effect=[False, True])  # Not awaited
-    writer.write = MagicMock()  # Not awaited
+    # FIX: Ensure awaited methods are explicitly set with AsyncMock
+    # and return_value is appropriate for each.
+    reader.read = AsyncMock(side_effect=[b"some data", b""])  # Simulates data then EOF
+    reader.at_eof = MagicMock(
+        side_effect=[False, True]
+    )  # at_eof does not need to be awaited
+    writer.write = MagicMock()  # Not awaited, just called
     writer.drain = AsyncMock()
-    writer.close = AsyncMock()
-    writer.wait_closed = AsyncMock()
+    writer.close = AsyncMock(return_value=None)  # Explicitly returns None on close
+    writer.wait_closed = AsyncMock(return_value=None)
     return reader, writer
 
 
@@ -117,10 +118,8 @@ def bedrock_protocol(mock_create_task, proxy, mock_bedrock_server_config):
 
     protocol = BedrockProtocol(proxy, mock_bedrock_server_config)
     protocol.transport = AsyncMock()
-    # Ensure the cleanup_task is a mock that can be cancelled
     protocol.cleanup_task = AsyncMock()
-    # Cancel the actual cleanup task to prevent interference in unit tests
-    protocol.cleanup_task.cancel()  # Call the mock's cancel method
+    protocol.cleanup_task.cancel()
     return protocol
 
 
@@ -130,7 +129,6 @@ async def test_shutdown_handler_cancels_tasks(proxy):
     task1 = asyncio.create_task(asyncio.sleep(0.1))
     task2 = asyncio.create_task(asyncio.sleep(0.1))
     tcp_session_task = asyncio.create_task(asyncio.sleep(0.1))
-    # Wait a moment for tasks to actually start if they are real tasks
     await asyncio.sleep(0.001)
 
     proxy.server_tasks = {"listeners": [task1], "monitor": task2}
@@ -138,8 +136,7 @@ async def test_shutdown_handler_cancels_tasks(proxy):
 
     proxy._shutdown_handler()
 
-    # Allow asyncio loop to process cancellations
-    await asyncio.sleep(0.01)  # Give a short delay
+    await asyncio.sleep(0.01)
 
     assert task1.cancelled()
     assert task2.cancelled()
@@ -150,18 +147,13 @@ async def test_shutdown_handler_cancels_tasks(proxy):
 @patch("proxy.asyncio.start_server", new_callable=AsyncMock)
 async def test_start_listener_tcp(mock_start_server, proxy, mock_java_server_config):
     """Verify _start_listener correctly sets up a TCP server."""
-    # Mock serve_forever to raise CancelledError so the test can exit
     mock_serve_forever = AsyncMock(side_effect=asyncio.CancelledError)
     mock_start_server.return_value.serve_forever = mock_serve_forever
 
-    # Run _start_listener as a task and await its completion (due to CancelledError)
     listener_task = asyncio.create_task(proxy._start_listener(mock_java_server_config))
-    # Give the task a moment to run and hit the cancellation
     await asyncio.sleep(0.01)
-    # Ensure the task finishes and doesn't propagate the cancellation
     await listener_task
 
-    # FIX: Use ANY for the first argument (callback) and assert the others
     mock_start_server.assert_awaited_once_with(
         ANY,  # Accept any callable as the first argument
         mock_java_server_config.proxy_host,
@@ -193,6 +185,7 @@ async def test_handle_tcp_connection_success(
     )
     assert proxy._proxy_data.await_count == 2
     client_writer.close.assert_awaited_once()
+    client_writer.wait_closed.assert_awaited_once()  # Ensure wait_closed is called
     proxy.metrics_manager.dec_active_connections.assert_called_once()
 
 
@@ -212,24 +205,23 @@ async def test_handle_tcp_connection_backend_fails(
     proxy._ensure_server_started.assert_awaited_once()
     mock_open_conn.assert_awaited_once()
     client_writer.close.assert_awaited_once()
+    client_writer.wait_closed.assert_awaited_once()  # Ensure wait_closed is called
     proxy.metrics_manager.dec_active_connections.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_proxy_data_flow(proxy, mock_metrics_manager):
     """Test the _proxy_data method forwards data and updates metrics."""
-    mock_reader = AsyncMock()  # No spec needed
-    mock_writer = AsyncMock()  # No spec needed
+    mock_reader = AsyncMock()
+    mock_writer = AsyncMock()
     test_data = b"some test data"
 
-    # Control the at_eof and read behavior to simulate one read then EOF
-    # FIX: Ensure at_eof is MagicMock, read is AsyncMock.
     mock_reader.at_eof = MagicMock(side_effect=[False, True])
     mock_reader.read = AsyncMock(side_effect=[test_data, b""])
-    mock_writer.write = MagicMock()  # Not awaited
+    mock_writer.write = MagicMock()
     mock_writer.drain = AsyncMock()
-    mock_writer.close = AsyncMock()
-    mock_writer.wait_closed = AsyncMock()
+    mock_writer.close = AsyncMock(return_value=None)
+    mock_writer.wait_closed = AsyncMock(return_value=None)
 
     await proxy._proxy_data(mock_reader, mock_writer, "test_server", "c2s")
 
@@ -246,26 +238,23 @@ async def test_proxy_data_flow(proxy, mock_metrics_manager):
 @pytest.mark.asyncio
 @patch("proxy.load_app_config")
 @patch("proxy.asyncio.create_task")
-@patch("proxy.asyncio.gather", new_callable=AsyncMock)  # FIX: Patch asyncio.gather
+@patch("proxy.asyncio.gather", new_callable=AsyncMock)
 async def test_reload_configuration(
-    mock_gather,  # This is the mock for asyncio.gather
+    mock_gather,
     mock_create_task,
     mock_load_config,
     proxy,
     mock_bedrock_server_config,
 ):
     """Verify the configuration reload process."""
-    # Setup initial tasks that would be running
-    old_listener_task = AsyncMock()  # Will be passed to gather
+    old_listener_task = AsyncMock()
     proxy.server_tasks["listeners"] = [old_listener_task]
 
-    dummy_tcp_task = AsyncMock()  # Will be passed to gather
+    dummy_tcp_task = AsyncMock()
     proxy.active_tcp_sessions = {dummy_tcp_task: "some_server"}
 
-    # Mock gather's return value for the cancellation calls
-    mock_gather.return_value = AsyncMock()  # Ensure gather returns an awaitable mock
+    mock_gather.return_value = AsyncMock()
 
-    # Mock new config being loaded
     new_config = MagicMock(spec=AppConfig)
     new_config.game_servers = [mock_bedrock_server_config]
     new_config.player_check_interval = 0.01
@@ -277,37 +266,19 @@ async def test_reload_configuration(
     new_config.initial_server_query_delay = 10
     mock_load_config.return_value = new_config
 
-    # Mock create_task for new listeners (should return an awaitable mock)
     mock_create_task.return_value = AsyncMock()
 
-    # Mock dependent async methods (needed because reload calls them)
     proxy._ensure_all_servers_stopped_on_startup = AsyncMock()
 
     await proxy._reload_configuration()
 
     # Assert old tasks were passed to gather for cancellation
-    mock_gather.assert_any_await()  # Check if gather was awaited at all
+    # FIX: Assert that gather was called with arguments including ANY for the tasks
+    mock_gather.assert_awaited_with(ANY, return_exceptions=True)
+    # The gather will be called twice: once for active sessions, once for listeners.
+    assert mock_gather.await_count == 2  # Check both gather calls happened
 
-    # More specific assertions on gather calls:
-    # First gather call for active_tcp_sessions
-    mock_gather.assert_any_call(
-        # ANY is used because the exact task objects are dynamically created
-        # and not easily comparable by identity with a mock.
-        # We just assert that it was called with some tasks and return_exceptions.
-        *ANY,
-        return_exceptions=True,
-    )
-
-    # Second gather call for listener_tasks
-    mock_gather.assert_any_call(
-        # Again, tasks are dynamically created/managed, so ANY is practical.
-        *ANY,
-        return_exceptions=True,
-    )
-
-    # Assert specific things happened after gather
-    assert not proxy.active_tcp_sessions  # All sessions should be cleared
-
+    assert not proxy.active_tcp_sessions
     mock_load_config.assert_called_once()
     assert proxy.docker_manager.app_config == new_config
     proxy._ensure_all_servers_stopped_on_startup.assert_awaited_once()
@@ -323,11 +294,8 @@ async def test_handle_tcp_connection_rejects_max_sessions(
 ):
     """Verify TCP connections are rejected when max_concurrent_sessions is hit."""
     proxy.app_config.max_concurrent_sessions = 1
-    # Simulate one active session already using a real task
-    # FIX: Use AsyncMock instead of asyncio.Future
     dummy_tcp_task = AsyncMock()
     proxy.active_tcp_sessions = {dummy_tcp_task: "server1"}
-    # Allow the task to be registered in the loop
     await asyncio.sleep(0.01)
 
     client_reader, client_writer = mock_tcp_streams
@@ -337,14 +305,12 @@ async def test_handle_tcp_connection_rejects_max_sessions(
         client_reader, client_writer, mock_java_server_config
     )
 
-    # Ensure no attempt was made to start another session or connect to backend
     proxy._ensure_server_started.assert_not_called()
     client_writer.close.assert_awaited_once()
-    # active_connections is incremented then decremented when rejected/closed
+    client_writer.wait_closed.assert_awaited_once()  # Ensure wait_closed is called
     assert proxy.metrics_manager.dec_active_connections.call_count == 1
-    # Clean up dummy task
     dummy_tcp_task.cancel()
-    await asyncio.sleep(0.01)  # Allow cancellation to propagate
+    await asyncio.sleep(0.01)
 
 
 @pytest.mark.asyncio
@@ -358,50 +324,45 @@ async def test_monitor_server_activity_stops_idle_server(
     server_name = mock_bedrock_server_config.name
     container_name = mock_bedrock_server_config.container_name
 
-    # Set initial state for the server
+    # FIX: Ensure game_servers is a list containing only the target server
+    # to avoid iterating over unintended servers in this specific test
+    proxy.app_config.game_servers = [mock_bedrock_server_config]
+
     proxy._server_state[server_name]["is_running"] = True
-    # Set last_activity to be well before the idle_timeout
     proxy._server_state[server_name]["last_activity"] = (
         mocker.patch("time.time", return_value=1000).start()
         - proxy.app_config.idle_timeout
         - 10
     )
 
-    # Mock DockerManager calls
     proxy.docker_manager.is_container_running.side_effect = [
-        True,  # First check: container is running
-        False,  # After stop: container is stopped
-        StopTestLoop(),  # Stop the monitor loop after first full iteration
+        True,
+        False,
+        StopTestLoop(),
     ]
-    proxy.docker_manager.stop_server = AsyncMock()
+    proxy.docker_manager.stop_server = AsyncMock(
+        return_value=True
+    )  # Ensure it returns True
 
-    # FIX: Provide a mock BedrockProtocol object that has client_map
-    # Make sure client_map is a dictionary-like object for len()
     mock_bedrock_protocol_instance = MagicMock(client_map={})
     proxy.udp_protocols[server_name] = mock_bedrock_protocol_instance
 
-    # Run the monitor task
     monitor_task = asyncio.create_task(proxy._monitor_server_activity())
 
     try:
-        # Wait for the monitor task to complete at least one check
-        # It will raise StopTestLoop to exit the test after the required check
         await monitor_task
     except StopTestLoop:
-        pass  # Expected exception to terminate the test gracefully
+        pass
     except asyncio.CancelledError:
-        pass  # Also possible if the test finishes quickly and task is cancelled
+        pass
     finally:
-        if not monitor_task.done():  # Ensure task is cancelled if it didn't complete
+        if not monitor_task.done():
             monitor_task.cancel()
-            await asyncio.sleep(0)  # Let event loop process cancellation
+            await asyncio.sleep(0)
 
-    # Assert that stop_server was called for the idle server
     proxy.docker_manager.stop_server.assert_awaited_once_with(
         container_name, proxy.app_config.server_stop_timeout
     )
-    # Assert server state is updated
     assert not proxy._server_state[server_name]["is_running"]
-    # Assert ready event is cleared
     proxy._ready_events[server_name].is_set.assert_called_once_with()
     assert not proxy._ready_events[server_name].is_set()
