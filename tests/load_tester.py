@@ -285,7 +285,8 @@ async def simulate_client(
         return "CANCELLED"
     except Exception as e:
         log.critical(
-            f"Client {client_id}: CRITICAL error before main logic: {e}", exc_info=True
+            f"Client {client_id}: CRITICAL error before main logic: {e}",
+            exc_info=True,
         )
         failed_connections += 1
         return f"FAILURE: Critical Pre-Loop Error ({type(e).__name__})"
@@ -313,11 +314,13 @@ async def ensure_container_stopped(container_name: str):
             log.info(f"Container '{container_name}' not found, assumed stopped.")
         else:
             log.error(
-                f"Docker error ensuring stop for {container_name}: {e}", exc_info=True
+                f"Docker error ensuring stop for {container_name}: {e}",
+                exc_info=True,
             )
     except Exception as e:
         log.error(
-            f"Unexpected error ensuring stop for {container_name}: {e}", exc_info=True
+            f"Unexpected error ensuring stop for {container_name}: {e}",
+            exc_info=True,
         )
     finally:
         if client:
@@ -341,11 +344,12 @@ async def dump_debug_info(container_names_to_log):
                 container = await client.containers.get(container_name)
                 status_info = await container.show()
                 status = status_info["State"]["Status"]
-                running_status = status_info["State"]["Running"]
+                running_status = status_info["State"].get("Running", False)
                 health_status = status_info["State"].get("Health", {}).get("Status")
                 log.info(
                     f"  - {container_name:<15} | Status: {status:<8} | "
-                    f"Running: {str(running_status):<5} | Health: {health_status}"
+                    f"Running: {str(running_status):<5} | Health: "
+                    f"{health_status}"
                 )
             except DockerError as e:
                 if e.status == 404:
