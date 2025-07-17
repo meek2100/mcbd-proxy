@@ -142,25 +142,6 @@ class DockerManager:
                         exc_info=True,
                     )
 
-    async def remove_server(self, container_name: str):
-        """
-        Asynchronously removes a Docker container.
-        """
-        log.info("Removing container", container_name=container_name)
-        async with self.get_container(container_name) as container:
-            if container:
-                try:
-                    await container.delete(force=True)
-                    log.info(
-                        "Container removed successfully", container_name=container_name
-                    )
-                except aiodocker.exceptions.DockerError:
-                    log.error(
-                        "Failed to remove container",
-                        container_name=container_name,
-                        exc_info=True,
-                    )
-
     async def wait_for_server_query_ready(
         self, server_config: GameServerConfig, timeout: Optional[int] = None
     ) -> bool:

@@ -106,22 +106,35 @@ class AsyncProxy:
 
     async def _ensure_all_servers_stopped_on_startup(self):
         """
-        Ensures any running servers are stopped and removed before proceeding
-        to guarantee a clean slate for tests.
+        Ensures any running servers are gracefully stopped and confirmed exited
+        before proceeding to prevent race conditions.
         """
         log.info("Checking for running servers to perform initial cleanup...")
         for sc in self.app_config.game_servers:
             if await self.docker_manager.is_container_running(sc.container_name):
                 log.warning(
-                    "Server found running. Issuing stop and remove.",
+                    "Server found running. Waiting up to 30s for it to be "
+                    "queryable before issuing a safe stop.",
                     server=sc.name,
                 )
+                # Wait for the server to be stable before trying to stop it.
+                await self.docker_manager.wait_for_server_query_ready(sc, timeout=30)
+
                 await self.docker_manager.stop_server(
                     sc.container_name, self.app_config.server_stop_timeout
                 )
-                # Aggressively remove to prevent docker-compose from restarting it
-                await self.docker_manager.remove_server(sc.container_name)
-                self._ready_events[sc.name].clear()
+
+                # Confirm it stopped to avoid race conditions in tests.
+                for _ in range(self.app_config.server_stop_timeout):
+                    if not await self.docker_manager.is_container_running(
+                        sc.container_name
+                    ):
+                        log.info("Server confirmed stopped.", server=sc.name)
+                        self._ready_events[sc.name].clear()
+                        break
+                    await asyncio.sleep(1)
+                else:
+                    log.error("Timeout waiting for server to stop!", server=sc.name)
 
     async def start(self):
         """Starts all proxy services and manages their lifecycle."""
