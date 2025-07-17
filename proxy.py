@@ -111,41 +111,41 @@ class AsyncProxy:
 
     async def _ensure_all_servers_stopped_on_startup(self):
         """
-        Ensures all managed servers are stopped and confirms their exit before
-        proceeding, preventing race conditions.
+        Ensures any running servers are gracefully stopped and confirmed exited
+        before proceeding to prevent race conditions.
         """
-        log.info("Ensuring all managed servers are initially stopped.")
-        servers_to_stop = [
-            sc
-            for sc in self.app_config.game_servers
-            if await self.docker_manager.is_container_running(sc.container_name)
-        ]
+        log.info("Checking for running servers to perform initial cleanup...")
+        for sc in self.app_config.game_servers:
+            if await self.docker_manager.is_container_running(sc.container_name):
+                log.warning(
+                    "Server found running. Waiting for it to be queryable before "
+                    "issuing a safe stop.",
+                    server=sc.name,
+                )
+                # THIS IS THE RESTORED LOGIC: Wait for the server to be stable
+                # before trying to stop it.
+                ready = await self.docker_manager.wait_for_server_query_ready(sc)
+                if not ready:
+                    log.warning(
+                        "Server did not become ready, attempting stop anyway.",
+                        server=sc.name,
+                    )
 
-        if not servers_to_stop:
-            log.info("No running servers found. Startup check complete.")
-            return
+                await self.docker_manager.stop_server(
+                    sc.container_name, self.app_config.server_stop_timeout
+                )
 
-        stop_tasks = [
-            self.docker_manager.stop_server(
-                sc.container_name, self.app_config.server_stop_timeout
-            )
-            for sc in servers_to_stop
-        ]
-        await asyncio.gather(*stop_tasks)
-
-        log.info("Confirming all specified servers are stopped...")
-        for sc in servers_to_stop:
-            for _ in range(self.app_config.server_stop_timeout):
-                if not await self.docker_manager.is_container_running(
-                    sc.container_name
-                ):
-                    log.info("Server confirmed stopped.", server=sc.name)
-                    # THIS IS THE FIX: Explicitly clear the ready event
-                    self._ready_events[sc.name].clear()
-                    break
-                await asyncio.sleep(1)
-            else:
-                log.error("Timeout waiting for server to stop!", server=sc.name)
+                # Now, confirm it has fully stopped.
+                for _ in range(self.app_config.server_stop_timeout):
+                    if not await self.docker_manager.is_container_running(
+                        sc.container_name
+                    ):
+                        log.info("Server confirmed stopped.", server=sc.name)
+                        self._ready_events[sc.name].clear()
+                        break
+                    await asyncio.sleep(1)
+                else:
+                    log.error("Timeout waiting for server to stop!", server=sc.name)
 
     async def start(self):
         """Starts all proxy services and manages their lifecycle."""
@@ -305,7 +305,7 @@ class AsyncProxy:
             self.active_tcp_sessions.add(task)
             await task
         except (ConnectionRefusedError, asyncio.TimeoutError) as e:
-            log.error("Could not connect to backend.", error=e)
+            log.error("Could not connect to backend.", error=e, exc_info=True)
         finally:
             if task:
                 self.active_tcp_sessions.discard(task)
