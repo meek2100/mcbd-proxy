@@ -28,8 +28,9 @@ def env_config(pytestconfig):
         load_dotenv(dotenv_path=env_file_path)
     else:
         print(
-            "--- No 'tests/.env' file found. Using environment variables from CI/shell. ---"
-        )
+            "--- No 'tests/.env' file found. Using environment variables from "
+            "CI/shell. ---"
+        )  # Corrected line length
 
     host_ip = os.environ.get("DOCKER_HOST_IP")
     conn_type = os.environ.get("DOCKER_CONNECTION_TYPE", "").lower()
