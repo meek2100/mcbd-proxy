@@ -168,10 +168,13 @@ class DockerManager:
                         lookup_str, timeout=query_timeout
                     )
                 else:
+                    # BedrockServer.lookup is synchronous, run in a thread pool
                     server = await asyncio.to_thread(
                         BedrockServer.lookup, lookup_str, timeout=query_timeout
                     )
 
+                # BedrockServer.lookup returns a BedrockServer object which
+                # then requires an async_status() call.
                 await server.async_status()
                 log.info(
                     "Server is queryable!",
@@ -184,7 +187,9 @@ class DockerManager:
                     container_name=server_config.container_name,
                     error=str(e),
                 )
-                await asyncio.sleep(5)
+                # CORRECTED: Use query_timeout for sleep interval to match
+                # original behavior.
+                await asyncio.sleep(query_timeout)
 
         log.error(
             "Timeout waiting for server to be queryable",
