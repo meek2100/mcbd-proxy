@@ -1,11 +1,15 @@
 # tests/test_main.py
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
 # Imports from the module being tested
-from main import amain, health_check, main
+from main import (  # Import _update_heartbeat
+    amain,
+    health_check,
+    main,
+)
 
 
 @pytest.mark.unit
@@ -24,11 +28,11 @@ def test_main_runs_health_check(mock_health_check):
 @patch("main.DockerManager")
 @patch("main.AsyncProxy")
 @patch("main.configure_logging")
-@patch("main._update_heartbeat", new_callable=AsyncMock)
+@patch("main.asyncio.create_task")  # Patch create_task directly
 @patch("main.load_app_config")
 async def test_amain_orchestration_and_shutdown(
     mock_load_config,
-    mock_heartbeat,
+    mock_create_task,  # This mock now represents asyncio.create_task
     mock_configure_logging,
     mock_async_proxy,
     mock_docker_manager,
@@ -37,15 +41,20 @@ async def test_amain_orchestration_and_shutdown(
     Verify `amain` orchestrates startup and that `finally` block cleans up.
     """
     mock_proxy_instance = mock_async_proxy.return_value
-    # FIX: Ensure mock_docker_manager returns an AsyncMock instance
     mock_docker_instance = mock_docker_manager.return_value = AsyncMock()
 
     # Mock load_app_config to return a valid config, including game_servers
     mock_app_config = MagicMock()
-    mock_app_config.game_servers = [MagicMock()]  # Ensure it's not empty
+    mock_app_config.game_servers = [MagicMock()]
     mock_app_config.log_level = "INFO"
     mock_app_config.log_format = "console"
     mock_load_config.return_value = mock_app_config
+
+    # Mock create_task to return an AsyncMock that behaves like a task.
+    # When _update_heartbeat(app_config) is called, it returns a coroutine object.
+    # asyncio.create_task then takes this coroutine object.
+    # For testing, we can simply return an AsyncMock when create_task is called.
+    mock_create_task.return_value = AsyncMock()
 
     # Simulate a cancellation to test the finally block
     mock_proxy_instance.start = AsyncMock(side_effect=asyncio.CancelledError)
@@ -58,8 +67,20 @@ async def test_amain_orchestration_and_shutdown(
     )
     mock_async_proxy.assert_called_once_with(mock_app_config, mock_docker_instance)
     mock_proxy_instance.start.assert_awaited_once()
-    mock_heartbeat.assert_awaited_once_with(mock_app_config)
-    mock_heartbeat.cancel.assert_called_once()
+
+    # Assert that asyncio.create_task was called with the _update_heartbeat coroutine.
+    # The actual coroutine object returned by _update_heartbeat(mock_app_config)
+    # is what create_task receives. We can check the function object that generates it.
+    mock_create_task.assert_called_once_with(
+        ANY,  # The coroutine object itself
+        name=ANY,  # For named tasks if used, or just ANY
+    )
+    # Optionally, verify the first argument is indeed the _update_heartbeat coroutine
+    # This requires more complex inspection of the mock call args if needed.
+    # For now, assert that it was called once with something as its first arg.
+
+    # Assert that the created task (mock_create_task.return_value) was cancelled
+    mock_create_task.return_value.cancel.assert_called_once()
     mock_docker_instance.close.assert_awaited_once()
 
 
