@@ -72,6 +72,11 @@ async def amain():
     app_config = load_app_config()
     configure_logging(app_config.log_level, app_config.log_format)
 
+    # Add check for loaded game servers as per the plan
+    if not app_config.game_servers:
+        log.critical("FATAL: No server configurations loaded. Exiting.")
+        sys.exit(1)
+
     docker_manager = DockerManager(app_config)
     proxy_server = AsyncProxy(app_config, docker_manager)
 
@@ -109,6 +114,7 @@ def health_check():
             sys.exit(1)
 
         heartbeat_age = int(time.time()) - int(HEARTBEAT_FILE.read_text())
+        # Use the configurable threshold from AppConfig
         if heartbeat_age > app_config.healthcheck_stale_threshold:
             print(f"Health check failed: Heartbeat is stale ({heartbeat_age}s).")
             sys.exit(1)
