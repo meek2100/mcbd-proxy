@@ -103,13 +103,13 @@ def health_check():
     2. Checks if the heartbeat timestamp in the file is recent.
     """
     try:
-        load_app_config()
+        app_config = load_app_config()
         if not HEARTBEAT_FILE.exists():
             print("Health check failed: Heartbeat file not found.")
             sys.exit(1)
 
         heartbeat_age = int(time.time()) - int(HEARTBEAT_FILE.read_text())
-        if heartbeat_age > 60:
+        if heartbeat_age > app_config.healthcheck_stale_threshold:
             print(f"Health check failed: Heartbeat is stale ({heartbeat_age}s).")
             sys.exit(1)
 
@@ -117,6 +117,9 @@ def health_check():
         sys.exit(0)
     except (ValueError, FileNotFoundError) as e:
         print(f"Health check failed during execution: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Health check failed during config load: {e}")
         sys.exit(1)
 
 

@@ -57,7 +57,6 @@ class GameServerConfig(BaseModel):
         """Set query_port and host to sane defaults if not defined."""
         if self.query_port is None:
             self.query_port = self.port
-        # CORRECTED: Default to container_name for Docker DNS resolution
         if self.host is None:
             self.host = self.container_name
 
@@ -77,6 +76,7 @@ class AppConfig(BaseModel):
     query_timeout: int = Field(5, alias="NB_QUERY_TIMEOUT")
     is_prometheus_enabled: bool = Field(True, alias="NB_PROMETHEUS_ENABLED")
     prometheus_port: int = Field(8000, alias="NB_PROMETHEUS_PORT")
+    healthcheck_stale_threshold: int = Field(60, alias="NB_HEALTHCHECK_STALE_THRESHOLD")
 
 
 def load_app_config() -> AppConfig:
@@ -135,7 +135,6 @@ def load_app_config() -> AppConfig:
         except json.JSONDecodeError:
             log.error("Could not parse settings.json", path=settings_file)
 
-    # Overwrite with any environment variables, respecting aliases
     for field_name, field_info in AppConfig.model_fields.items():
         if field_info.alias and field_info.alias in os.environ:
             final_settings[field_name] = os.environ[field_info.alias]
