@@ -43,11 +43,9 @@ class DockerManager:
             yield container
         except aiodocker.exceptions.DockerError as e:
             if e.status == 404:
-                # This is an expected condition, so debug level is appropriate.
                 log.debug("Container not found.", container_name=container_name)
                 yield None
             else:
-                # An API error is unexpected and should be logged as an error.
                 log.error(
                     "API error getting container",
                     container_name=container_name,
@@ -56,7 +54,6 @@ class DockerManager:
                 )
                 yield None
         except Exception:
-            # Catch any other unexpected exceptions.
             log.error(
                 "Unexpected error in get_container",
                 container_name=container_name,
@@ -71,7 +68,7 @@ class DockerManager:
         log.debug("Checking container status", container_name=container_name)
         async with self.get_container(container_name) as container:
             if not container:
-                return False  # get_container already logged the 404
+                return False
 
             try:
                 container_info = await container.show()
@@ -106,9 +103,10 @@ class DockerManager:
                 log.info(
                     "Container started successfully", container_name=container_name
                 )
+                # Reintroduce delay before querying to match original logic.
+                await asyncio.sleep(self.app_config.server_startup_delay)
                 return await self.wait_for_server_query_ready(server_config)
             except aiodocker.exceptions.DockerError as e:
-                # The original had good handling for this specific case.
                 if "already started" in str(e).lower():
                     log.warning(
                         "Container is already running",
