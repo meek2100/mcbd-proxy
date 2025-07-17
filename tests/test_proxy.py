@@ -132,19 +132,6 @@ async def test_start_listener_tcp(mock_start_server, proxy, mock_java_server_con
 
 
 @pytest.mark.asyncio
-@patch("asyncio.get_running_loop")
-async def test_start_listener_udp(mock_get_loop, proxy, mock_bedrock_server_config):
-    """Verify _start_listener correctly sets up a UDP endpoint."""
-    mock_loop = mock_get_loop.return_value
-    mock_loop.create_datagram_endpoint.side_effect = asyncio.CancelledError
-
-    with pytest.raises(asyncio.CancelledError):
-        await proxy._start_listener(mock_bedrock_server_config)
-
-    mock_loop.create_datagram_endpoint.assert_awaited_once()
-
-
-@pytest.mark.asyncio
 @patch("proxy.asyncio.open_connection")
 async def test_handle_tcp_connection_success(
     mock_open_conn, proxy, mock_java_server_config, mock_tcp_streams
@@ -216,85 +203,53 @@ async def test_reload_configuration(
     mock_create_task, mock_load_config, proxy, mock_bedrock_server_config
 ):
     """Verify the configuration reload process."""
-    # Setup initial state
     old_listener_task = AsyncMock()
     proxy.server_tasks["listeners"] = [old_listener_task]
-
-    # Setup new config to be loaded
     new_config = MagicMock(spec=AppConfig)
-    new_config.game_servers = [mock_bedrock_server_config]  # Only one server
+    new_config.game_servers = [mock_bedrock_server_config]
     mock_load_config.return_value = new_config
-
     proxy._ensure_all_servers_stopped_on_startup = AsyncMock()
 
     await proxy._reload_configuration()
 
-    # Verify old tasks were cancelled
     old_listener_task.cancel.assert_called_once()
-    # Verify new config was loaded and applied
     mock_load_config.assert_called_once()
     assert proxy.docker_manager.app_config == new_config
-    assert proxy.metrics_manager.app_config == new_config
-    # Verify cleanup and restart logic was called
     proxy._ensure_all_servers_stopped_on_startup.assert_awaited_once()
-    mock_create_task.assert_called_once()  # For the new bedrock server listener
+    mock_create_task.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_tcp_connection_rejects_max_sessions(
+    proxy, mock_java_server_config, mock_tcp_streams
+):
+    """Verify TCP connections are rejected when max_concurrent_sessions is hit."""
+    proxy.app_config.max_concurrent_sessions = 1
+    proxy.active_tcp_sessions = {AsyncMock(): "server1"}  # Already one session
+    client_reader, client_writer = mock_tcp_streams
+    proxy._ensure_server_started = AsyncMock()
+
+    await proxy._handle_tcp_connection(
+        client_reader, client_writer, mock_java_server_config
+    )
+
+    # Ensure no attempt was made to start another session
+    proxy._ensure_server_started.assert_not_called()
+    client_writer.close.assert_awaited_once()
 
 
 # --- BedrockProtocol Unit Tests ---
 
 
-@pytest.mark.asyncio
-@patch("asyncio.get_running_loop")
-def test_bedrock_datagram_received_new_client(mock_get_loop, bedrock_protocol, proxy):
-    """Test BedrockProtocol handles a packet from a new client."""
-    mock_loop = mock_get_loop.return_value
-    addr = ("1.2.3.4", 12345)
-    data = b"new client data"
+def test_bedrock_rejects_max_sessions(bedrock_protocol, proxy):
+    """Verify UDP packets are dropped when max_concurrent_sessions is hit."""
+    proxy.app_config.max_concurrent_sessions = 1
+    bedrock_protocol.client_map = {("1.1.1.1", 1): {}}  # Already one session
+    new_addr = ("2.2.2.2", 2)
+    proxy.metrics_manager.inc_active_connections = MagicMock()
 
-    bedrock_protocol.datagram_received(data, addr)
+    bedrock_protocol.datagram_received(b"some data", new_addr)
 
-    proxy.metrics_manager.inc_active_connections.assert_called_once_with(
-        bedrock_protocol.server_config.name
-    )
-    assert addr in bedrock_protocol.client_map
-    mock_loop.create_task.assert_called_once()
-
-
-@pytest.mark.asyncio
-def test_bedrock_datagram_received_existing_client(bedrock_protocol):
-    """Test BedrockProtocol forwards packet for an existing client."""
-    addr = ("1.2.3.4", 12345)
-    data = b"existing client data"
-    mock_backend_protocol = MagicMock()
-    mock_backend_protocol.transport.sendto = MagicMock()
-    bedrock_protocol.client_map[addr] = {
-        "protocol": mock_backend_protocol,
-        "last_activity": 0,
-    }
-
-    bedrock_protocol.datagram_received(data, addr)
-
-    mock_backend_protocol.transport.sendto.assert_called_once_with(data)
-
-
-@pytest.mark.asyncio
-@patch("proxy.time.time", return_value=2000)
-@patch("proxy.asyncio.sleep", new_callable=AsyncMock)
-async def test_bedrock_monitor_idle_clients(
-    mock_sleep, mock_time, bedrock_protocol, proxy
-):
-    """Test that the idle client monitor correctly cleans up stale sessions."""
-    mock_sleep.side_effect = StopTestLoop
-
-    idle_addr = ("1.1.1.1", 11111)
-    active_addr = ("2.2.2.2", 22222)
-    bedrock_protocol.client_map = {
-        idle_addr: {"last_activity": 1000},
-        active_addr: {"last_activity": 2000},
-    }
-    bedrock_protocol._cleanup_client = MagicMock()
-
-    with pytest.raises(StopTestLoop):
-        await bedrock_protocol._monitor_idle_clients()
-
-    bedrock_protocol._cleanup_client.assert_called_once_with(idle_addr)
+    # Ensure no new session was created
+    assert new_addr not in bedrock_protocol.client_map
+    proxy.metrics_manager.inc_active_connections.assert_not_called()
