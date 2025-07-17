@@ -47,9 +47,6 @@ async def test_amain_orchestration_and_shutdown(
     mock_load_config.return_value = mock_app_config
 
     # Mock create_task to return an AsyncMock that behaves like a task.
-    # When _update_heartbeat(app_config) is called, it returns a coroutine object.
-    # asyncio.create_task then takes this coroutine object.
-    # For testing, we can simply return an AsyncMock when create_task is called.
     mock_create_task.return_value = AsyncMock()
 
     # Simulate a cancellation to test the finally block
@@ -65,12 +62,9 @@ async def test_amain_orchestration_and_shutdown(
     mock_proxy_instance.start.assert_awaited_once()
 
     # Assert that asyncio.create_task was called with the _update_heartbeat coroutine.
-    # The actual coroutine object returned by _update_heartbeat(mock_app_config)
-    # is what create_task receives. We can check the function object that generates it.
-    mock_create_task.assert_called_once_with(
-        ANY,
-        # The coroutine object itself (it will be _update_heartbeat(mock_app_config))
-    )
+    # FIX: Ensure assertion expects no kwargs, which is default for create_task in main.
+    mock_create_task.assert_called_once_with(ANY)
+
     # Assert that the created task (mock_create_task.return_value) was cancelled
     mock_create_task.return_value.cancel.assert_called_once()
     mock_docker_instance.close.assert_awaited_once()
