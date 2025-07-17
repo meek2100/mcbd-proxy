@@ -27,9 +27,11 @@ def test_main_runs_health_check(mock_health_check):
 @patch("main.configure_logging")
 @patch("main.asyncio.create_task")
 @patch("main.load_app_config")
-@patch("main.os.environ")  # Patch os.environ to control APP_IMAGE_METADATA
+@patch("main.asyncio.get_running_loop")  # Patch get_running_loop for signal handlers
+@patch("main.os.environ")
 async def test_amain_orchestration_and_shutdown(
-    mock_os_environ,  # New mock
+    mock_os_environ,
+    mock_get_running_loop,  # New mock
     mock_load_config,
     mock_create_task,
     mock_configure_logging,
@@ -39,25 +41,28 @@ async def test_amain_orchestration_and_shutdown(
     """
     Verify `amain` orchestrates startup and that `finally` block cleans up.
     """
+    # Mock loop and add_signal_handler to prevent NotImplementedError on Windows
+    mock_loop = MagicMock()
+    mock_get_running_loop.return_value = mock_loop
+    mock_loop.add_signal_handler = MagicMock()
+
     mock_proxy_instance = mock_async_proxy.return_value
     mock_docker_instance = mock_docker_manager.return_value = AsyncMock()
 
-    # Mock load_app_config to return a valid config, including game_servers
     mock_app_config = MagicMock()
     mock_app_config.game_servers = [MagicMock()]
     mock_app_config.log_level = "INFO"
     mock_app_config.log_format = "console"
     mock_load_config.return_value = mock_app_config
 
-    # Ensure APP_IMAGE_METADATA is not set for this test
+    # Configure os.environ.get to return None for APP_IMAGE_METADATA
+    original_os_environ_get = os.environ.get
     mock_os_environ.get.side_effect = lambda key, default=None: (
-        None if key == "APP_IMAGE_METADATA" else os.environ.get(key, default)
+        None if key == "APP_IMAGE_METADATA" else original_os_environ_get(key, default)
     )
 
-    # Mock create_task to return an AsyncMock that behaves like a task.
     mock_create_task.return_value = AsyncMock()
 
-    # Simulate a cancellation to test the finally block
     mock_proxy_instance.start = AsyncMock(side_effect=asyncio.CancelledError)
 
     await amain()
@@ -74,6 +79,11 @@ async def test_amain_orchestration_and_shutdown(
     mock_create_task.return_value.cancel.assert_called_once()
     mock_docker_instance.close.assert_awaited_once()
 
+    # Verify signal handlers were attempted to be added
+    assert (
+        mock_loop.add_signal_handler.call_count >= 2
+    )  # SIGINT, SIGTERM, potentially SIGHUP
+
 
 @pytest.mark.unit
 @patch("main.DockerManager")
@@ -81,11 +91,13 @@ async def test_amain_orchestration_and_shutdown(
 @patch("main.configure_logging")
 @patch("main.asyncio.create_task")
 @patch("main.load_app_config")
-@patch("main.log")  # Patch the structlog logger
-@patch("main.os.environ")  # Patch os.environ for APP_IMAGE_METADATA
+@patch("main.log")
+@patch("main.asyncio.get_running_loop")  # Patch get_running_loop for signal handlers
+@patch.object(os.environ, "get")  # Patch os.environ.get directly for more control
 async def test_amain_logs_app_image_metadata(
-    mock_os_environ,
-    mock_log,  # New mock
+    mock_os_environ_get,  # Renamed mock to avoid conflict
+    mock_get_running_loop,  # New mock
+    mock_log,
     mock_load_config,
     mock_create_task,
     mock_configure_logging,
@@ -95,32 +107,34 @@ async def test_amain_logs_app_image_metadata(
     """
     Tests that amain correctly logs APP_IMAGE_METADATA if present.
     """
+    # Mock loop and add_signal_handler
+    mock_loop = MagicMock()
+    mock_get_running_loop.return_value = mock_loop
+    mock_loop.add_signal_handler = MagicMock()
+
     mock_app_config = MagicMock()
-    mock_app_config.game_servers = [MagicMock()]  # Prevent early exit
+    mock_app_config.game_servers = [MagicMock()]
     mock_load_config.return_value = mock_app_config
-    mock_async_proxy.return_value.start = AsyncMock(
-        side_effect=asyncio.CancelledError  # Exit gracefully
-    )
+    mock_async_proxy.return_value.start = AsyncMock(side_effect=asyncio.CancelledError)
     mock_create_task.return_value = AsyncMock()
 
-    # Set mock APP_IMAGE_METADATA
-    mock_os_environ.get.side_effect = lambda key, default=None: (
+    # Test with valid JSON metadata
+    mock_os_environ_get.side_effect = lambda key, default=None: (
         '{"version": "1.0.0", "build": "abc"}'
         if key == "APP_IMAGE_METADATA"
-        else os.environ.get(key, default)
+        else default
     )
-
     await amain()
-
     mock_log.info.assert_any_call(
         "Application build metadata", version="1.0.0", build="abc"
     )
+    mock_log.info.reset_mock()  # Reset mock to check for next call
 
-    # Verify warning if metadata is malformed JSON
-    mock_os_environ.get.side_effect = lambda key, default=None: (
-        "invalid json" if key == "APP_IMAGE_METADATA" else os.environ.get(key, default)
+    # Test with malformed JSON metadata
+    mock_os_environ_get.side_effect = lambda key, default=None: (
+        "invalid json" if key == "APP_IMAGE_METADATA" else default
     )
-    await amain()  # Call again with malformed data
+    await amain()
     mock_log.warning.assert_any_call(
         "Could not parse APP_IMAGE_METADATA", metadata="invalid json"
     )
@@ -238,10 +252,12 @@ def test_health_check_succeeds_if_heartbeat_is_fresh(mock_time, mock_heartbeat_f
 @patch("main.AsyncProxy")
 @patch("main.configure_logging")
 @patch("main.asyncio.create_task")
-@patch("main.log")  # Patch the structlog logger
-@patch("main.os.environ")
+@patch("main.log")
+@patch("main.asyncio.get_running_loop")  # Patch get_running_loop for signal handlers
+@patch.object(os.environ, "get")  # Patch os.environ.get directly
 async def test_amain_handles_metrics_manager_start_failure(
-    mock_os_environ,
+    mock_os_environ_get,
+    mock_get_running_loop,  # New mock
     mock_log,
     mock_create_task,
     mock_configure_logging,
@@ -253,39 +269,37 @@ async def test_amain_handles_metrics_manager_start_failure(
     Tests that amain gracefully handles a failure when MetricsManager.start()
     raises an exception, logging it and allowing shutdown to proceed.
     """
+    # Mock loop and add_signal_handler
+    mock_loop = MagicMock()
+    mock_get_running_loop.return_value = mock_loop
+    mock_loop.add_signal_handler = MagicMock()
+
     mock_app_config = MagicMock()
     mock_app_config.game_servers = [MagicMock()]
     mock_app_config.log_level = "INFO"
     mock_app_config.log_format = "console"
     mock_load_config.return_value = mock_app_config
 
+    # Configure os.environ.get to return None for APP_IMAGE_METADATA
+    original_os_environ_get = os.environ.get
+    mock_os_environ_get.side_effect = lambda key, default=None: (
+        None if key == "APP_IMAGE_METADATA" else original_os_environ_get(key, default)
+    )
+
     mock_docker_instance = mock_docker_manager.return_value = AsyncMock()
     mock_proxy_instance = mock_async_proxy.return_value
 
-    # Mock the MetricsManager instance created within AsyncProxy
-    mock_metrics_manager = AsyncMock()
-    type(mock_proxy_instance).metrics_manager = MagicMock(
-        return_value=mock_metrics_manager
-    )
-
-    # Configure AsyncProxy.start to cause MetricsManager.start to fail
-    # We need to simulate the nested call for this. The actual call
-    # is proxy_server.metrics_manager.start() within proxy_server.start()
-    # So we mock the start() method of the mocked metrics_manager
-    # We also need to ensure other tasks are cancelled to allow amain to proceed
     mock_proxy_instance.metrics_manager.start.side_effect = Exception(
         "Metrics server failed to bind"
     )
-    mock_proxy_instance.start.side_effect = (
-        asyncio.CancelledError
-    )  # Allow graceful exit
+    mock_proxy_instance.start.side_effect = asyncio.CancelledError
 
-    mock_create_task.return_value = AsyncMock()  # For heartbeat task
+    mock_create_task.return_value = AsyncMock()
 
     await amain()
 
-    # Assert that the error was logged
     mock_log.error.assert_any_call("Failed to start Prometheus server", exc_info=True)
-    # Assert that subsequent cleanup still happens
     mock_docker_instance.close.assert_awaited_once()
     mock_create_task.return_value.cancel.assert_called_once()
+    # Verify signal handlers were attempted to be added
+    assert mock_loop.add_signal_handler.call_count >= 2
