@@ -19,9 +19,16 @@ from mcstatus import BedrockServer, JavaServer
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from docker_manager import DockerManager
-from tests.helpers import check_port_listening, wait_for_container_status
+from tests.helpers import (
+    check_port_listening,
+    get_proxy_host,
+    wait_for_container_status,
+)
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
+
+# Use the helper function to determine the correct host for the test environment.
+PROXY_HOST = get_proxy_host()
 
 
 @pytest_asyncio.fixture(scope="function")
@@ -30,7 +37,6 @@ async def docker_manager(docker_client_fixture):
     manager = DockerManager(app_config=None)
     manager.docker = docker_client_fixture
     yield manager
-    # No explicit close needed, docker_client_fixture handles it
 
 
 async def test_java_server_lifecycle(
@@ -41,7 +47,6 @@ async def test_java_server_lifecycle(
     """
     container_name = "mc-java"
     proxy_port = 25565
-    backend_port = 25565
     idle_timeout = 30  # As configured in docker-compose.tests.yml
 
     assert not await docker_manager.is_container_running(container_name), (
@@ -51,23 +56,21 @@ async def test_java_server_lifecycle(
     # 1. Trigger server start by attempting a connection
     try:
         _, writer = await asyncio.wait_for(
-            asyncio.open_connection("127.0.0.1", proxy_port), timeout=10
+            asyncio.open_connection(PROXY_HOST, proxy_port), timeout=10
         )
         writer.close()
         await writer.wait_closed()
     except (ConnectionRefusedError, asyncio.TimeoutError):
-        # A timeout is acceptable here as the server isn't fully ready yet
-        pass
+        pass  # A timeout is acceptable as the server isn't fully ready yet
 
     # 2. Verify server starts and becomes queryable
     assert await wait_for_container_status(
         docker_manager.docker, container_name, "running", timeout=120
     ), "Java container failed to start."
-    server = await JavaServer.async_lookup(f"127.0.0.1:{backend_port}")
+    server = await JavaServer.async_lookup(f"{PROXY_HOST}:{proxy_port}")
     await server.async_status()
 
     # 3. Wait for the server to be stopped due to idle timeout
-    # This is more reliable than a fixed sleep.
     assert await wait_for_container_status(
         docker_manager.docker, container_name, "exited", timeout=idle_timeout + 20
     ), "Java container did not stop after the idle timeout."
@@ -81,7 +84,6 @@ async def test_bedrock_server_lifecycle(
     """
     container_name = "mc-bedrock"
     proxy_port = 19132
-    backend_port = 19132
     idle_timeout = 30  # As configured in docker-compose.tests.yml
 
     assert not await docker_manager.is_container_running(container_name), (
@@ -91,9 +93,8 @@ async def test_bedrock_server_lifecycle(
     # 1. Trigger server start with a UDP packet
     loop = asyncio.get_running_loop()
     transport, _ = await loop.create_datagram_endpoint(
-        lambda: asyncio.DatagramProtocol(), remote_addr=("127.0.0.1", proxy_port)
+        lambda: asyncio.DatagramProtocol(), remote_addr=(PROXY_HOST, proxy_port)
     )
-    # A simple "unconnected ping" packet
     transport.sendto(b"\x01\x00\x00\x00\x00\x01\x23\x45\x67\x89\xab\xcd\xef")
     transport.close()
 
@@ -101,7 +102,7 @@ async def test_bedrock_server_lifecycle(
     assert await wait_for_container_status(
         docker_manager.docker, container_name, "running", timeout=120
     ), "Bedrock container failed to start."
-    server = await BedrockServer.async_lookup(f"127.0.0.1:{backend_port}")
+    server = await BedrockServer.async_lookup(f"{PROXY_HOST}:{proxy_port}")
     await server.async_status()
 
     # 3. Wait for the server to be stopped due to idle timeout
@@ -133,7 +134,6 @@ async def test_sighup_reloads_configuration(
     async with docker_manager.get_container("nether-bridge") as container:
         assert container is not None, "nether-bridge container not found"
 
-        # Create a tarball in memory to upload the new servers.json
         tar_stream = io.BytesIO()
         with tarfile.open(fileobj=tar_stream, mode="w") as tar:
             config_bytes = json.dumps(new_config).encode("utf-8")
@@ -143,17 +143,14 @@ async def test_sighup_reloads_configuration(
         tar_stream.seek(0)
         await container.put_archive("/app", tar_stream.read())
 
-        # Send the SIGHUP signal to trigger a reload
         await container.kill(signal=signal.SIGHUP)
 
-    # Allow a moment for the reload to process
     await asyncio.sleep(5)
 
-    assert await check_port_listening("127.0.0.1", new_port, protocol="udp"), (
+    assert await check_port_listening(PROXY_HOST, new_port, protocol="udp"), (
         f"Proxy did not start listening on new port {new_port} after reload."
     )
-
-    assert not await check_port_listening("127.0.0.1", old_java_port), (
+    assert not await check_port_listening(PROXY_HOST, old_java_port), (
         "Proxy did not stop listening on old port after reload."
     )
 
@@ -167,13 +164,11 @@ async def test_proxy_restarts_crashed_server(
     container_name = "mc-java"
     proxy_port = 25565
 
-    # Trigger initial start
-    await check_port_listening("127.0.0.1", proxy_port)
+    await check_port_listening(PROXY_HOST, proxy_port)
     assert await wait_for_container_status(
         docker_manager.docker, container_name, "running"
     ), "Server did not start on first connection."
 
-    # Manually stop the container to simulate a crash
     async with docker_manager.get_container(container_name) as container:
         assert container is not None, "Java container not found for stopping."
         await container.stop(t=10)
@@ -183,8 +178,7 @@ async def test_proxy_restarts_crashed_server(
 
     await asyncio.sleep(1)
 
-    # Trigger a new connection and verify the server restarts
-    await check_port_listening("127.0.0.1", proxy_port)
+    await check_port_listening(PROXY_HOST, proxy_port)
     assert await wait_for_container_status(
         docker_manager.docker, container_name, "running", timeout=120
     ), "Proxy did not restart the 'crashed' server on new connection."
