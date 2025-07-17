@@ -72,6 +72,10 @@ class AsyncProxy:
         # Cancel all existing TCP sessions
         # Use gather to await their completion gracefully
         if self.active_tcp_sessions:
+            log.info(
+                "Cancelling active TCP sessions for reload.",
+                count=len(self.active_tcp_sessions),
+            )
             await asyncio.gather(
                 *list(self.active_tcp_sessions.keys()), return_exceptions=True
             )
@@ -80,6 +84,9 @@ class AsyncProxy:
         # Cancel all existing listener tasks
         listener_tasks = self.server_tasks.get("listeners", [])
         if listener_tasks:
+            log.info(
+                "Cancelling old listener tasks for reload.", count=len(listener_tasks)
+            )
             for task in listener_tasks:
                 task.cancel()
             await asyncio.gather(*listener_tasks, return_exceptions=True)
@@ -139,7 +146,7 @@ class AsyncProxy:
                     sc.container_name, self.app_config.server_stop_timeout
                 )
                 # Wait for container to actually be stopped/exited
-                for _ in range(self.app_config.server_stop_timeout):
+                for _ in range(self.app_config.server_stop_timeout + 5):  # Added buffer
                     if not await self.docker_manager.is_container_running(
                         sc.container_name
                     ):
@@ -255,11 +262,16 @@ class AsyncProxy:
         ].is_set() and await self.docker_manager.is_container_running(
             server_config.container_name
         ):
+            log.debug("Server already running and ready.", server=server_config.name)
             return
 
         async with self._startup_locks[server_config.name]:
             # Double check inside the lock, in case another task started it
             if self._ready_events[server_config.name].is_set():
+                log.debug(
+                    "Server became ready while waiting for lock.",
+                    server=server_config.name,
+                )
                 return
 
             log.info(
