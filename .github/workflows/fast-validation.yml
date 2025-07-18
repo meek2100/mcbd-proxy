@@ -1,5 +1,4 @@
 # .github/workflows/fast-validation.yml
-
 name: Fast Validation (Lint & Unit Tests)
 
 on: [push]
@@ -18,20 +17,29 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
+          cache: 'poetry'
 
-      - name: Install Dependencies
-        run: pip install ".[dev]"
+      - name: Install Poetry (if not in path)
+        run: |
+          if ! command -v poetry &> /dev/null; then
+              curl -sSL https://install.python-poetry.org | python3 -
+              echo "$POETRY_HOME/bin" >> $GITHUB_PATH
+              echo "POETRY_HOME=$POETRY_HOME" >> $GITHUB_ENV
+              echo "POETRY_VIRTUALENVS_IN_PROJECT=true" >> $GITHUB_ENV
+          fi
+
+      - name: Install Dependencies with Poetry
+        run: poetry install --no-root --sync
 
       - name: Lint with ruff
-        run: ruff check .
+        run: poetry run ruff check .
 
       - name: Check formatting with ruff
-        run: ruff format --check .
+        run: poetry run ruff format --check .
 
       - name: Run Unit Tests
         run: >
-          pytest -m unit
+          poetry run pytest -m unit
           --cov=main
           --cov=proxy
           --cov=config

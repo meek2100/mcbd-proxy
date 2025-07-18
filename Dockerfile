@@ -2,8 +2,16 @@
 # Stage 1: Base - Use the modern, faster Python 3.11 on Debian Bookworm.
 FROM python:3.11-slim-bookworm AS base
 WORKDIR /app
-COPY pyproject.toml .
-RUN python -m pip install --upgrade pip && pip install --no-cache-dir .
+COPY pyproject.toml poetry.lock ./
+ENV POETRY_HOME="/opt/poetry" \
+  POETRY_VIRTUALENVS_IN_PROJECT=true \
+  POETRY_NO_INTERACTION=1 \
+  PATH="/opt/poetry/bin:$PATH"
+
+# Install Poetry and core dependencies
+RUN curl -sSL https://install.python-poetry.org | python3 - && \
+  poetry install --no-root --sync --without dev
+
 # Stage 2: Builder - A complete copy of the source code for use by other stages.
 FROM python:3.11-slim-bookworm AS builder
 WORKDIR /app
@@ -17,8 +25,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends gosu passwd \
   && rm -rf /var/lib/apt/lists/*
 # Copy the entire project context from the builder stage.
 COPY --from=builder /app /app
-# Install development dependencies.
-RUN pip install --no-cache-dir ".[dev]"
+# Install development dependencies using Poetry
+ENV POETRY_HOME="/opt/poetry" \
+  POETRY_VIRTUALENVS_IN_PROJECT=true \
+  POETRY_NO_INTERACTION=1 \
+  PATH="/opt/poetry/bin:$PATH"
+RUN curl -sSL https://install.python-poetry.org | python3 - && \
+  poetry install --no-root --sync
+
 # Create user and set permissions for the test environment.
 RUN adduser --system --no-create-home naeus && \
   chown -R naeus:nogroup /app && \
@@ -40,6 +54,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends gosu procps \
 RUN adduser --system --no-create-home naeus
 
 # Copy artifacts from previous stages, not the local context.
+COPY --from=base ${POETRY_HOME} ${POETRY_HOME}
+COPY --from=base /app/pyproject.toml /app/poetry.lock /app/
+COPY --from=base /app/.venv /app/.venv
 COPY --from=base /usr/local/lib/python3.11/site-packages \
   /usr/local/lib/python3.11/site-packages
 COPY --from=builder /app/entrypoint.sh /usr/local/bin/
@@ -65,7 +82,7 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
   CMD ["gosu", "naeus", "python", "main.py", "--healthcheck"]
 
 # Set the container's entrypoint script.
-ENTRYPOINT ["entrypoint.sh"]
+ENTRYPOINT ["/app/entrypoint.sh"]
 
 # Set the default command to run the main application.
 CMD ["python", "main.py"]

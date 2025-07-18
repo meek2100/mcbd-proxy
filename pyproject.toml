@@ -1,14 +1,12 @@
 # pyproject.toml
-[project]
+[tool.poetry]
 name = "nether-bridge"
 version = "1.0.0"
 description = "An intelligent, on-demand proxy for Minecraft servers in Docker."
 readme = "README.md"
-requires-python = ">=3.11"
-license = { text = "MIT" }
-authors = [
-    { name = "meek2100", email="meek2100@users.noreply.github.com" }
-]
+authors = ["meek2100 <meek2100@users.noreply.github.com>"]
+license = "MIT"
+requires-python = ">=3.11,<3.13"
 keywords = ["minecraft", "proxy", "docker", "on-demand"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -17,41 +15,32 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 
-dependencies = [
-    "aiodocker==0.21.0",
-    "docker==7.1.0",
-    "mcstatus==12.0.2",
-    "prometheus-client==0.22.1",
-    "structlog==25.4.0",
-    "colorama==0.4.6",
-    "pydantic==2.8.2",
-    "python-dotenv==1.1.1",
-]
+[tool.poetry.dependencies]
+python = ">=3.11,<3.13"
+aiodocker = "0.21.0"
+docker = "7.1.0"
+mcstatus = "12.0.2"
+prometheus-client = "0.22.1"
+structlog = "25.4.0"
+colorama = "0.4.6"
+pydantic = "2.8.2"
+python-dotenv = "1.1.1"
 
-[project.urls]
+[tool.poetry.group.dev.dependencies]
+pytest = "8.4.1"
+pytest-mock = "3.14.1"
+pytest-cov = "6.2.1"
+ruff = "0.12.3"
+requests = "2.32.4"
+pytest-asyncio = "1.0.0"
+
+[tool.poetry.urls]
 Homepage = "https://github.com/meek2100/mcbd-proxy"
 "Bug Tracker" = "https://github.com/meek2100/mcbd-proxy/issues"
 
-[project.optional-dependencies]
-dev = [
-    "pytest==8.4.1",
-    "pytest-mock==3.14.1",
-    "pytest-cov==6.2.1",
-    "ruff==0.12.3",
-    "python-dotenv==1.1.1",
-    "requests==2.32.4",
-    "pytest-asyncio==1.0.0",
-]
-
-# Explicitly list your modules for setuptools to handle the "flat-layout"
-[tool.setuptools]
-py-modules = [
-    "config",
-    "docker_manager",
-    "main",
-    "metrics",
-    "proxy",
-]
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
 
 [tool.ruff]
 line-length = 88
