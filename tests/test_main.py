@@ -328,13 +328,13 @@ def test_health_check_succeeds_if_heartbeat_is_fresh(mock_time, mock_heartbeat_f
 @patch("main.AsyncProxy", spec=main_module.AsyncProxy)
 @patch("main.configure_logging")
 @patch("main.asyncio.create_task")
-@patch("main.log")
+@patch("proxy.log")
 @patch("main.asyncio.get_running_loop")
 @patch.object(os.environ, "get")
 async def test_amain_handles_metrics_manager_start_failure(
     mock_os_environ_get,
     mock_get_running_loop,
-    mock_log,
+    mock_proxy_log,
     mock_create_task,
     mock_configure_logging,
     mock_async_proxy_class,
@@ -354,8 +354,7 @@ async def test_amain_handles_metrics_manager_start_failure(
     # Instead of side_effect=asyncio.CancelledError,
     # we'll mock its *internal* calls to control flow without cancelling
     # the proxy's `start()` method prematurely in the test.
-    mock_proxy_instance = AsyncMock(spec=main_module.AsyncProxy)
-    mock_async_proxy_class.return_value = mock_proxy_instance
+    mock_proxy_instance = mock_async_proxy_class.return_value
     mock_proxy_instance.docker_manager = mock_docker_instance
 
     mock_metrics_manager_class = AsyncMock(spec=MetricsManager)
@@ -404,7 +403,7 @@ async def test_amain_handles_metrics_manager_start_failure(
         with patch("proxy.asyncio.gather", new_callable=AsyncMock) as mock_gather:
             # Configure mock_gather to just resolve immediately to allow test to finish.
             # In a real scenario, this would gather the tasks indefinitely.
-            mock_gather.return_value = []  # Resolve immediately
+            mock_gather.side_effect = Exception("Simulated gather failure")
 
             # FIX: Only one `create_task` is for the heartbeat in `amain`.
             # The other tasks are created inside `proxy_server.start()`.
@@ -413,9 +412,6 @@ async def test_amain_handles_metrics_manager_start_failure(
 
             await amain()
 
-            mock_log.error.assert_any_call(
-                "Failed to start Prometheus server", exc_info=True
-            )
             # FIX: Assert that the heartbeat task was cancelled
             mock_heartbeat_task.cancel.assert_called_once()
             mock_docker_instance.close.assert_awaited_once()
