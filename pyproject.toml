@@ -13,6 +13,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Operating System :: OS Independent",
 ]
+package-mode = false # ADD THIS LINE TO DISABLE PACKAGE INSTALLATION OF THE ROOT PROJECT
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.13"

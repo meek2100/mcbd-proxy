@@ -21,8 +21,13 @@ COPY . .
 FROM base AS testing
 WORKDIR /app
 # Install system packages needed by the entrypoint and for testing.
-RUN apt-get update && apt-get install -y --no-install-recommends gosu passwd \
+# --- WORKAROUND FOR STUBBORN DOCKER CACHE/APT SOURCES ---
+# Explicitly set apt sources to bookworm to avoid 'buster 404' errors.
+RUN echo "deb http://deb.debian.org/debian bookworm main" > /etc/apt/sources.list && \
+  echo "deb http://deb.debian.org/debian-security bookworm-security main" >> /etc/apt/sources.list && \
+  apt-get update && apt-get install -y --no-install-recommends gosu passwd \
   && rm -rf /var/lib/apt/lists/*
+# --- END WORKAROUND ---
 # Copy the entire project context from the builder stage.
 COPY --from=builder /app /app
 # Install development dependencies using Poetry
@@ -48,14 +53,20 @@ WORKDIR /app
 
 # Install 'gosu' for dropping privileges and 'procps' for providing `kill` \
 # command.
-RUN apt-get update && apt-get install -y --no-install-recommends gosu procps \
+# --- WORKAROUND FOR STUBBORN DOCKER CACHE/APT SOURCES ---
+# Explicitly set apt sources to bookworm to avoid 'buster 404' errors.
+RUN echo "deb http://deb.debian.org/debian bookworm main" > /etc/apt/sources.1list && \
+  echo "deb http://deb.debian.org/debian-security bookworm-security main" >> /etc/apt/sources.list && \
+  apt-get update && apt-get install -y --no-install-recommends gosu procps \
   && rm -rf /var/lib/apt/lists/*
+# --- END WORKAROUND ---
 # Create the non-root user for running the application.
 RUN adduser --system --no-create-home naeus
 
 # Copy artifacts from previous stages, not the local context.
 COPY --from=base ${POETRY_HOME} ${POETRY_HOME}
 COPY --from=base /app/pyproject.toml /app/poetry.lock /app/
+# Copy the Poetry-managed virtual environment from the 'base' stage
 COPY --from=base /app/.venv /app/.venv
 COPY --from=base /usr/local/lib/python3.11/site-packages \
   /usr/local/lib/python3.11/site-packages
