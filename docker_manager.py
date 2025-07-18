@@ -1,8 +1,4 @@
 # docker_manager.py
-"""
-Manages Docker containers for Minecraft servers using asynchronous operations.
-"""
-
 import asyncio
 import time
 from contextlib import asynccontextmanager
@@ -103,7 +99,6 @@ class DockerManager:
                 log.info(
                     "Container started successfully", container_name=container_name
                 )
-                # Reintroduce delay before querying to match original logic.
                 await asyncio.sleep(self.app_config.server_startup_delay)
                 return await self.wait_for_server_query_ready(server_config)
             except aiodocker.exceptions.DockerError as e:
@@ -168,13 +163,10 @@ class DockerManager:
                         lookup_str, timeout=query_timeout
                     )
                 else:
-                    # BedrockServer.lookup is synchronous, run in a thread pool
                     server = await asyncio.to_thread(
                         BedrockServer.lookup, lookup_str, timeout=query_timeout
                     )
 
-                # BedrockServer.lookup returns a BedrockServer object which
-                # then requires an async_status() call.
                 await server.async_status()
                 log.info(
                     "Server is queryable!",
@@ -187,8 +179,6 @@ class DockerManager:
                     container_name=server_config.container_name,
                     error=str(e),
                 )
-                # CORRECTED: Use query_timeout for sleep interval to match
-                # original behavior.
                 await asyncio.sleep(query_timeout)
 
         log.error(

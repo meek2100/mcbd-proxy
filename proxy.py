@@ -1,8 +1,4 @@
 # proxy.py
-"""
-Core asynchronous proxy logic for TCP (Java) and UDP (Bedrock) servers.
-"""
-
 import asyncio
 import signal
 import time
@@ -36,7 +32,12 @@ class AsyncProxy:
             s.name: {"last_activity": 0.0, "is_running": False}
             for s in app_config.game_servers
         }
+        # A lock per server to prevent race conditions where multiple clients
+        # simultaneously trigger the startup process for the same server.
         self._startup_locks = {s.name: asyncio.Lock() for s in app_config.game_servers}
+        # An event per server to signal that it's fully started and query-ready.
+        # Connection-handling tasks await this event before forwarding traffic,
+        # ensuring the backend is available.
         self._ready_events = {s.name: asyncio.Event() for s in app_config.game_servers}
 
     def schedule_reload(self):
@@ -47,61 +48,51 @@ class AsyncProxy:
     def _shutdown_handler(self, sig=None):
         """Initiates a graceful shutdown of all tasks."""
         if sig:
-            log.warning(
-                "Shutdown signal received",
-                signal=sig.name,
-            )
+            log.warning("Shutdown signal received", signal=sig.name)
         else:
             log.warning("Shutdown requested. Cancelling tasks...")
 
-        # Cancel all active TCP session tasks
         for task in list(self.active_tcp_sessions.keys()):
             task.cancel()
 
-        # Cancel all background server tasks (listeners, monitor, metrics)
         for task_list in self.server_tasks.values():
-            if isinstance(task_list, list):  # Listeners are a list of tasks
+            if isinstance(task_list, list):
                 for task in task_list:
                     task.cancel()
-            else:  # Monitor and metrics are single tasks
+            else:
                 task_list.cancel()
 
     async def _reload_configuration(self):
         """Gracefully reloads the configuration and restarts services."""
-        log.info("Starting configuration reload. Active connections will be dropped.")
+        log.info("Starting config reload. Active connections will be dropped.")
         self._reload_requested = False
 
-        # Cancel all existing TCP sessions
         if self.active_tcp_sessions:
             log.info(
-                "Cancelling active TCP sessions for reload.",
+                "Cancelling active TCP sessions",
                 count=len(self.active_tcp_sessions),
             )
+            for task in list(self.active_tcp_sessions.keys()):
+                task.cancel()
             await asyncio.gather(
-                *list(self.active_tcp_sessions.keys()), return_exceptions=True
+                *self.active_tcp_sessions.keys(), return_exceptions=True
             )
-        self.active_tcp_sessions.clear()
+            self.active_tcp_sessions.clear()
 
-        # Cancel all existing listener tasks
         listener_tasks = self.server_tasks.get("listeners", [])
         if listener_tasks:
-            log.info(
-                "Cancelling old listener tasks for reload.", count=len(listener_tasks)
-            )
+            log.info("Cancelling old listeners", count=len(listener_tasks))
             for task in listener_tasks:
                 task.cancel()
             await asyncio.gather(*listener_tasks, return_exceptions=True)
-        self.udp_protocols.clear()  # Clear UDP protocols
+        self.udp_protocols.clear()
         log.info("Old listeners and connections shut down.")
 
-        # Reload configuration
         self.app_config = load_app_config()
-        # Update app_config reference in dependent managers
         self.docker_manager.app_config = self.app_config
         self.metrics_manager.app_config = self.app_config
-        log.info("Config reloaded.", servers=len(self.app_config.game_servers))
+        log.info("Config reloaded", servers=len(self.app_config.game_servers))
 
-        # Re-initialize server state based on new config
         self._server_state = {
             s.name: {"last_activity": 0.0, "is_running": False}
             for s in self.app_config.game_servers
@@ -113,10 +104,8 @@ class AsyncProxy:
             s.name: asyncio.Event() for s in self.app_config.game_servers
         }
 
-        # Ensure all servers are stopped based on new config
         await self._ensure_all_servers_stopped_on_startup()
 
-        # Start new listeners based on reloaded config
         self.server_tasks["listeners"] = [
             asyncio.create_task(self._start_listener(sc))
             for sc in self.app_config.game_servers
@@ -125,8 +114,7 @@ class AsyncProxy:
 
     async def _ensure_all_servers_stopped_on_startup(self):
         """
-        Ensures any running servers are gracefully stopped and confirmed exited
-        before proceeding to prevent race conditions.
+        Ensures any running servers are gracefully stopped before proceeding.
         """
         log.info("Checking for running servers to perform initial cleanup...")
         for sc in self.app_config.game_servers:
@@ -137,8 +125,6 @@ class AsyncProxy:
                     server=sc.name,
                 )
                 await asyncio.sleep(self.app_config.initial_server_query_delay)
-                # Max wait time for initial boot is longer to account for
-                # a possibly crashed/slowly starting server
                 await self.docker_manager.wait_for_server_query_ready(
                     sc, timeout=self.app_config.initial_boot_ready_max_wait
                 )
@@ -146,7 +132,6 @@ class AsyncProxy:
                 await self.docker_manager.stop_server(
                     sc.container_name, self.app_config.server_stop_timeout
                 )
-                # Wait for container to actually be stopped/exited
                 for _ in range(self.app_config.server_stop_timeout + 5):
                     if not await self.docker_manager.is_container_running(
                         sc.container_name
@@ -162,7 +147,6 @@ class AsyncProxy:
         """Starts all proxy services and manages their lifecycle."""
         log.info("Starting async proxy...")
         loop = asyncio.get_running_loop()
-        # Register signal handlers for graceful shutdown and reload
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, self._shutdown_handler, sig)
         if hasattr(signal, "SIGHUP"):
@@ -170,18 +154,14 @@ class AsyncProxy:
 
         await self._ensure_all_servers_stopped_on_startup()
 
-        # Start pre-warmed servers concurrently
-        pre_warm_tasks = []
-        for server_config in self.app_config.game_servers:
-            if server_config.pre_warm:
-                log.info("Pre-warming server.", server=server_config.name)
-                pre_warm_tasks.append(
-                    asyncio.create_task(self._ensure_server_started(server_config))
-                )
+        pre_warm_tasks = [
+            asyncio.create_task(self._ensure_server_started(sc))
+            for sc in self.app_config.game_servers
+            if sc.pre_warm
+        ]
         if pre_warm_tasks:
             await asyncio.gather(*pre_warm_tasks, return_exceptions=True)
 
-        # Create and store main background tasks
         self.server_tasks["listeners"] = [
             asyncio.create_task(self._start_listener(sc))
             for sc in self.app_config.game_servers
@@ -191,12 +171,11 @@ class AsyncProxy:
         )
         self.server_tasks["metrics"] = asyncio.create_task(self.metrics_manager.start())
 
-        # Gather all persistent tasks to run indefinitely until cancelled
-        all_tasks = [
-            *self.server_tasks.get("listeners", []),
-            self.server_tasks.get("monitor"),
-            self.server_tasks.get("metrics"),
-        ]
+        all_tasks = (
+            self.server_tasks.get("listeners", [])
+            + [self.server_tasks.get("monitor")]
+            + [self.server_tasks.get("metrics")]
+        )
         await asyncio.gather(*filter(None, all_tasks), return_exceptions=True)
 
     async def _start_listener(self, server_config: GameServerConfig):
@@ -224,20 +203,17 @@ class AsyncProxy:
                 def protocol_factory():
                     return BedrockProtocol(self, server_config)
 
-                # Store the protocol instance to access its client_map later
                 transport, protocol = await loop.create_datagram_endpoint(
                     protocol_factory,
                     local_addr=(server_config.proxy_host, server_config.proxy_port),
                 )
                 self.udp_protocols[server_config.name] = protocol
-                # This Future keeps the UDP listener task alive
                 await asyncio.Future()
         except asyncio.CancelledError:
             log.info("Listener task cancelled.", server=server_config.name)
         except Exception:
             log.critical(
-                "Failed to start listener. Port might be in use or "
-                "permissions missing.",
+                "Failed to start listener. Port might be in use.",
                 server=server_config.name,
                 port=server_config.proxy_port,
                 exc_info=True,
@@ -252,34 +228,22 @@ class AsyncProxy:
 
     async def _ensure_server_started(self, server_config: GameServerConfig):
         """Ensures a server is running, handling startup logic concurrently."""
-        # Check if already marked ready AND container is running (robustness)
         if self._ready_events[
             server_config.name
         ].is_set() and await self.docker_manager.is_container_running(
             server_config.container_name
         ):
-            log.debug("Server already running and ready.", server=server_config.name)
             return
 
         async with self._startup_locks[server_config.name]:
-            # Double check inside the lock, in case another task started it
             if self._ready_events[server_config.name].is_set():
-                log.debug(
-                    "Server became ready while waiting for lock.",
-                    server=server_config.name,
-                )
                 return
 
-            log.info(
-                "Server not running. Initiating startup...", server=server_config.name
-            )
+            log.info("Server not running, starting...", server=server_config.name)
             start_time = time.time()
             success = await self.docker_manager.start_server(server_config)
             if not success:
-                log.error(
-                    "Server failed to start, aborting connection.",
-                    server=server_config.name,
-                )
+                log.error("Server failed to start.", server=server_config.name)
                 return
 
             duration = time.time() - start_time
@@ -287,11 +251,6 @@ class AsyncProxy:
             self._server_state[server_config.name]["is_running"] = True
             self._ready_events[server_config.name].set()
             log.info("Server startup complete.", server=server_config.name)
-
-        # Wait for the server to be truly ready (only if it wasn't pre-warmed)
-        # If pre_warm, the pre_warm_tasks in start() will handle the waiting.
-        if not server_config.pre_warm:
-            await self._ready_events[server_config.name].wait()
 
     def _update_activity(self, server_name: str):
         """Updates the last activity timestamp for a server."""
@@ -316,22 +275,11 @@ class AsyncProxy:
                 writer.write(data)
                 await writer.drain()
         except asyncio.CancelledError:
-            log.debug(
-                "Proxy data task cancelled.", server=server_name, direction=direction
-            )
+            log.debug("Proxy data task cancelled.", server=server_name)
         except ConnectionResetError:
-            log.info(
-                "Connection reset during data proxy.",
-                server=server_name,
-                direction=direction,
-            )
+            log.info("Connection reset during data proxy.", server=server_name)
         except Exception:
-            log.error(
-                "Error during data proxy.",
-                server=server_name,
-                direction=direction,
-                exc_info=True,
-            )
+            log.error("Error during data proxy.", server=server_name, exc_info=True)
         finally:
             if not writer.is_closing():
                 writer.close()
@@ -349,11 +297,7 @@ class AsyncProxy:
 
         max_sessions = self.app_config.max_concurrent_sessions
         if max_sessions != -1 and len(self.active_tcp_sessions) >= max_sessions:
-            log.warning(
-                "Max concurrent TCP sessions reached. Rejecting connection.",
-                client=client_addr,
-                max_sessions=max_sessions,
-            )
+            log.warning("Max sessions reached. Rejecting.", client=client_addr)
             client_writer.close()
             await client_writer.wait_closed()
             return
@@ -370,16 +314,14 @@ class AsyncProxy:
             )
             log.info("Connected to backend server", server=server_config.name)
 
-            to_client_task = asyncio.create_task(
-                self._proxy_data(
-                    server_reader, client_writer, server_config.name, "s2c"
-                )
+            to_client = self._proxy_data(
+                server_reader, client_writer, server_config.name, "s2c"
             )
-            to_server_task = asyncio.create_task(
-                self._proxy_data(
-                    client_reader, server_writer, server_config.name, "c2s"
-                )
+            to_server = self._proxy_data(
+                client_reader, server_writer, server_config.name, "c2s"
             )
+            to_client_task = asyncio.create_task(to_client)
+            to_server_task = asyncio.create_task(to_server)
 
             proxy_task = asyncio.gather(to_client_task, to_server_task)
             self.active_tcp_sessions[proxy_task] = server_config.name
@@ -388,18 +330,11 @@ class AsyncProxy:
             log.error(
                 "Could not connect to backend.",
                 error=e,
-                exc_info=True,
                 server=server_config.name,
                 client=client_addr,
             )
         except asyncio.CancelledError:
             log.info("TCP session cancelled.", client=client_addr)
-        except Exception:
-            log.error(
-                "Unhandled error in TCP session.",
-                exc_info=True,
-                client=client_addr,
-            )
         finally:
             if proxy_task:
                 self.active_tcp_sessions.pop(proxy_task, None)
@@ -432,12 +367,8 @@ class AsyncProxy:
                 if not is_running:
                     continue
 
-                # Count active sessions for this specific server
-                udp_protocols_for_server = self.udp_protocols.get(
-                    sc.name,
-                    MagicMock(client_map={}),
-                )
-                udp_sessions = len(udp_protocols_for_server.client_map)
+                udp_proto = self.udp_protocols.get(sc.name, MagicMock(client_map={}))
+                udp_sessions = len(udp_proto.client_map)
                 tcp_sessions = sum(
                     1 for name in self.active_tcp_sessions.values() if name == sc.name
                 )
@@ -446,20 +377,17 @@ class AsyncProxy:
                     self._update_activity(sc.name)
                     continue
 
-                # Server is running but has no active sessions, check idle timeout
-                # Use per-server idle_timeout if defined, else global idle_timeout
-                idle_timeout_for_server = (
+                idle_timeout = (
                     sc.idle_timeout
                     if sc.idle_timeout is not None
                     else self.app_config.idle_timeout
                 )
                 idle_time = time.time() - self._server_state[sc.name]["last_activity"]
-                if idle_time > idle_timeout_for_server:
+                if idle_time > idle_timeout:
                     log.info(
-                        "Server idle with 0 players. Stopping.",
+                        "Server idle. Stopping.",
                         server=sc.name,
                         idle_seconds=int(idle_time),
-                        configured_idle_timeout=idle_timeout_for_server,
                     )
                     await self.docker_manager.stop_server(
                         sc.container_name, self.app_config.server_stop_timeout
@@ -487,11 +415,7 @@ class BedrockProtocol(asyncio.DatagramProtocol):
         """Gracefully cleans up a single client session."""
         client_info = self.client_map.pop(addr, None)
         if client_info:
-            log.info(
-                "Cleaning up idle UDP client",
-                client=addr,
-                server=self.server_config.name,
-            )
+            log.info("Cleaning up idle UDP client", client=addr)
             if client_info.get("task"):
                 client_info.get("task").cancel()
             protocol = client_info.get("protocol")
@@ -506,11 +430,9 @@ class BedrockProtocol(asyncio.DatagramProtocol):
                 await asyncio.sleep(self.proxy.app_config.player_check_interval)
             except asyncio.CancelledError:
                 log.info(
-                    "UDP client monitor task cancelled.",
-                    server=self.server_config.name,
+                    "UDP client monitor cancelled.", server=self.server_config.name
                 )
                 break
-            # Use per-server idle_timeout if defined, else global idle_timeout
             idle_timeout = (
                 self.server_config.idle_timeout
                 if self.server_config.idle_timeout is not None
@@ -523,7 +445,6 @@ class BedrockProtocol(asyncio.DatagramProtocol):
 
     def connection_made(self, transport: asyncio.DatagramTransport):
         self.transport = transport
-        log.debug("UDP listener connection made.", server=self.server_config.name)
 
     def datagram_received(self, data: bytes, addr: tuple):
         self.proxy._update_activity(self.server_config.name)
@@ -534,12 +455,7 @@ class BedrockProtocol(asyncio.DatagramProtocol):
         if addr not in self.client_map:
             max_sessions = self.proxy.app_config.max_concurrent_sessions
             if max_sessions != -1 and len(self.client_map) >= max_sessions:
-                log.warning(
-                    "Max concurrent UDP sessions reached. Dropping packet.",
-                    client=addr,
-                    max_sessions=max_sessions,
-                    server=self.server_config.name,
-                )
+                log.warning("Max UDP sessions reached. Dropping packet.", client=addr)
                 return
 
             log.info("New UDP client", client=addr, server=self.server_config.name)
@@ -559,7 +475,6 @@ class BedrockProtocol(asyncio.DatagramProtocol):
         """
         try:
             await self.proxy._ensure_server_started(self.server_config)
-
             loop = asyncio.get_running_loop()
             transport, protocol = await loop.create_datagram_endpoint(
                 lambda: BackendProtocol(
@@ -571,41 +486,20 @@ class BedrockProtocol(asyncio.DatagramProtocol):
                 self.client_map[client_addr]["protocol"] = protocol
             if transport and not transport.is_closing():
                 transport.sendto(initial_data)
-        except (ConnectionRefusedError, asyncio.TimeoutError) as e:
-            log.error(
-                "Failed to connect to backend UDP server after startup.",
-                client=client_addr,
-                server=self.server_config.name,
-                error=str(e),
-                exc_info=True,
-            )
-            self._cleanup_client(client_addr)
-        except asyncio.CancelledError:
-            log.debug("Backend connection task cancelled.", client=client_addr)
-            self._cleanup_client(client_addr)
         except Exception:
             log.error(
-                "Unhandled error creating backend UDP connection.",
+                "Error creating backend UDP connection.",
                 client=client_addr,
-                server=self.server_config.name,
                 exc_info=True,
             )
             self._cleanup_client(client_addr)
 
     def connection_lost(self, exc):
         if exc:
-            log.error(
-                "UDP listener connection lost due to error.",
-                server=self.server_config.name,
-                exc=exc,
-            )
-        else:
-            log.info("UDP listener connection lost.", server=self.server_config.name)
-
+            log.error("UDP listener connection lost.", exc=exc)
         if self.transport and not self.transport.is_closing():
             self.transport.close()
         self.cleanup_task.cancel()
-
         for addr in list(self.client_map.keys()):
             self._cleanup_client(addr)
 
@@ -629,11 +523,6 @@ class BackendProtocol(asyncio.DatagramProtocol):
 
     def connection_made(self, transport: asyncio.DatagramTransport):
         self.transport = transport
-        log.debug(
-            "Backend UDP connection made.",
-            for_client=self.client_addr,
-            server=self.server_config.name,
-        )
 
     def datagram_received(self, data: bytes, _addr: tuple):
         self.proxy.metrics_manager.inc_bytes_transferred(
@@ -641,25 +530,9 @@ class BackendProtocol(asyncio.DatagramProtocol):
         )
         if self.client_transport and not self.client_transport.is_closing():
             self.client_transport.sendto(data, self.client_addr)
-        else:
-            log.warning(
-                "Client transport missing or closing, dropping backend UDP.",
-                client=self.client_addr,
-            )
 
     def connection_lost(self, exc):
         if exc:
-            log.error(
-                "Backend UDP connection lost due to error.",
-                for_client=self.client_addr,
-                server=self.server_config.name,
-                exc=exc,
-            )
-        else:
-            log.info(
-                "Backend UDP connection closed.",
-                for_client=self.client_addr,
-                server=self.server_config.name,
-            )
+            log.error("Backend UDP connection lost.", exc=exc)
         if self.transport and not self.transport.is_closing():
             self.transport.close()
