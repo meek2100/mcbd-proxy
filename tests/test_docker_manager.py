@@ -181,17 +181,25 @@ async def test_wait_for_server_query_ready_bedrock(
 
 
 @pytest.mark.asyncio
+@patch("time.time")
 @patch("docker_manager.asyncio.sleep", new_callable=AsyncMock)
 @patch("docker_manager.JavaServer.async_lookup")
 async def test_wait_for_server_query_ready_retry(
     mock_async_lookup,
     mock_sleep,
+    mock_time,
     mock_app_config,
     mock_game_server_config,
     mock_aiodocker,
 ):
     """Test that wait_for_server_query_ready retries on failure."""
     manager = DockerManager(mock_app_config)
+    # Simulate time passing to control the loop
+    mock_time.side_effect = [
+        100,
+        101,
+        107,
+    ]  # Entry, 1st check, 2nd check (after 5s sleep)
     mock_async_lookup.side_effect = [
         asyncio.TimeoutError,  # First call fails
         MagicMock(async_status=AsyncMock()),  # Second call succeeds
