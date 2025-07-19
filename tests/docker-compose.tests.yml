@@ -76,7 +76,7 @@ services:
       - TYPE=${JAVA_TYPE}
       - VERSION=${JAVA_VERSION}
       - LEVEL_TYPE=FLAT
-      - MEMORY=512M
+      - MEMORY=1G
       - IDLE_TIMEOUT=-1
       - ONLINE_MODE=FALSE
       - SKIP_PAPER_PATCH_DOWNLOAD=TRUE
