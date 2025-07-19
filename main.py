@@ -1,25 +1,29 @@
+# main.py
+"""
+The main entrypoint for the Nether-bridge application.
+"""
+
+import asyncio
 import json
 import logging
 import os
 import signal
 import sys
-import threading
 import time
 from pathlib import Path
 
 import structlog
-from prometheus_client import start_http_server
 
-# Import the refactored modules
-from config import load_application_config
-from proxy import NetherBridgeProxy
+from config import load_app_config
+from docker_manager import DockerManager
+from proxy import AsyncProxy
 
-# The heartbeat file constant remains at the application level
+log = structlog.get_logger()
 HEARTBEAT_FILE = Path("proxy_heartbeat.tmp")
 
 
-def configure_logging(log_level: str, log_formatter: str):
-    """Configures logging for the application using structlog."""
+def configure_logging(log_level: str, log_format: str):
+    """Configures structured logging for the application."""
     logging.basicConfig(
         format="%(message)s",
         stream=sys.stdout,
@@ -34,13 +38,13 @@ def configure_logging(log_level: str, log_formatter: str):
         structlog.stdlib.PositionalArgumentsFormatter(),
     ]
 
-    if log_formatter == "json":
+    if log_format == "json":
         processors = shared_processors + [
-            structlog.processors.StackInfoRenderer(),
+            structlog.processors.StackInfoRenderer(),  # Re-introduced
             structlog.processors.format_exc_info,
             structlog.processors.JSONRenderer(),
         ]
-    else:  # "console" or any other value
+    else:
         processors = shared_processors + [
             structlog.dev.ConsoleRenderer(colors=True),
         ]
@@ -53,163 +57,122 @@ def configure_logging(log_level: str, log_formatter: str):
     )
 
 
-def perform_health_check():
-    """Performs a self-sufficient two-stage health check."""
-    logger = structlog.get_logger(__name__)
-    try:
-        # We still need to load settings to get the threshold.
-        # It's okay if the healthcheck process itself doesn't find servers.
-        settings, _ = load_application_config()
-        logger.debug("Health Check Stage 1 (Configuration) OK.")
-    except Exception as e:
-        logger.error(
-            "Health Check FAIL: Error loading configuration.",
-            error=str(e),
-            exc_info=True,
-        )
-        sys.exit(1)
-
-    if not HEARTBEAT_FILE.is_file():
-        logger.error("Health Check FAIL: Heartbeat file not found.")
-        sys.exit(1)
-    try:
-        age = int(time.time()) - int(HEARTBEAT_FILE.read_text())
-        if age < settings.healthcheck_stale_threshold_seconds:
-            logger.info("Health Check OK", age_seconds=age)
-            sys.exit(0)
-        else:
-            logger.error("Health Check FAIL: Heartbeat is stale.", age_seconds=age)
-            sys.exit(1)
-    except Exception as e:
-        logger.error(
-            "Health Check FAIL: Could not read or parse heartbeat file.",
-            error=str(e),
-            exc_info=True,
-        )
-        sys.exit(1)
-
-
-def run_app(proxy: NetherBridgeProxy):
+async def _update_heartbeat(app_config):
     """
-    Starts all services and runs the main proxy loop.
-    This was previously the `run` method on the proxy class.
+    Periodically writes a timestamp to the heartbeat file to signal liveness.
+    Uses configurable interval from app_config.
     """
-    logger = structlog.get_logger(__name__)
-    logger.info("--- Starting Nether-bridge On-Demand Proxy ---")
-
-    if proxy.settings.prometheus_enabled:
+    while True:
         try:
-            logger.info(
-                "Starting Prometheus metrics server...",
-                port=proxy.settings.prometheus_port,
-            )
-            start_http_server(proxy.settings.prometheus_port)
-            logger.info("Prometheus metrics server started.")
-        except Exception as e:
-            logger.error("Could not start Prometheus metrics server.", error=str(e))
-    else:
-        logger.info("Prometheus metrics server is disabled by configuration.")
+            current_time = int(time.time())
+            HEARTBEAT_FILE.write_text(str(current_time))
+            # Use configurable interval for heartbeat
+            await asyncio.sleep(app_config.healthcheck_heartbeat_interval)
+        except asyncio.CancelledError:
+            log.info("Heartbeat task cancelled.")
+            break
+        except Exception:
+            log.error("Failed to update heartbeat file.", exc_info=True)
 
+
+async def amain():
+    """The main asynchronous entrypoint for the application."""
+    app_config = load_app_config()
+
+    # Configure logging based on the loaded app_config
+    configure_logging(app_config.log_level, app_config.log_format)
+
+    # Add back APP_IMAGE_METADATA logging
     app_metadata = os.environ.get("APP_IMAGE_METADATA")
     if app_metadata:
         try:
             meta = json.loads(app_metadata)
-            logger.info("Application build metadata", **meta)
+            log.info("Application build metadata", **meta)
         except json.JSONDecodeError:
-            logger.warning("Could not parse APP_IMAGE_METADATA", metadata=app_metadata)
+            log.warning("Could not parse APP_IMAGE_METADATA", metadata=app_metadata)
 
-    if HEARTBEAT_FILE.exists():
-        try:
-            HEARTBEAT_FILE.unlink()
-            logger.info("Removed stale heartbeat file.", path=str(HEARTBEAT_FILE))
-        except OSError as e:
-            logger.warning("Could not remove stale heartbeat file.", error=str(e))
+    # Add check for loaded game servers as per the plan
+    if not app_config.game_servers:
+        log.critical("FATAL: No server configurations loaded. Exiting.")
+        sys.exit(1)
 
-    # Connect the Docker manager
-    proxy.docker_manager.connect()
+    docker_manager = DockerManager(app_config)
+    proxy_server = AsyncProxy(app_config, docker_manager)
 
-    # Run startup tasks
-    proxy._ensure_all_servers_stopped_on_startup()
+    def sighup_handler():
+        """Schedules a configuration reload inside the running proxy."""
+        log.warning("SIGHUP received, scheduling configuration reload.")
+        proxy_server.schedule_reload()
 
-    for srv_cfg in proxy.servers_list:
-        try:
-            proxy._create_listening_socket(srv_cfg)
-        except OSError:
-            # If a socket fails to bind on startup, it's a fatal error.
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, proxy_server._shutdown_handler, sig)
+    if hasattr(signal, "SIGHUP"):
+        loop.add_signal_handler(signal.SIGHUP, sighup_handler)
+
+    # Pass app_config to heartbeat task
+    heartbeat_task = asyncio.create_task(_update_heartbeat(app_config))
+    try:
+        await proxy_server.start()
+    except asyncio.CancelledError:
+        log.info("Main application task was cancelled.")
+    finally:
+        heartbeat_task.cancel()
+        log.info("Closing Docker manager session.")
+        await docker_manager.close()
+        log.info("Shutdown complete.")
+
+
+def health_check():
+    """
+    Performs a two-stage health check:
+    1. Checks if the configuration can be loaded.
+    2. Checks if the heartbeat timestamp in the file is recent.
+    """
+    try:
+        app_config = load_app_config()
+        if not HEARTBEAT_FILE.exists():
+            print("Health check failed: Heartbeat file not found.")
             sys.exit(1)
 
-    monitor_thread = threading.Thread(
-        target=proxy._monitor_servers_activity, daemon=True
-    )
-    monitor_thread.start()
+        heartbeat_age = int(time.time()) - int(HEARTBEAT_FILE.read_text())
+        # Use the configurable threshold from AppConfig
+        if heartbeat_age > app_config.healthcheck_stale_threshold:
+            print(f"Health check failed: Heartbeat is stale ({heartbeat_age}s).")
+            sys.exit(1)
 
-    # Pass the main module to the loop for access to configure_logging on reload
-    proxy._run_proxy_loop(sys.modules[__name__])
-
-    # --- SHUTDOWN SEQUENCE STARTS HERE ---
-    # The _run_proxy_loop has exited, which means a shutdown was requested.
-
-    logger.info("Graceful shutdown initiated.")
-
-    # 1. Terminate all active player sessions immediately.
-    proxy._shutdown_all_sessions()
-
-    # 2. Wait for the background monitor thread to finish its last loop.
-    logger.info("Waiting for monitor thread to terminate...")
-    monitor_thread.join(timeout=5.0)  # Add a timeout for safety
-    if monitor_thread.is_alive():
-        logger.warning("Monitor thread did not terminate in time.")
-    else:
-        logger.info("Monitor thread has terminated.")
-
-    logger.info("Shutdown complete. Exiting.")
+        print(f"Health check passed: Heartbeat is fresh ({heartbeat_age}s).")
+        sys.exit(0)
+    except (ValueError, FileNotFoundError) as e:
+        print(f"Health check failed during execution: {e}")
+        sys.exit(1)
+    except Exception as e:
+        # Catch configuration loading errors for health check
+        print(f"Health check failed during config load: {e}")
+        sys.exit(1)
 
 
 def main():
-    """The main entrypoint for the Nether-bridge application."""
-    # Early configuration for healthcheck and initial logs.
+    """Main entrypoint function to be called by the script."""
+    # Early configuration to ensure healthcheck can log errors.
+    # Uses environment variables directly for initial logging setup.
     early_log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
-    early_log_formatter = os.environ.get("NB_LOG_FORMATTER", "console")
-    configure_logging(early_log_level, early_log_formatter)
+    early_log_format = os.environ.get("NB_LOG_FORMATTER", "console")
+    configure_logging(early_log_level, early_log_format)
 
     if "--healthcheck" in sys.argv:
-        perform_health_check()
-        return
-
-    try:
-        settings, servers = load_application_config()
-    except Exception as e:
-        # Catch critical config loading errors
-        logger = structlog.get_logger(__name__)
-        logger.critical(
-            "FATAL: A critical error occurred during configuration loading.",
-            error=str(e),
-        )
-        sys.exit(1)
-
-    # Reconfigure with final settings from files/env
-    configure_logging(settings.log_level, settings.log_formatter)
-    logger = structlog.get_logger(__name__)
-    logger.info(
-        "Log level and formatter set to final values.",
-        log_level=settings.log_level,
-        log_formatter=settings.log_formatter,
-    )
-
-    if not servers:
-        # load_application_config logs the critical error, so we just exit.
-        sys.exit(1)
-
-    proxy = NetherBridgeProxy(settings, servers)
-
-    # Set the signal handlers to point to the method on the proxy instance
-    if hasattr(signal, "SIGHUP"):
-        signal.signal(signal.SIGHUP, proxy.signal_handler)
-    signal.signal(signal.SIGINT, proxy.signal_handler)
-    signal.signal(signal.SIGTERM, proxy.signal_handler)
-
-    run_app(proxy)
-
-
-if __name__ == "__main__":
-    main()
+        health_check()
+    else:
+        try:
+            asyncio.run(amain())
+        except KeyboardInterrupt:
+            log.info("Application interrupted by user.")
+        except Exception as e:
+            log.critical(
+                "Unhandled exception in main application loop.", exc_info=True, error=e
+            )
+            sys.exit(1)
+        finally:
+            if HEARTBEAT_FILE.exists():
+                HEARTBEAT_FILE.unlink(missing_ok=True)
+                log.info("Removed heartbeat file on shutdown.")

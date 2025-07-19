@@ -1,72 +1,120 @@
+# tests/test_main.py
+import asyncio
 import os
-import signal
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
-# Adjust sys.path to ensure modules can be found when tests are run.
+# Add project root to path to allow imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-# Imports from the module being tested
-from main import main, perform_health_check
+from main import amain, health_check, main
 
 
 @pytest.mark.unit
 @patch("main.sys.argv", ["main.py", "--healthcheck"])
-@patch("main.perform_health_check")
-def test_main_runs_health_check(mock_perform_health):
+@patch("main.health_check")
+def test_main_runs_health_check(mock_health_check):
     """
-    Tests that the main function correctly calls perform_health_check
-    when the '--healthcheck' argument is provided.
+    Tests that main calls health_check when '--healthcheck' is provided.
     """
     main()
-    mock_perform_health.assert_called_once()
+    mock_health_check.assert_called_once()
 
 
 @pytest.mark.unit
 @patch("main.sys.argv", ["main.py"])
-@patch("main.load_application_config")
-@patch("main.NetherBridgeProxy")
-@patch("main.run_app")
-@patch("signal.signal")
-def test_main_execution_flow(
-    mock_signal, mock_run_app, mock_proxy_class, mock_load_config
+@patch("main.asyncio.run")
+@patch("main.amain")
+def test_main_runs_amain(mock_amain, mock_asyncio_run):
+    """
+    Tests that the main function calls asyncio.run with amain.
+    """
+    main()
+    mock_asyncio_run.assert_called_once_with(mock_amain())
+
+
+@pytest.mark.unit
+@patch("main.DockerManager")
+@patch("main.AsyncProxy")
+@patch("main.configure_logging")
+@patch("main.asyncio.create_task")
+@patch("main.load_app_config")
+@patch("main.asyncio.get_running_loop")
+async def test_amain_orchestration_and_shutdown(
+    mock_get_running_loop,
+    mock_load_config,
+    mock_create_task,
+    mock_configure_logging,
+    mock_async_proxy_class,
+    mock_docker_manager_class,
 ):
     """
-    Tests the main execution flow, ensuring that config is loaded,
-    the proxy is instantiated, signal handlers are set, and the app is run.
+    Verify `amain` orchestrates startup and that `finally` block cleans up.
     """
-    mock_settings = MagicMock(log_level="INFO", log_formatter="console")
-    mock_servers = [MagicMock()]
-    mock_load_config.return_value = (mock_settings, mock_servers)
-    mock_proxy_instance = MagicMock()
-    mock_proxy_class.return_value = mock_proxy_instance
+    mock_loop = MagicMock()
+    mock_get_running_loop.return_value = mock_loop
+    mock_docker_instance = mock_docker_manager_class.return_value = AsyncMock()
+    mock_proxy_instance = mock_async_proxy_class.return_value = AsyncMock()
 
-    main()
+    mock_app_config = MagicMock()
+    mock_app_config.game_servers = [MagicMock()]
+    mock_load_config.return_value = mock_app_config
+
+    # Simulate startup cancelling, triggering the finally block
+    mock_proxy_instance.start.side_effect = asyncio.CancelledError
+    mock_heartbeat_task = AsyncMock()
+    mock_create_task.return_value = mock_heartbeat_task
+
+    await amain()
 
     mock_load_config.assert_called_once()
-    mock_proxy_class.assert_called_once_with(mock_settings, mock_servers)
-    # Check that signal handlers are registered for SIGINT and SIGTERM
-    mock_signal.assert_any_call(signal.SIGINT, mock_proxy_instance.signal_handler)
-    mock_signal.assert_any_call(signal.SIGTERM, mock_proxy_instance.signal_handler)
-    # Check that the main application runner is called with the proxy instance
-    mock_run_app.assert_called_once_with(mock_proxy_instance)
+    mock_configure_logging.assert_called_once_with(
+        mock_app_config.log_level, mock_app_config.log_format
+    )
+    mock_async_proxy_class.assert_called_once_with(
+        mock_app_config, mock_docker_instance
+    )
+    mock_proxy_instance.start.assert_awaited_once()
+    mock_create_task.assert_called_once_with(ANY)
+    mock_heartbeat_task.cancel.assert_called_once()
+    mock_docker_instance.close.assert_awaited_once()
+
+
+@pytest.mark.unit
+@patch("main.load_app_config")
+@patch("main.sys.exit")
+@patch("main.log")
+async def test_amain_exits_if_no_servers_loaded(
+    mock_log, mock_sys_exit, mock_load_config
+):
+    """
+    Tests that amain exits if the loaded config has no game servers.
+    """
+    mock_app_config = MagicMock()
+    mock_app_config.game_servers = []  # No servers
+    mock_load_config.return_value = mock_app_config
+
+    await amain()
+
+    mock_log.critical.assert_called_once_with(
+        "FATAL: No server configurations loaded. Exiting."
+    )
+    mock_sys_exit.assert_called_once_with(1)
 
 
 @pytest.mark.unit
 @patch("main.HEARTBEAT_FILE")
 def test_health_check_fails_if_file_missing(mock_heartbeat_file):
     """
-    Tests that the health check fails with exit code 1 if the
-    heartbeat file does not exist.
+    Tests that the health check fails if the heartbeat file is missing.
     """
-    with patch(
-        "main.load_application_config", return_value=(MagicMock(), [MagicMock()])
-    ):
-        mock_heartbeat_file.is_file.return_value = False
+    mock_app_config = MagicMock(healthcheck_stale_threshold=60)
+    with patch("main.load_app_config", return_value=mock_app_config):
+        mock_heartbeat_file.exists.return_value = False
         with pytest.raises(SystemExit) as e:
-            perform_health_check()
+            health_check()
         assert e.value.code == 1
 
 
@@ -75,17 +123,32 @@ def test_health_check_fails_if_file_missing(mock_heartbeat_file):
 @patch("time.time")
 def test_health_check_fails_if_heartbeat_is_stale(mock_time, mock_heartbeat_file):
     """
-    Tests that the health check fails with exit code 1 if the heartbeat
-    file is older than the configured threshold.
+    Tests that health check fails if the heartbeat is older than the threshold.
     """
-    mock_settings = MagicMock(healthcheck_stale_threshold_seconds=60)
-    with patch(
-        "main.load_application_config", return_value=(mock_settings, [MagicMock()])
-    ):
-        mock_heartbeat_file.is_file.return_value = True
-        mock_time.return_value = 1000  # Current time
-        mock_heartbeat_file.read_text.return_value = "900"  # Stale timestamp
+    mock_app_config = MagicMock(healthcheck_stale_threshold=60)
+    with patch("main.load_app_config", return_value=mock_app_config):
+        mock_heartbeat_file.exists.return_value = True
+        mock_time.return_value = 1000
+        mock_heartbeat_file.read_text.return_value = "900"
 
         with pytest.raises(SystemExit) as e:
-            perform_health_check()
+            health_check()
         assert e.value.code == 1
+
+
+@pytest.mark.unit
+@patch("main.HEARTBEAT_FILE")
+@patch("time.time")
+def test_health_check_succeeds_if_heartbeat_is_fresh(mock_time, mock_heartbeat_file):
+    """
+    Tests that the health check succeeds if the heartbeat is fresh.
+    """
+    mock_app_config = MagicMock(healthcheck_stale_threshold=60)
+    with patch("main.load_app_config", return_value=mock_app_config):
+        mock_heartbeat_file.exists.return_value = True
+        mock_time.return_value = 1000
+        mock_heartbeat_file.read_text.return_value = "990"
+
+        with pytest.raises(SystemExit) as e:
+            health_check()
+        assert e.value.code == 0

@@ -1,26 +1,43 @@
 # tests/load_tester.py
+"""
+An asynchronous load and chaos tester for the Nether-bridge proxy.
+Simulates multiple concurrent clients connecting to a server, with different
+behavioral modes to test proxy stability.
+"""
 
 import argparse
-import os
+import asyncio
+import logging
 import random
 import socket
 import sys
 import time
-import traceback
-from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 
-import docker
+import aiodocker
+import structlog
+from aiodocker.exceptions import DockerError
 
-# Add project root to the path to allow module imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-from tests.docker_utils import ensure_container_stopped
+# Import centralized helpers
 from tests.helpers import (
     BEDROCK_UNCONNECTED_PING,
+    add_project_root_to_path,  # Function to add project root to path
     get_java_handshake_and_status_request_packets,
     get_proxy_host,
 )
+
+# Call the path helper immediately
+add_project_root_to_path()
+
+# Use structlog for this script's logging
+log = structlog.get_logger()
+
+# --- Statistics Tracking ---
+# These are global because they are incremented by multiple concurrent tasks
+successful_connections = 0
+failed_connections = 0
+chaos_aborts = 0
+active_sockets = []  # Track open sockets for cleanup
 
 
 # --- Enums for Configuration ---
@@ -29,122 +46,445 @@ class ServerType(Enum):
     BEDROCK = "bedrock"
 
 
-def simulate_single_client(
+class UDPClientProtocol(asyncio.DatagramProtocol):
+    """A simple protocol that signals when a UDP packet is received."""
+
+    def __init__(self, future, client_id):
+        self.transport = None
+        self.future = future  # A future to signal completion
+        self.client_id = client_id
+        self.response_received = asyncio.Event()
+
+    def connection_made(self, transport):
+        self.transport = transport
+
+    def datagram_received(self, data, addr):
+        # log.debug(f"Client {self.client_id}: UDP response received from {addr}.")
+        self.response_received.set()  # Signal that a response was received
+
+    def error_received(self, exc):
+        log.error(f"Client {self.client_id}: UDP client error", exc=exc)
+        if not self.future.done():
+            self.future.set_exception(exc)
+
+    def connection_lost(self, exc):
+        if exc and not self.future.done():
+            self.future.set_exception(exc)
+        elif not self.future.done():
+            self.future.set_result(True)
+
+
+async def simulate_client(
     server_type: ServerType,
     host: str,
     port: int,
-    test_timeout: int,
+    client_id: int,
+    test_duration: int,  # Duration for patient clients to stay connected
     chaos_percent: int,
-):
+    initial_delay: float = 0.5,  # Small initial connection delay
+) -> str:
     """
-    Simulates a single client connecting to the proxy.
-
-    If chaos mode is enabled, a percentage of clients will misbehave by
-    connecting and then abruptly disconnecting to test the proxy's error
-    handling and session cleanup.
+    Simulates a single client connecting to the proxy for a sustained duration.
+    If chaos mode is enabled, a percentage of clients will misbehave.
     """
-    start_time = time.time()
+    global successful_connections, failed_connections, chaos_aborts
 
-    # --- Chaos Mode Logic ---
-    if chaos_percent > 0 and random.randint(1, 100) <= chaos_percent:
-        try:
-            if server_type == ServerType.JAVA:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(10)
-                sock.connect((host, port))
-                time.sleep(random.uniform(0.5, 2.0))
-                sock.close()
-            else:  # Bedrock
-                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                sock.sendto(BEDROCK_UNCONNECTED_PING, (host, port))
-                time.sleep(random.uniform(0.5, 2.0))
-                sock.close()
-            return "CHAOS_ABORT"
-        except Exception as e:
-            return f"FAILURE: Chaos client failed - {type(e).__name__}"
-
-    # --- Regular "Patient" Client Logic ---
-    if server_type == ServerType.JAVA:
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(test_timeout)
-            sock.connect((host, port))
-            sock.settimeout(5)  # Shorter timeout for subsequent pings
-
-            while time.time() - start_time < test_timeout:
-                try:
-                    (
-                        handshake,
-                        status_req,
-                    ) = get_java_handshake_and_status_request_packets(host, port)
-                    sock.sendall(handshake)
-                    sock.sendall(status_req)
-                    sock.recv(4096)
-                    return "SUCCESS"
-                except (socket.timeout, ConnectionResetError):
-                    time.sleep(2)
-                    continue
-        except Exception as e:
-            return f"FAILURE: Could not connect or stay connected - {type(e).__name__}"
-        finally:
-            if "sock" in locals():
-                sock.close()
-
-    elif server_type == ServerType.BEDROCK:
-        while time.time() - start_time < test_timeout:
+    start_client_time = time.time()
+    try:
+        # --- Chaos Mode Logic ---
+        if chaos_percent > 0 and random.randint(1, 100) <= chaos_percent:
+            log.info(f"Client {client_id}: Chaos client initiating abrupt disconnect.")
+            sock = None
             try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                sock.settimeout(3)
-                sock.sendto(BEDROCK_UNCONNECTED_PING, (host, port))
-                sock.recvfrom(4096)
-                sock.close()
-                return "SUCCESS"
-            except socket.timeout:
-                sock.close()
-                time.sleep(2)
+                if server_type == ServerType.JAVA:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    # Use a short timeout for initial connect
+                    sock.settimeout(initial_delay + 1)
+                    sock.connect((host, port))
+                else:  # Bedrock UDP
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    sock.sendto(BEDROCK_UNCONNECTED_PING, (host, port))
+
+                await asyncio.sleep(random.uniform(0.1, initial_delay))
+                chaos_aborts += 1
+                return "CHAOS_ABORT"
             except Exception as e:
-                return f"FAILURE: Bedrock client error - {type(e).__name__}"
+                log.warning(f"Client {client_id}: Chaos client connect failed: {e}")
+                # Even if chaos fails to connect, count it as chaos attempt
+                chaos_aborts += 1
+                return f"CHAOS_FAILURE: {type(e).__name__}"
+            finally:
+                if sock:
+                    sock.close()
 
-    return f"FAILURE: Client timed out after {test_timeout} seconds."
+        # --- Regular "Patient" Client Logic (Sustained Load) ---
+        log.debug(f"Client {client_id}: Starting patient connection.", type=server_type)
+        end_time_for_client = start_client_time + test_duration
+
+        if server_type == ServerType.JAVA:
+            reader, writer = None, None
+            try:
+                # Initial connection with a reasonable timeout
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(host, port), timeout=10
+                )
+                # Add socket to global list for potential cleanup
+                active_sockets.append(writer.transport.get_extra_info("socket"))
+
+                handshake_packet, status_request_packet = (
+                    get_java_handshake_and_status_request_packets(host, port)
+                )
+
+                while time.time() < end_time_for_client:
+                    writer.write(handshake_packet)
+                    writer.write(status_request_packet)
+                    await writer.drain()
+
+                    # Read response to ensure connection is live
+                    try:
+                        # Java server status response can be quite large
+                        response_data = await asyncio.wait_for(
+                            reader.read(8192), timeout=5
+                        )
+                        if not response_data:  # Server closed connection
+                            log.warning(
+                                f"Client {client_id}: "
+                                f"Java server closed connection (EOF)."
+                            )
+                            break  # Exit loop if connection closed gracefully
+                    except asyncio.TimeoutError:
+                        log.warning(
+                            f"Client {client_id}: Java read timeout.",
+                            elapsed=f"{time.time() - start_client_time:.2f}s",
+                        )
+                        # If timeout, try sending again, connection might recover
+                        continue
+                    except ConnectionResetError:
+                        log.warning(
+                            f"Client {client_id}: Java server reset connection.",
+                            elapsed=f"{time.time() - start_client_time:.2f}s",
+                        )
+                        break  # Exit loop if connection reset
+
+                    await asyncio.sleep(1)  # Simulate some delay between pings
+
+                successful_connections += 1
+                return "SUCCESS"
+
+            except ConnectionRefusedError:
+                log.error(
+                    f"Client {client_id}: Java connection refused.",
+                    elapsed=f"{time.time() - start_client_time:.2f}s",
+                )
+                failed_connections += 1
+                return "FAILURE: Connection Refused"
+            except asyncio.TimeoutError:
+                log.error(
+                    f"Client {client_id}: Java initial connection timeout ({10}s).",
+                    elapsed=f"{time.time() - start_client_time:.2f}s",
+                )
+                failed_connections += 1
+                return "FAILURE: Initial Connect Timeout"
+            except Exception as e:
+                log.error(
+                    f"Client {client_id}: Unhandled Java client error: {e}",
+                    exc_info=True,
+                    elapsed=f"{time.time() - start_client_time:.2f}s",
+                )
+                failed_connections += 1
+                return f"FAILURE: Unhandled Java Error ({type(e).__name__})"
+            finally:
+                if writer:
+                    writer.close()
+                    await writer.wait_closed()
+                    # Remove socket from active list if it was added
+                    sock_obj = writer.transport.get_extra_info("socket")
+                    if sock_obj and sock_obj in active_sockets:
+                        active_sockets.remove(sock_obj)
+
+        else:  # Bedrock (UDP)
+            loop = asyncio.get_running_loop()
+            transport_future = loop.create_future()  # For connection_lost signal
+            transport, protocol = None, None
+            try:
+                # Create UDP endpoint for client
+                transport, protocol = await loop.create_datagram_endpoint(
+                    lambda: UDPClientProtocol(transport_future, client_id),
+                    remote_addr=(host, port),
+                )
+                # Add socket to global list for potential cleanup
+                active_sockets.append(transport._sock)
+
+                while time.time() < end_time_for_client:
+                    protocol.response_received.clear()  # Clear event for next response
+                    transport.sendto(BEDROCK_UNCONNECTED_PING)
+
+                    try:
+                        # Wait for a response, with a timeout
+                        await asyncio.wait_for(
+                            protocol.response_received.wait(), timeout=5
+                        )
+                    except asyncio.TimeoutError:
+                        log.warning(
+                            f"Client {client_id}: Bedrock response timeout.",
+                            elapsed=f"{time.time() - start_client_time:.2f}s",
+                        )
+                        # If timeout, try sending again, maybe packet loss
+                        continue
+                    except Exception as e:  # Catch other potential issues
+                        log.warning(
+                            f"Client {client_id}: Bedrock response error: {e}",
+                            exc_info=True,
+                        )
+                        break  # Break loop if persistent error
+
+                    await asyncio.sleep(1)  # Simulate some delay between pings
+
+                successful_connections += 1
+                return "SUCCESS"
+
+            except asyncio.TimeoutError:
+                log.error(
+                    f"Client {client_id}: Bedrock initial connect timeout ({10}s).",
+                    elapsed=f"{time.time() - start_client_time:.2f}s",
+                )
+                failed_connections += 1
+                return "FAILURE: Initial Connect Timeout"
+            except ConnectionRefusedError:  # UDP doesn't typically refuse
+                log.error(
+                    f"Client {client_id}: Bedrock connection refused (unusual).",
+                    elapsed=f"{time.time() - start_client_time:.2f}s",
+                )
+                failed_connections += 1
+                return "FAILURE: Connection Refused"
+            except Exception as e:
+                log.error(
+                    f"Client {client_id}: Unhandled Bedrock client error: {e}",
+                    exc_info=True,
+                    elapsed=f"{time.time() - start_client_time:.2f}s",
+                )
+                failed_connections += 1
+                return f"FAILURE: Unhandled Bedrock Error ({type(e).__name__})"
+            finally:
+                if transport:
+                    transport.close()
+                    # Remove socket from active list if it was added
+                    if transport._sock in active_sockets:
+                        active_sockets.remove(transport._sock)
+                # Ensure the future is set if not already, to prevent
+                # RuntimeError: Task got bad future.
+                if not transport_future.done():
+                    transport_future.set_result(None)
+
+    except asyncio.CancelledError:
+        log.info(
+            f"Client {client_id}: Task cancelled. Exiting.",
+            elapsed=f"{time.time() - start_client_time:.2f}s",
+        )
+        # Do not count as success or failure if cancelled externally
+        return "CANCELLED"
+    except Exception as e:
+        log.critical(
+            f"Client {client_id}: CRITICAL error before main logic: {e}",
+            exc_info=True,
+        )
+        failed_connections += 1
+        return f"FAILURE: Critical Pre-Loop Error ({type(e).__name__})"
 
 
-def dump_debug_info(container_names_to_log):
+async def ensure_container_stopped(container_name: str):
+    """Asynchronously ensures a container is stopped before test starts."""
+    log.info(f"Ensuring container '{container_name}' is stopped...")
+    client = None
+    try:
+        client = aiodocker.Docker()
+        container = await client.containers.get(container_name)
+        status_info = await container.show()
+        if status_info["State"]["Running"]:
+            log.warning(f"Container '{container_name}' was running. Stopping now.")
+            await container.stop(t=30)  # Give 30s to stop gracefully
+            status_info = await container.show()  # Re-check status
+            if status_info["State"]["Running"]:
+                log.error(f"Container '{container_name}' failed to stop gracefully.")
+                await container.kill()  # Force kill if still running
+                log.info(f"Container '{container_name}' forcefully killed.")
+        log.info(f"Container '{container_name}' confirmed stopped.")
+    except DockerError as e:
+        if e.status == 404:
+            log.info(f"Container '{container_name}' not found, assumed stopped.")
+        else:
+            log.error(
+                f"Docker error ensuring stop for {container_name}: {e}",
+                exc_info=True,
+            )
+    except Exception as e:
+        log.error(
+            f"Unexpected error ensuring stop for {container_name}: {e}",
+            exc_info=True,
+        )
+    finally:
+        if client:
+            await client.close()
+
+
+async def dump_debug_info(container_names_to_log):
     """
-    Connects to the Docker daemon to retrieve and print status and logs for
-    specified containers, providing a complete snapshot of the environment.
+    Asynchronously connects to Docker daemon to retrieve and print status
+    and logs for specified containers.
     """
     print("\n" + "=" * 25 + " FINAL DIAGNOSTIC INFO " + "=" * 25)
     client = None
     try:
-        client = docker.from_env()
+        client = aiodocker.Docker()
         all_test_containers = ["nether-bridge", "mc-bedrock", "mc-java", "nb-tester"]
 
         print("\n--- STATUS OF ALL TEST CONTAINERS ---")
-        for container in client.containers.list(all=True):
-            if any(name in container.name for name in all_test_containers):
-                status = f"Status: {container.status}"
-                print(f"  - {container.name:<20} | {status}")
+        for container_name in all_test_containers:
+            try:
+                container = await client.containers.get(container_name)
+                status_info = await container.show()
+                status = status_info["State"]["Status"]
+                running_status = status_info["State"].get("Running", False)
+                health_status = status_info["State"].get("Health", {}).get("Status")
+                log.info(
+                    f"  - {container_name:<15} | Status: {status:<8} | "
+                    f"Running: {str(running_status):<5} | Health: "
+                    f"{health_status}"
+                )
+            except DockerError as e:
+                if e.status == 404:
+                    log.info(f"  - {container_name:<15} | Status: Not Found")
+                else:
+                    log.error(f"Error getting status for {container_name}: {e}")
+            except Exception as e:
+                log.error(f"Unexpected error getting status for {container_name}: {e}")
 
         for name in container_names_to_log:
             print(f"\n--- LOGS FOR CONTAINER: {name} ---")
             try:
-                container = client.containers.get(name)
-                logs = container.logs().decode("utf-8", errors="ignore").strip()
-                print(logs if logs else "[No logs found for this container]")
-            except docker.errors.NotFound:
-                print(f"[Container '{name}' was not found]")
+                container = await client.containers.get(name)
+                # aiodocker log streaming can be complex to capture
+                # Get last 500 lines as a string
+                logs = await container.log(stdout=True, stderr=True, tail=500)
+                if logs:
+                    # Logs come as a list of lines, join them.
+                    print("\n".join(logs).strip())
+                else:
+                    print("[No logs found for this container]")
+            except DockerError as e:
+                if e.status == 404:
+                    print(f"[Container '{name}' was not found]")
+                else:
+                    print(f"[Docker error retrieving logs for '{name}': {e}]")
             except Exception as e:
                 print(f"[Could not retrieve logs for '{name}': {e}]")
 
     except Exception as e:
-        print(f"\nCRITICAL: Could not gather debug info. Docker client failed: {e}")
+        log.critical(
+            f"Could not gather debug info. Docker client failed: {e}", exc_info=True
+        )
     finally:
         if client:
-            client.close()
+            await client.close()
         print("\n" + "=" * 27 + " END OF DEBUG INFO " + "=" * 27)
 
 
-# --- Main Execution Block ---
+async def amain_load_test(args):
+    """Asynchronous main entrypoint for the load tester."""
+    # Global counters reset before each run (important if script is reused)
+    global successful_connections, failed_connections, chaos_aborts, active_sockets
+    successful_connections = 0
+    failed_connections = 0
+    chaos_aborts = 0
+    active_sockets = []
+
+    target_host = args.host
+    port = 25565 if args.server_type == ServerType.JAVA else 19132
+    target_container_name = (
+        "mc-java" if args.server_type == ServerType.JAVA else "mc-bedrock"
+    )
+    # Containers to dump logs from on failure
+    containers_to_log_on_fail = ["nether-bridge", target_container_name]
+
+    overall_exit_code = 1  # Assume failure until proven otherwise
+
+    try:
+        log.info("--- Starting Nether-bridge True Cold-Start Load Test ---")
+        log.info(f"Server Type:        {args.server_type.value}")
+        log.info(f"Target Container:   {target_container_name}")
+        log.info(f"Target Endpoint:    {target_host}:{port}")
+        log.info(f"Concurrent Clients: {args.clients}")
+        log.info(f"Client Duration:    {args.duration}s (for patient clients)")
+        log.info(f"Chaos Percentage:   {args.chaos}%")
+        log.info(f"Client Start Delay: {args.delay}s")
+        log.info("---------------------------------------------")
+
+        # Step 1: Ensure the target server container is stopped for a true cold start
+        await ensure_container_stopped(target_container_name)
+
+        # Step 2: Run load test clients concurrently
+        log.info(f"--- Spawning {args.clients} clients... ---")
+        start_overall_time = time.time()
+
+        tasks = []
+        for i in range(args.clients):
+            task = asyncio.create_task(
+                simulate_client(
+                    args.server_type,
+                    target_host,
+                    port,
+                    i,
+                    args.duration,
+                    args.chaos,
+                )
+            )
+            tasks.append(task)
+            if args.delay > 0:
+                await asyncio.sleep(args.delay)
+
+        await asyncio.gather(
+            *tasks, return_exceptions=True
+        )  # Let gather collect results
+
+        end_overall_time = time.time()
+
+        log.info("\n--- Load Test Summary ---")
+        log.info(f"Total Time Elapsed: {end_overall_time - start_overall_time:.2f}s")
+        log.info(f"Successful Clients: {successful_connections} / {args.clients}")
+        log.info(f"Chaos Aborts:       {chaos_aborts} / {args.clients}")
+        log.info(f"Failed Clients:     {failed_connections} / {args.clients}")
+        log.info("-------------------------")
+
+        if failed_connections > 0:
+            log.error("Load test finished with connection failures.")
+            overall_exit_code = 1
+        else:
+            log.info("Load test completed successfully.")
+            overall_exit_code = 0
+
+    except Exception as e:
+        log.critical(
+            "UNHANDLED EXCEPTION DURING TEST EXECUTION.", error=e, exc_info=True
+        )
+        overall_exit_code = 1
+
+    finally:
+        # Close any lingering sockets from active_sockets list
+        for sock in list(active_sockets):  # Iterate copy to allow modification
+            try:
+                # Depending on socket type, close appropriately
+                if hasattr(sock, "close") and callable(sock.close):
+                    sock.close()
+                elif hasattr(sock, "_sock") and hasattr(sock._sock, "close"):
+                    sock._sock.close()
+            except Exception as e:
+                log.warning(f"Error closing lingering socket: {e}")
+        active_sockets.clear()  # Clear the list
+
+        log.info("\n--- DUMPING DIAGNOSTIC INFO ---")
+        await dump_debug_info(containers_to_log_on_fail)
+        sys.exit(overall_exit_code)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -152,22 +492,31 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--server-type",
-        type=ServerType,
+        type=lambda s: ServerType[s.upper()],  # Convert string to Enum member
         choices=list(ServerType),
         required=True,
         help="The type of Minecraft server to test ('java' or 'bedrock').",
     )
     parser.add_argument(
-        "--clients",
-        type=int,
-        default=25,
-        help="Number of concurrent clients to simulate.",
+        "--host",
+        type=str,
+        default=get_proxy_host(),  # Use helper for default host
+        help="The IP address of the proxy.",
     )
     parser.add_argument(
-        "--timeout",
+        "-c", "--clients", type=int, default=25, help="Concurrent clients to simulate."
+    )
+    parser.add_argument(
+        "--duration",  # Renamed from timeout for clarity in meaning
         type=int,
         default=240,
-        help="Max time (seconds) for the entire test, including server boot.",
+        help="Max time (seconds) for each client to stay connected (sustained load).",
+    )
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=0.1,
+        help="Delay between starting clients (in seconds).",
     )
     parser.add_argument(
         "--chaos",
@@ -177,79 +526,27 @@ if __name__ == "__main__":
         metavar="[0-100]",
         help="Percentage of clients that will connect and abruptly disconnect.",
     )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="INFO",
+        help="Set the logging level (e.g., DEBUG, INFO, WARNING).",
+    )
 
     args = parser.parse_args()
 
-    target_host = get_proxy_host()
-    port = 25565 if args.server_type == ServerType.JAVA else 19132
-    target_container = (
-        "mc-java" if args.server_type == ServerType.JAVA else "mc-bedrock"
+    # --- Logging Configuration ---
+    logging.basicConfig(level=args.log_level.upper(), format="%(message)s")
+    structlog.configure(
+        processors=[
+            structlog.stdlib.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.dev.ConsoleRenderer(),
+        ],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
     )
-    containers_to_log = ["nether-bridge", target_container]
-    exit_code = 1
 
-    try:
-        print("--- Nether-bridge True Cold-Start Load Test ---")
-        print(f"Server Type:        {args.server_type.value}")
-        print(f"Target Container:   {target_container}")
-        print(f"Target Endpoint:    {target_host}:{port}")
-        print(f"Concurrent Clients: {args.clients}")
-        print(f"Client Timeout:     {args.timeout}s")
-        print(f"Chaos Percentage:   {args.chaos}%")
-        print("---------------------------------------------")
-
-        ensure_container_stopped(target_container)
-
-        print(f"\n--- Starting test with {args.clients} clients... ---")
-        start_time = time.time()
-
-        tasks = []
-        with ThreadPoolExecutor(max_workers=args.clients) as executor:
-            for i in range(args.clients):
-                task = executor.submit(
-                    simulate_single_client,
-                    args.server_type,
-                    target_host,
-                    port,
-                    args.timeout,
-                    args.chaos,
-                )
-                tasks.append(task)
-            results = [t.result() for t in tasks]
-
-        end_time = time.time()
-
-        success_count = results.count("SUCCESS")
-        chaos_count = results.count("CHAOS_ABORT")
-        failure_count = len(results) - success_count - chaos_count
-
-        print("\n--- Load Test Summary ---")
-        print(f"Total Time Elapsed: {end_time - start_time:.2f} seconds")
-        print(f"Successful Clients: {success_count} / {args.clients}")
-        print(f"Chaos Clients:      {chaos_count} / {args.clients}")
-        print(f"Failed Clients:     {failure_count} / {args.clients}")
-        print("-------------------------")
-
-        if failure_count > 0:
-            print("\nFailure Details:")
-            failure_reasons = {}
-            for r in results:
-                if r.startswith("FAILURE"):
-                    failure_reasons[r] = failure_reasons.get(r, 0) + 1
-            for reason, count in failure_reasons.items():
-                print(f"- {reason}: {count} occurrences")
-            exit_code = 1
-        else:
-            print("\n--- Load Test Passed ---")
-            exit_code = 0
-
-    except Exception as e:
-        print("\n" + "=" * 20 + " UNHANDLED EXCEPTION DURING TEST " + "=" * 20)
-        print(f"An unexpected error occurred: {type(e).__name__} - {e}")
-        traceback.print_exc()
-        exit_code = 1
-
-    finally:
-        print("\n--- DUMPING DIAGNOSTIC INFO ---")
-        dump_debug_info(containers_to_log)
-        sys.exit(exit_code)
+    # Call the asynchronous main function
+    asyncio.run(amain_load_test(args))

@@ -7,8 +7,6 @@ services:
       context: ../
       dockerfile: Dockerfile
       target: final
-      cache_from:
-        - ghcr.io/meek2100/mcbd-proxy-cache:main
     restart: "no"
     networks:
       - mc-network
@@ -30,16 +28,12 @@ services:
       - NB_INITIAL_SERVER_QUERY_DELAY=2
       - NB_HEALTHCHECK_STALE_THRESHOLD=10
       - NB_HEARTBEAT_INTERVAL=5
-    depends_on:
-      - mc-bedrock
-      - mc-java
     command: --generate-test-config python main.py
 
   mc-bedrock:
     build:
       context: ./images/mc-bedrock
       dockerfile: Dockerfile.mc-bedrock
-      network: host
       args:
         BEDROCK_VERSION: ${BEDROCK_VERSION}
         BEDROCK_DOWNLOAD_URL: ${BEDROCK_DOWNLOAD_URL}
@@ -48,8 +42,6 @@ services:
     container_name: mc-bedrock
     networks:
       - mc-network
-    # volumes:
-    #   - mc-bedrock-data:/data
     environment:
       - EULA=TRUE
       - VERSION=${BEDROCK_VERSION}
@@ -60,7 +52,6 @@ services:
     build:
       context: ./images/mc-java
       dockerfile: Dockerfile.mc-java
-      network: host
       args:
         JAVA_TYPE: ${JAVA_TYPE}
         JAVA_VERSION: ${JAVA_VERSION}
@@ -69,8 +60,6 @@ services:
     container_name: mc-java
     networks:
       - mc-network
-    # volumes:
-    #   - mc-java-data:/data
     environment:
       - EULA=TRUE
       - TYPE=${JAVA_TYPE}
@@ -80,7 +69,7 @@ services:
       - IDLE_TIMEOUT=-1
       - ONLINE_MODE=FALSE
       - SKIP_PAPER_PATCH_DOWNLOAD=TRUE
-      
+
   nb-tester:
     image: nb-tester:local
     container_name: nb-tester
@@ -88,8 +77,6 @@ services:
       context: ../
       dockerfile: Dockerfile
       target: testing
-      cache_from:
-        - ghcr.io/meek2100/mcbd-proxy-cache:main
     networks:
       - mc-network
     volumes:
@@ -101,7 +88,3 @@ services:
 networks:
   mc-network:
     driver: bridge
-
-#volumes:
-#  mc-bedrock-data:
-#  mc-java-data:

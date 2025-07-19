@@ -1,699 +1,538 @@
-import select
+# proxy.py
+import asyncio
 import signal
-import socket
 import time
-from pathlib import Path
-from threading import Event, Lock, RLock
-from typing import List
+from unittest.mock import MagicMock
 
 import structlog
 
-from config import ProxySettings, ServerConfig, load_application_config
+from config import AppConfig, GameServerConfig, load_app_config
 from docker_manager import DockerManager
-from metrics import (
-    ACTIVE_SESSIONS,
-    BYTES_TRANSFERRED,
-    RUNNING_SERVERS,
-    SERVER_STARTUP_DURATION,
-)
+from metrics import MetricsManager
 
-# --- Constants ---
-HEARTBEAT_FILE = Path("proxy_heartbeat.tmp")
+log = structlog.get_logger()
 
 
-class NetherBridgeProxy:
+class AsyncProxy:
     """
-    Nether-bridge: On-Demand Minecraft Server Proxy.
-    Orchestrates listening sockets and sessions, and delegates Docker operations.
+    An asynchronous proxy server that handles TCP and UDP traffic for
+    Minecraft servers, automatically starting and stopping them on demand.
     """
 
-    def __init__(self, settings: ProxySettings, servers_list: List[ServerConfig]):
-        self.logger = structlog.get_logger(__name__)
-        self.settings = settings
-        self.servers_list = servers_list
-        self.servers_config_map = {s.listen_port: s for s in self.servers_list}
-
-        self.docker_manager = DockerManager()
-
-        self.server_states = {
-            s.container_name: {"running": False, "last_activity": 0.0}
-            for s in self.servers_list
-        }
-        self.server_locks = {s.container_name: RLock() for s in self.servers_list}
-
-        # Lock to protect access to session dictionaries from multiple threads
-        self.session_lock = Lock()
-        self.socket_to_session_map = {}
-        self.active_sessions = {}
-
-        self.listen_sockets = {}
-        self.inputs = []
-        self.last_heartbeat_time = time.time()
-        self._shutdown_requested = False
+    def __init__(self, app_config: AppConfig, docker_manager: DockerManager):
+        self.app_config = app_config
+        self.docker_manager = docker_manager
+        self.metrics_manager = MetricsManager(app_config, docker_manager)
+        self.server_tasks = {}
+        self.active_tcp_sessions = {}
+        self.udp_protocols = {}
         self._reload_requested = False
-        self._shutdown_event = Event()
 
-    def signal_handler(self, sig, frame):
-        """Handles signals for graceful shutdown and configuration reloads."""
-        if hasattr(signal, "SIGHUP") and sig == signal.SIGHUP:
-            self._reload_requested = True
-            self.logger.warning("SIGHUP received. Reloading configuration...")
-        else:  # SIGINT, SIGTERM
-            self.logger.warning(
-                "Shutdown signal received, initiating shutdown.", sig=sig
-            )
-            self._shutdown_requested = True
-            self._shutdown_event.set()
+        self._server_state = {
+            s.name: {"last_activity": 0.0, "is_running": False}
+            for s in app_config.game_servers
+        }
+        # A lock per server to prevent race conditions where multiple clients
+        # simultaneously trigger the startup process for the same server.
+        self._startup_locks = {s.name: asyncio.Lock() for s in app_config.game_servers}
+        # An event per server to signal that it's fully started and query-ready.
+        # Connection-handling tasks await this event before forwarding traffic,
+        # ensuring the backend is available.
+        self._ready_events = {s.name: asyncio.Event() for s in app_config.game_servers}
 
-    def _start_minecraft_server(self, server_config: ServerConfig) -> bool:
-        """
-        High-level wrapper to start a server and update proxy state.
+    def schedule_reload(self):
+        """Sets a flag to trigger a reload on the next monitor cycle."""
+        self._reload_requested = True
+        log.warning("Configuration reload has been scheduled.")
 
-        Returns:
-            bool: True if the server is running and ready, False otherwise.
-        """
-        container_name = server_config.container_name
-        if self.docker_manager.is_container_running(container_name):
-            self.logger.debug(
-                "Server start requested, but already running.",
-                container_name=container_name,
-            )
-            if not self.server_states[container_name].get("running", False):
-                self.server_states[container_name]["running"] = True
-                RUNNING_SERVERS.inc()
-            return True
-
-        startup_timer_start = time.time()
-        success = self.docker_manager.start_server(server_config, self.settings)
-
-        if success:
-            self.server_states[container_name]["running"] = True
-            RUNNING_SERVERS.inc()
-            duration = time.time() - startup_timer_start
-            SERVER_STARTUP_DURATION.labels(server_name=server_config.name).observe(
-                duration
-            )
-            self.logger.info(
-                "Startup process complete. Now handling traffic.",
-                container_name=container_name,
-                duration_seconds=duration,
-            )
+    def _shutdown_handler(self, sig=None):
+        """Initiates a graceful shutdown of all tasks."""
+        if sig:
+            log.warning("Shutdown signal received", signal=sig.name)
         else:
-            self.logger.error(
-                "Server startup process failed.", container_name=container_name
-            )
-            self.server_states[container_name]["running"] = False
+            log.warning("Shutdown requested. Cancelling tasks...")
 
-        return success
+        for task in list(self.active_tcp_sessions.keys()):
+            task.cancel()
 
-    def _stop_minecraft_server(self, container_name: str):
-        """High-level wrapper to stop a server and update proxy state."""
-        was_running = self.server_states.get(container_name, {}).get("running", False)
-
-        if self.docker_manager.stop_server(container_name):
-            if was_running:
-                RUNNING_SERVERS.dec()
-            self.server_states[container_name]["running"] = False
-
-    def _ensure_all_servers_stopped_on_startup(self):
-        """
-        Ensures all managed servers are stopped when the proxy starts.
-        This is a blocking operation to prevent race conditions in tests.
-        """
-        self.logger.info(
-            "Proxy startup: Ensuring all managed servers are initially stopped."
-        )
-        for srv_conf in self.servers_list:
-            container_name = srv_conf.container_name
-            if self.docker_manager.is_container_running(container_name):
-                self.logger.warning(
-                    "Found running at proxy startup. Issuing a safe stop.",
-                    container_name=container_name,
-                )
-                time.sleep(self.settings.initial_server_query_delay_seconds)
-                self.docker_manager.wait_for_server_query_ready(
-                    srv_conf,
-                    self.settings.initial_boot_ready_max_wait_time_seconds,
-                    self.settings.query_timeout_seconds,
-                )
-                self._stop_minecraft_server(container_name)
-
-                self.logger.info(
-                    "Waiting for server to fully stop...",
-                    container_name=container_name,
-                )
-                stop_timeout = 60
-                stop_start_time = time.time()
-                while self.docker_manager.is_container_running(container_name):
-                    if time.time() - stop_start_time > stop_timeout:
-                        self.logger.error(
-                            "Timeout waiting for container to stop.",
-                            container_name=container_name,
-                        )
-                        break
-                    time.sleep(1)
-                else:
-                    self.logger.info(
-                        "Server confirmed to be stopped.",
-                        container_name=container_name,
-                    )
+        for task_list in self.server_tasks.values():
+            if isinstance(task_list, list):
+                for task in task_list:
+                    task.cancel()
             else:
-                self.logger.info(
-                    "Is confirmed to be stopped.", container_name=container_name
+                task_list.cancel()
+
+    async def _reload_configuration(self):
+        """Gracefully reloads the configuration and restarts services."""
+        log.info("Starting config reload. Active connections will be dropped.")
+        self._reload_requested = False
+
+        if self.active_tcp_sessions:
+            log.info(
+                "Cancelling active TCP sessions",
+                count=len(self.active_tcp_sessions),
+            )
+            for task in list(self.active_tcp_sessions.keys()):
+                task.cancel()
+            await asyncio.gather(
+                *self.active_tcp_sessions.keys(), return_exceptions=True
+            )
+            self.active_tcp_sessions.clear()
+
+        listener_tasks = self.server_tasks.get("listeners", [])
+        if listener_tasks:
+            log.info("Cancelling old listeners", count=len(listener_tasks))
+            for task in listener_tasks:
+                task.cancel()
+            await asyncio.gather(*listener_tasks, return_exceptions=True)
+        self.udp_protocols.clear()
+        log.info("Old listeners and connections shut down.")
+
+        self.app_config = load_app_config()
+        self.docker_manager.app_config = self.app_config
+        self.metrics_manager.app_config = self.app_config
+        log.info("Config reloaded", servers=len(self.app_config.game_servers))
+
+        self._server_state = {
+            s.name: {"last_activity": 0.0, "is_running": False}
+            for s in self.app_config.game_servers
+        }
+        self._startup_locks = {
+            s.name: asyncio.Lock() for s in self.app_config.game_servers
+        }
+        self._ready_events = {
+            s.name: asyncio.Event() for s in self.app_config.game_servers
+        }
+
+        await self._ensure_all_servers_stopped_on_startup()
+
+        self.server_tasks["listeners"] = [
+            asyncio.create_task(self._start_listener(sc))
+            for sc in self.app_config.game_servers
+        ]
+        log.info("New listeners started. Reload complete.")
+
+    async def _ensure_all_servers_stopped_on_startup(self):
+        """
+        Ensures any running servers are gracefully stopped before proceeding.
+        """
+        log.info("Checking for running servers to perform initial cleanup...")
+        for sc in self.app_config.game_servers:
+            if await self.docker_manager.is_container_running(sc.container_name):
+                log.warning(
+                    "Server found running. Waiting for it to be queryable "
+                    "before issuing a safe stop.",
+                    server=sc.name,
+                )
+                await asyncio.sleep(self.app_config.initial_server_query_delay)
+                await self.docker_manager.wait_for_server_query_ready(
+                    sc, timeout=self.app_config.initial_boot_ready_max_wait
                 )
 
-    def _monitor_servers_activity(self):
-        """Monitors server and session activity in a dedicated thread."""
-        while not self._shutdown_requested:
-            self._shutdown_event.wait(self.settings.player_check_interval_seconds)
-            if self._shutdown_requested:
+                await self.docker_manager.stop_server(
+                    sc.container_name, self.app_config.server_stop_timeout
+                )
+                for _ in range(self.app_config.server_stop_timeout + 5):
+                    if not await self.docker_manager.is_container_running(
+                        sc.container_name
+                    ):
+                        log.info("Server confirmed stopped.", server=sc.name)
+                        self._ready_events[sc.name].clear()
+                        break
+                    await asyncio.sleep(1)
+                else:
+                    log.error("Timeout waiting for server to stop!", server=sc.name)
+
+    async def start(self):
+        """Starts all proxy services and manages their lifecycle."""
+        log.info("Starting async proxy...")
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, self._shutdown_handler, sig)
+        if hasattr(signal, "SIGHUP"):
+            loop.add_signal_handler(signal.SIGHUP, self.schedule_reload)
+
+        await self._ensure_all_servers_stopped_on_startup()
+
+        pre_warm_tasks = [
+            asyncio.create_task(self._ensure_server_started(sc))
+            for sc in self.app_config.game_servers
+            if sc.pre_warm
+        ]
+        if pre_warm_tasks:
+            await asyncio.gather(*pre_warm_tasks, return_exceptions=True)
+
+        self.server_tasks["listeners"] = [
+            asyncio.create_task(self._start_listener(sc))
+            for sc in self.app_config.game_servers
+        ]
+        self.server_tasks["monitor"] = asyncio.create_task(
+            self._monitor_server_activity()
+        )
+        self.server_tasks["metrics"] = asyncio.create_task(self.metrics_manager.start())
+
+        all_tasks = (
+            self.server_tasks.get("listeners", [])
+            + [self.server_tasks.get("monitor")]
+            + [self.server_tasks.get("metrics")]
+        )
+        await asyncio.gather(*filter(None, all_tasks), return_exceptions=True)
+
+    async def _start_listener(self, server_config: GameServerConfig):
+        """Starts a TCP or UDP listener for a specific game server."""
+        log.info(
+            "Starting listener",
+            server=server_config.name,
+            host=server_config.proxy_host,
+            port=server_config.proxy_port,
+            game_type=server_config.game_type,
+        )
+        server = None
+        try:
+            if server_config.game_type == "java":
+                server = await asyncio.start_server(
+                    lambda r, w: self._handle_tcp_connection(r, w, server_config),
+                    server_config.proxy_host,
+                    server_config.proxy_port,
+                    backlog=self.app_config.tcp_listen_backlog,
+                )
+                await server.serve_forever()
+            else:  # Bedrock (UDP)
+                loop = asyncio.get_running_loop()
+
+                def protocol_factory():
+                    return BedrockProtocol(self, server_config)
+
+                transport, protocol = await loop.create_datagram_endpoint(
+                    protocol_factory,
+                    local_addr=(server_config.proxy_host, server_config.proxy_port),
+                )
+                self.udp_protocols[server_config.name] = protocol
+                await asyncio.Future()
+        except asyncio.CancelledError:
+            log.info("Listener task cancelled.", server=server_config.name)
+        except Exception:
+            log.critical(
+                "Failed to start listener. Port might be in use.",
+                server=server_config.name,
+                port=server_config.proxy_port,
+                exc_info=True,
+            )
+            raise
+        finally:
+            if server and server.is_serving():
+                server.close()
+                await server.wait_closed()
+            if server_config.name in self.udp_protocols:
+                del self.udp_protocols[server_config.name]
+
+    async def _ensure_server_started(self, server_config: GameServerConfig):
+        """Ensures a server is running, handling startup logic concurrently."""
+        if self._ready_events[
+            server_config.name
+        ].is_set() and await self.docker_manager.is_container_running(
+            server_config.container_name
+        ):
+            return
+
+        async with self._startup_locks[server_config.name]:
+            if self._ready_events[server_config.name].is_set():
+                return
+
+            log.info("Server not running, starting...", server=server_config.name)
+            start_time = time.time()
+            success = await self.docker_manager.start_server(server_config)
+            if not success:
+                log.error("Server failed to start.", server=server_config.name)
+                return
+
+            duration = time.time() - start_time
+            self.metrics_manager.observe_startup_duration(server_config.name, duration)
+            self._server_state[server_config.name]["is_running"] = True
+            self._ready_events[server_config.name].set()
+            log.info("Server startup complete.", server=server_config.name)
+
+    def _update_activity(self, server_name: str):
+        """Updates the last activity timestamp for a server."""
+        self._server_state[server_name]["last_activity"] = time.time()
+
+    async def _proxy_data(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        server_name: str,
+        direction: str,
+    ):
+        """Proxies data between a client and a server until EOF."""
+        try:
+            while not reader.at_eof():
+                data = await reader.read(4096)
+                if not data:
+                    break
+                self.metrics_manager.inc_bytes_transferred(
+                    server_name, direction, len(data)
+                )
+                writer.write(data)
+                await writer.drain()
+        except asyncio.CancelledError:
+            log.debug("Proxy data task cancelled.", server=server_name)
+        except ConnectionResetError:
+            log.info("Connection reset during data proxy.", server=server_name)
+        except Exception:
+            log.error("Error during data proxy.", server=server_name, exc_info=True)
+        finally:
+            if not writer.is_closing():
+                writer.close()
+            await writer.wait_closed()
+
+    async def _handle_tcp_connection(
+        self,
+        client_reader: asyncio.StreamReader,
+        client_writer: asyncio.StreamWriter,
+        server_config: GameServerConfig,
+    ):
+        """Handles a new client connection for a TCP server."""
+        client_addr = client_writer.get_extra_info("peername")
+        log.info("New TCP connection", client=client_addr, server=server_config.name)
+
+        max_sessions = self.app_config.max_concurrent_sessions
+        if max_sessions != -1 and len(self.active_tcp_sessions) >= max_sessions:
+            log.warning("Max sessions reached. Rejecting.", client=client_addr)
+            client_writer.close()
+            await client_writer.wait_closed()
+            return
+
+        self.metrics_manager.inc_active_connections(server_config.name)
+        self._update_activity(server_config.name)
+
+        proxy_task = None
+        try:
+            await self._ensure_server_started(server_config)
+
+            server_reader, server_writer = await asyncio.open_connection(
+                server_config.host, server_config.port
+            )
+            log.info("Connected to backend server", server=server_config.name)
+
+            to_client = self._proxy_data(
+                server_reader, client_writer, server_config.name, "s2c"
+            )
+            to_server = self._proxy_data(
+                client_reader, server_writer, server_config.name, "c2s"
+            )
+            to_client_task = asyncio.create_task(to_client)
+            to_server_task = asyncio.create_task(to_server)
+
+            proxy_task = asyncio.gather(to_client_task, to_server_task)
+            self.active_tcp_sessions[proxy_task] = server_config.name
+            await proxy_task
+        except (ConnectionRefusedError, asyncio.TimeoutError) as e:
+            log.error(
+                "Could not connect to backend.",
+                error=e,
+                server=server_config.name,
+                client=client_addr,
+            )
+        except asyncio.CancelledError:
+            log.info("TCP session cancelled.", client=client_addr)
+        finally:
+            if proxy_task:
+                self.active_tcp_sessions.pop(proxy_task, None)
+            if not client_writer.is_closing():
+                client_writer.close()
+            await client_writer.wait_closed()
+            self.metrics_manager.dec_active_connections(server_config.name)
+            log.info("TCP session closed", client=client_addr)
+
+    async def _monitor_server_activity(self):
+        """Periodically checks for idle servers and reload requests."""
+        log.info("Starting server activity monitor.")
+        while True:
+            try:
+                await asyncio.sleep(self.app_config.player_check_interval)
+            except asyncio.CancelledError:
+                log.info("Server activity monitor task cancelled.")
                 break
 
-            # --- OPTIMIZATION: Take a single snapshot of all container statuses ---
-            # This avoids repeated API calls within the loops below.
-            container_statuses = {
-                s.container_name: self.docker_manager.is_container_running(
-                    s.container_name
+            if self._reload_requested:
+                await self._reload_configuration()
+                continue
+
+            for sc in self.app_config.game_servers:
+                is_running = await self.docker_manager.is_container_running(
+                    sc.container_name
                 )
-                for s in self.servers_list
-            }
+                self._server_state[sc.name]["is_running"] = is_running
 
-            current_time = time.time()
-
-            with self.session_lock:
-                sessions_to_check = list(self.active_sessions.items())
-
-            for session_key, session_info in sessions_to_check:
-                container_name = session_info["target_container"]
-
-                # Use the snapshot instead of a new API call
-                if not container_statuses.get(container_name):
-                    self.logger.warning(
-                        "Backend active session container not running. Cleaning up.",
-                        container_name=container_name,
-                        client_addr=session_key[0],
-                    )
-                    self._cleanup_session_by_key(session_key)
+                if not is_running:
                     continue
 
-                server_config = self.servers_config_map.get(session_info["listen_port"])
-                if not server_config:
+                udp_proto = self.udp_protocols.get(sc.name, MagicMock(client_map={}))
+                udp_sessions = len(udp_proto.client_map)
+                tcp_sessions = sum(
+                    1 for name in self.active_tcp_sessions.values() if name == sc.name
+                )
+
+                if (tcp_sessions + udp_sessions) > 0:
+                    self._update_activity(sc.name)
                     continue
 
                 idle_timeout = (
-                    server_config.idle_timeout_seconds
-                    or self.settings.idle_timeout_seconds
+                    sc.idle_timeout
+                    if sc.idle_timeout is not None
+                    else self.app_config.idle_timeout
                 )
-                if current_time - session_info["last_packet_time"] > idle_timeout:
-                    self.logger.info(
-                        "Cleaning up idle client session.",
-                        container_name=session_info["target_container"],
-                        client_addr=session_key[0],
+                idle_time = time.time() - self._server_state[sc.name]["last_activity"]
+                if idle_time > idle_timeout:
+                    log.info(
+                        "Server idle. Stopping.",
+                        server=sc.name,
+                        idle_seconds=int(idle_time),
                     )
-                    self._cleanup_session_by_key(session_key)
-
-            for server_conf in self.servers_list:
-                container_name = server_conf.container_name
-                with self.server_locks[container_name]:
-                    state = self.server_states.get(container_name)
-                    if not (state and state.get("running")):
-                        continue
-
-                    # Use the snapshot instead of a new API call
-                    if not container_statuses.get(container_name):
-                        log_msg = "Monitor found server stopped. Updating state."
-                        self.logger.info(log_msg, container_name=container_name)
-                        if state.get("running"):
-                            RUNNING_SERVERS.dec()
-                        state["running"] = False
-                        continue
-
-                    with self.session_lock:
-                        has_active_sessions = any(
-                            info["target_container"] == container_name
-                            for info in self.active_sessions.values()
-                        )
-
-                    if has_active_sessions:
-                        continue
-
-                    idle_timeout = (
-                        server_conf.idle_timeout_seconds
-                        or self.settings.idle_timeout_seconds
+                    await self.docker_manager.stop_server(
+                        sc.container_name, self.app_config.server_stop_timeout
                     )
-                    if current_time - state.get("last_activity", 0) > idle_timeout:
-                        log_msg = "Server idle with 0 sessions. Initiating shutdown."
-                        self.logger.info(
-                            log_msg,
-                            container_name=container_name,
-                            idle_threshold_seconds=idle_timeout,
-                        )
-                        self._stop_minecraft_server(container_name)
+                    self._server_state[sc.name]["is_running"] = False
+                    self._ready_events[sc.name].clear()
+                    log.info("Server stopped.", server=sc.name)
 
-    def _close_session_sockets(self, session_info):
-        """Helper to safely close sockets associated with a session."""
-        server_socket = session_info.get("server_socket")
-        if session_info.get("protocol") == "tcp":
-            client_socket = session_info.get("client_socket")
-            if client_socket:
-                if client_socket in self.inputs:
-                    self.inputs.remove(client_socket)
-                try:
-                    client_socket.close()
-                except socket.error:
-                    pass
-        if server_socket:
-            if server_socket in self.inputs:
-                self.inputs.remove(server_socket)
+
+class BedrockProtocol(asyncio.DatagramProtocol):
+    """
+    Handles UDP traffic for Bedrock servers. It creates a "UDP session" for
+    each new client address, routing traffic to a dedicated backend socket.
+    """
+
+    def __init__(self, proxy: AsyncProxy, server_config: GameServerConfig):
+        self.proxy = proxy
+        self.server_config = server_config
+        self.transport = None
+        self.client_map = {}
+        self.cleanup_task = asyncio.create_task(self._monitor_idle_clients())
+        super().__init__()
+
+    def _cleanup_client(self, addr: tuple):
+        """Gracefully cleans up a single client session."""
+        client_info = self.client_map.pop(addr, None)
+        if client_info:
+            log.info("Cleaning up idle UDP client", client=addr)
+            if client_info.get("task"):
+                client_info.get("task").cancel()
+            protocol = client_info.get("protocol")
+            if protocol and protocol.transport:
+                protocol.transport.close()
+            self.proxy.metrics_manager.dec_active_connections(self.server_config.name)
+
+    async def _monitor_idle_clients(self):
+        """Periodically scans for and removes idle UDP clients."""
+        while True:
             try:
-                server_socket.close()
-            except socket.error:
-                pass
-
-    def _shutdown_all_sessions(self):
-        """Closes all active client and server sockets to terminate sessions."""
-        with self.session_lock:
-            if not self.active_sessions:
-                return
-
-            self.logger.info(
-                "Closing all active sessions...",
-                count=len(self.active_sessions),
-            )
-            for session_info in self.active_sessions.values():
-                self._close_session_sockets(session_info)
-
-            self.active_sessions.clear()
-            self.socket_to_session_map.clear()
-            self.logger.info("All active sessions have been closed.")
-
-    def _reload_configuration(self, main_module):
-        """
-        Reloads configuration and re-initializes proxy state.
-
-        NOTE: This is a destructive operation that terminates all active
-        player sessions before applying the new configuration.
-        """
-        try:
-            new_settings, new_servers = load_application_config()
-            main_module.configure_logging(
-                new_settings.log_level, new_settings.log_formatter
-            )
-            self.settings = new_settings
-            self.logger.info("Proxy settings have been reloaded.")
-        except Exception as e:
-            self.logger.error(
-                "Failed to reload settings, aborting reload.", error=str(e)
-            )
-            self._reload_requested = False
-            return
-
-        self.logger.info("Closing all current listeners for reconfiguration.")
-        for port, sock in self.listen_sockets.items():
-            if sock in self.inputs:
-                self.inputs.remove(sock)
-            try:
-                sock.close()
-            except socket.error as e:
-                self.logger.warning(
-                    "Error closing old socket.", port=port, error=str(e)
+                await asyncio.sleep(self.proxy.app_config.player_check_interval)
+            except asyncio.CancelledError:
+                log.info(
+                    "UDP client monitor cancelled.", server=self.server_config.name
                 )
-
-        self.listen_sockets.clear()
-        self.servers_config_map.clear()
-        self._shutdown_all_sessions()  # Also clears session maps
-
-        self.logger.info("Applying new server configuration.")
-        self.servers_list = new_servers
-        for srv_cfg in self.servers_list:
-            self.servers_config_map[srv_cfg.listen_port] = srv_cfg
-            self._create_listening_socket(srv_cfg)
-            if srv_cfg.container_name not in self.server_states:
-                self.server_states[srv_cfg.container_name] = {
-                    "running": False,
-                    "last_activity": 0.0,
-                }
-                self.server_locks[srv_cfg.container_name] = RLock()
-
-        self.logger.info("Configuration reload complete.")
-        self._reload_requested = False
-
-    def _handle_new_tcp_connection(self, sock: socket.socket):
-        """Handles the first TCP packet from a client, establishing a session."""
-        with self.session_lock:
-            max_sessions = self.settings.max_concurrent_sessions
-            if max_sessions > 0 and len(self.active_sessions) >= max_sessions:
-                self.logger.warning(
-                    "Max concurrent sessions reached. Rejecting new TCP connection.",
-                    max_sessions=max_sessions,
-                )
-                conn, _ = sock.accept()
-                conn.close()
-                return
-
-        conn, client_addr = sock.accept()
-        server_port = sock.getsockname()[1]
-        server_config = self.servers_config_map[server_port]
-        container_name = server_config.container_name
-
-        with self.server_locks[container_name]:
-            if not self.docker_manager.is_container_running(container_name):
-                self.logger.info(
-                    "First TCP connection for stopped server. Starting...",
-                    container_name=container_name,
-                    client_addr=client_addr,
-                )
-                if not self._start_minecraft_server(server_config):
-                    self.logger.error(
-                        "Server failed to become ready. Closing client connection.",
-                        container_name=container_name,
-                    )
-                    conn.close()
-                    return
-
-            self.logger.info(
-                "Establishing new TCP session for running server.",
-                client_addr=client_addr,
-                server_name=server_config.name,
+                break
+            idle_timeout = (
+                self.server_config.idle_timeout
+                if self.server_config.idle_timeout is not None
+                else self.proxy.app_config.idle_timeout
             )
-            server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            now = time.time()
+            for addr, info in list(self.client_map.items()):
+                if now - info.get("last_activity", 0) > idle_timeout:
+                    self._cleanup_client(addr)
 
-            connected_to_backend = False
-            connect_start_time = time.time()
-            connect_timeout = 5
+    def connection_made(self, transport: asyncio.DatagramTransport):
+        self.transport = transport
 
-            while (
-                not connected_to_backend
-                and time.time() - connect_start_time < connect_timeout
-            ):
-                try:
-                    server_sock.settimeout(1.0)
-                    server_sock.connect((container_name, server_config.internal_port))
-                    connected_to_backend = True
-                except (socket.error, ConnectionRefusedError):
-                    time.sleep(0.25)
-                    continue
-
-            if not connected_to_backend:
-                self.logger.error(
-                    "Failed to connect to backend server after multiple retries.",
-                    container_name=container_name,
-                )
-                conn.close()
-                return
-
-            conn.setblocking(False)
-            server_sock.setblocking(False)
-            self.inputs.append(conn)
-            self.inputs.append(server_sock)
-
-            with self.session_lock:
-                session_key = (client_addr, server_port, "tcp")
-                session_info = {
-                    "client_socket": conn,
-                    "server_socket": server_sock,
-                    "target_container": container_name,
-                    "last_packet_time": time.time(),
-                    "listen_port": server_port,
-                    "protocol": "tcp",
-                }
-                self.active_sessions[session_key] = session_info
-                self.socket_to_session_map[conn] = (session_key, "client_socket")
-                self.socket_to_session_map[server_sock] = (
-                    session_key,
-                    "server_socket",
-                )
-                ACTIVE_SESSIONS.labels(server_name=server_config.name).inc()
-
-    def _handle_new_udp_packet(self, sock: socket.socket):
-        """Handles the first UDP packet from a client, establishing a session."""
-        with self.session_lock:
-            max_sessions = self.settings.max_concurrent_sessions
-            if max_sessions > 0 and len(self.active_sessions) >= max_sessions:
-                self.logger.warning(
-                    "Max concurrent sessions reached. Dropping UDP packet.",
-                    max_sessions=max_sessions,
-                )
-                return
-
-        data, client_addr = sock.recvfrom(4096)
-        server_port = sock.getsockname()[1]
-        server_config = self.servers_config_map[server_port]
-        container_name = server_config.container_name
-
-        with self.server_locks[container_name]:
-            is_actually_running = self.docker_manager.is_container_running(
-                container_name
-            )
-            self.server_states[container_name]["running"] = is_actually_running
-
-            if not self.server_states[container_name]["running"]:
-                self.logger.info(
-                    "First packet received for stopped server. Starting...",
-                    container_name=container_name,
-                    client_addr=client_addr,
-                )
-                startup_success = self._start_minecraft_server(server_config)
-                if not startup_success:
-                    self.logger.error(
-                        "Server failed to become ready. Dropping client packet.",
-                        container_name=container_name,
-                    )
-                    return
-
-        session_key = (client_addr, server_port, "udp")
-
-        with self.session_lock:
-            if session_key not in self.active_sessions:
-                server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                server_sock.setblocking(False)
-                self.inputs.append(server_sock)
-                session_info = {
-                    "server_socket": server_sock,
-                    "target_container": container_name,
-                    "last_packet_time": time.time(),
-                    "listen_port": server_port,
-                    "protocol": "udp",
-                }
-                self.active_sessions[session_key] = session_info
-                self.socket_to_session_map[server_sock] = (
-                    session_key,
-                    "server_socket",
-                )
-                ACTIVE_SESSIONS.labels(server_name=server_config.name).inc()
-                self.logger.info(
-                    "Establishing new UDP session for running server.",
-                    client_addr=client_addr,
-                    server_name=server_config.name,
-                )
-
-            session_info = self.active_sessions[session_key]
-            session_info["last_packet_time"] = time.time()
-            self.server_states[container_name]["last_activity"] = time.time()
-            session_info["server_socket"].sendto(
-                data, (container_name, server_config.internal_port)
-            )
-
-    def _handle_new_connection(self, sock: socket.socket):
-        """Dispatches handling for a new connection based on socket type."""
-        if sock.type == socket.SOCK_STREAM:
-            self._handle_new_tcp_connection(sock)
-        elif sock.type == socket.SOCK_DGRAM:
-            self._handle_new_udp_packet(sock)
-
-    def _forward_packet(self, sock: socket.socket):
-        """Forwards a packet from an established session (TCP or UDP)."""
-        with self.session_lock:
-            session_info_tuple = self.socket_to_session_map.get(sock)
-            if session_info_tuple:
-                session_key, socket_role = session_info_tuple
-                session_info = self.active_sessions.get(session_key)
-            else:
-                session_info = None
-
-        if not session_info:
-            if sock in self.inputs:
-                self.inputs.remove(sock)
-            try:
-                sock.close()
-            except socket.error:
-                pass
-            return
-
-        try:
-            if session_info["protocol"] == "tcp":
-                data = sock.recv(4096)
-                if not data:
-                    raise ConnectionResetError("Connection closed by peer")
-            else:  # UDP
-                data, _ = sock.recvfrom(4096)
-        except (ConnectionResetError, socket.error, OSError) as e:
-            self.logger.info(
-                "[DEBUG] Connection error, raising to trigger cleanup.",
-                session_key=session_key,
-                error=str(e),
-            )
-            raise e
-
-        with self.session_lock:
-            # Re-verify session still exists before proceeding
-            if not self.active_sessions.get(session_key):
-                return
-            session_info["last_packet_time"] = time.time()
-
-        server_config = self.servers_config_map[session_info["listen_port"]]
-
-        if socket_role == "client_socket":
-            self.server_states[server_config.container_name]["last_activity"] = (
-                time.time()
-            )
-            destination_socket = session_info["server_socket"]
-            destination_address = (
-                server_config.container_name,
-                server_config.internal_port,
-            )
-            direction = "c2s"
-        else:  # s2c
-            destination_address = session_key[0]
-            direction = "s2c"
-            destination_socket = (
-                session_info.get("client_socket")
-                if session_info["protocol"] == "tcp"
-                else self.listen_sockets.get(session_info["listen_port"])
-            )
-
-        if not destination_socket:
-            return
-
-        try:
-            if session_info["protocol"] == "tcp":
-                destination_socket.sendall(data)
-            else:  # UDP
-                destination_socket.sendto(data, destination_address)
-        except socket.error as e:
-            self.logger.warning(
-                "Socket error on send.", error=str(e), direction=direction
-            )
-            raise e
-
-        BYTES_TRANSFERRED.labels(
-            server_name=server_config.name, direction=direction
-        ).inc(len(data))
-
-    def _cleanup_session_by_key(self, session_key):
-        """Finds and cleans up a session by its key."""
-        with self.session_lock:
-            session_info = self.active_sessions.pop(session_key, None)
-            if session_info:
-                server_config = self.servers_config_map.get(session_info["listen_port"])
-                if server_config:
-                    ACTIVE_SESSIONS.labels(server_name=server_config.name).dec()
-
-                self.socket_to_session_map.pop(session_info.get("client_socket"), None)
-                self.socket_to_session_map.pop(session_info.get("server_socket"), None)
-                self._close_session_sockets(session_info)
-
-    def _cleanup_session_by_socket(self, sock: socket.socket):
-        """Finds and cleans up a session associated with a given socket."""
-        with self.session_lock:
-            session_info_tuple = self.socket_to_session_map.pop(sock, None)
-            if not session_info_tuple:
-                return
-
-            session_key, _ = session_info_tuple
-            session_info = self.active_sessions.pop(session_key, None)
-
-            if session_info:
-                server_config = self.servers_config_map.get(session_info["listen_port"])
-                if server_config:
-                    ACTIVE_SESSIONS.labels(server_name=server_config.name).dec()
-
-                self.socket_to_session_map.pop(session_info.get("client_socket"), None)
-                self.socket_to_session_map.pop(session_info.get("server_socket"), None)
-                self._close_session_sockets(session_info)
-
-    def _run_proxy_loop(self, main_module):
-        """The main event loop of the proxy."""
-        self.logger.info("Starting main proxy packet forwarding loop.")
-        while not self._shutdown_requested:
-            if self._reload_requested:
-                self._reload_configuration(main_module)
-
-            try:
-                readable, _, _ = select.select(self.inputs, [], [], 1.0)
-            except select.error as e:
-                self.logger.error("Error in select.select()", error=str(e))
-                time.sleep(1)
-                continue
-
-            current_time = time.time()
-            if (
-                current_time - self.last_heartbeat_time
-                > self.settings.proxy_heartbeat_interval_seconds
-            ):
-                try:
-                    HEARTBEAT_FILE.write_text(str(int(current_time)))
-                    self.last_heartbeat_time = current_time
-                except Exception:
-                    self.logger.warning(
-                        "Could not update heartbeat file.", path=str(HEARTBEAT_FILE)
-                    )
-
-            for sock in readable:
-                try:
-                    if sock in self.listen_sockets.values():
-                        self._handle_new_connection(sock)
-                    else:
-                        self._forward_packet(sock)
-                except (ConnectionResetError, socket.error, OSError) as e:
-                    self.logger.info(
-                        "[DEBUG] Session cleanup block triggered by connection error.",
-                        error=str(e),
-                    )
-                    self._cleanup_session_by_socket(sock)
-                except Exception:
-                    self.logger.error(
-                        "Unhandled exception in proxy loop. Cleaning up session.",
-                        socket_fileno=sock.fileno(),
-                        exc_info=True,
-                    )
-                    self._cleanup_session_by_socket(sock)
-
-        self.logger.info("Shutdown requested. Closing all listening sockets.")
-        for sock in self.listen_sockets.values():
-            sock.close()
-
-    def _create_listening_socket(self, srv_cfg: ServerConfig):
-        """Creates and binds a single listening socket."""
-        listen_port = srv_cfg.listen_port
-        sock_type = (
-            socket.SOCK_DGRAM
-            if srv_cfg.server_type == "bedrock"
-            else socket.SOCK_STREAM
+    def datagram_received(self, data: bytes, addr: tuple):
+        self.proxy._update_activity(self.server_config.name)
+        self.proxy.metrics_manager.inc_bytes_transferred(
+            self.server_config.name, "c2s", len(data)
         )
-        protocol_str = "UDP" if sock_type == socket.SOCK_DGRAM else "TCP"
 
-        sock = socket.socket(socket.AF_INET, sock_type)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if addr not in self.client_map:
+            max_sessions = self.proxy.app_config.max_concurrent_sessions
+            if max_sessions != -1 and len(self.client_map) >= max_sessions:
+                log.warning("Max UDP sessions reached. Dropping packet.", client=addr)
+                return
 
+            log.info("New UDP client", client=addr, server=self.server_config.name)
+            self.proxy.metrics_manager.inc_active_connections(self.server_config.name)
+            loop = asyncio.get_running_loop()
+            task = loop.create_task(self._create_backend_connection(addr, data))
+            self.client_map[addr] = {"task": task, "last_activity": time.time()}
+        else:
+            self.client_map[addr]["last_activity"] = time.time()
+            backend_protocol = self.client_map[addr].get("protocol")
+            if backend_protocol and backend_protocol.transport:
+                backend_protocol.transport.sendto(data)
+
+    async def _create_backend_connection(self, client_addr: tuple, initial_data: bytes):
+        """
+        Establishes a backend UDP connection and sends initial data.
+        """
         try:
-            sock.bind(("0.0.0.0", listen_port))
-            if sock_type == socket.SOCK_STREAM:
-                sock.listen(self.settings.tcp_listen_backlog)
-            sock.setblocking(False)
-            self.listen_sockets[listen_port] = sock
-            self.inputs.append(sock)
-            self.logger.info(
-                "Proxy listening for server",
-                server_name=srv_cfg.name,
-                listen_port=listen_port,
-                protocol=protocol_str,
-                container_name=srv_cfg.container_name,
+            await self.proxy._ensure_server_started(self.server_config)
+            loop = asyncio.get_running_loop()
+            transport, protocol = await loop.create_datagram_endpoint(
+                lambda: BackendProtocol(
+                    self.proxy, self.server_config, self.transport, client_addr
+                ),
+                remote_addr=(self.server_config.host, self.server_config.port),
             )
-        except OSError as e:
-            self.logger.critical(
-                "FATAL: Could not bind to port.",
-                port=listen_port,
-                error=str(e),
+            if client_addr in self.client_map:
+                self.client_map[client_addr]["protocol"] = protocol
+            if transport and not transport.is_closing():
+                transport.sendto(initial_data)
+        except Exception:
+            log.error(
+                "Error creating backend UDP connection.",
+                client=client_addr,
+                exc_info=True,
             )
-            raise
+            self._cleanup_client(client_addr)
+
+    def connection_lost(self, exc):
+        if exc:
+            log.error("UDP listener connection lost.", exc=exc)
+        if self.transport and not self.transport.is_closing():
+            self.transport.close()
+        self.cleanup_task.cancel()
+        for addr in list(self.client_map.keys()):
+            self._cleanup_client(addr)
+
+
+class BackendProtocol(asyncio.DatagramProtocol):
+    """Protocol to handle communication from the backend Bedrock server."""
+
+    def __init__(
+        self,
+        proxy: AsyncProxy,
+        server_config: GameServerConfig,
+        client_transport: asyncio.DatagramTransport,
+        client_addr: tuple,
+    ):
+        self.proxy = proxy
+        self.server_config = server_config
+        self.client_transport = client_transport
+        self.client_addr = client_addr
+        self.transport = None
+        super().__init__()
+
+    def connection_made(self, transport: asyncio.DatagramTransport):
+        self.transport = transport
+
+    def datagram_received(self, data: bytes, _addr: tuple):
+        self.proxy.metrics_manager.inc_bytes_transferred(
+            self.server_config.name, "s2c", len(data)
+        )
+        if self.client_transport and not self.client_transport.is_closing():
+            self.client_transport.sendto(data, self.client_addr)
+
+    def connection_lost(self, exc):
+        if exc:
+            log.error("Backend UDP connection lost.", exc=exc)
+        if self.transport and not self.transport.is_closing():
+            self.transport.close()
