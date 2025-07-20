@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   lint-and-unit-test:
-    runs-on: [ubuntu-latest]
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -19,17 +19,13 @@ jobs:
           python-version: '3.11'
           cache: 'poetry'
 
-      - name: Install Poetry (if not in path)
+      - name: Install Poetry
         run: |
-          if ! command -v poetry &> /dev/null; then
-              curl -sSL https://install.python-poetry.org | python3 -
-              echo "$POETRY_HOME/bin" >> $GITHUB_PATH
-              echo "POETRY_HOME=$POETRY_HOME" >> $GITHUB_ENV
-              echo "POETRY_VIRTUALENVS_IN_PROJECT=true" >> $GITHUB_ENV
-          fi
+          curl -sSL https://install.python-poetry.org | python3 -
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Install Dependencies with Poetry
-        run: poetry install --no-root --sync
+        run: poetry sync --no-root
 
       - name: Lint with ruff
         run: poetry run ruff check .

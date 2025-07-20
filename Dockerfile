@@ -12,7 +12,8 @@ ENV PATH="$POETRY_HOME/bin:$PATH"
 FROM poetry-base AS base
 WORKDIR /app
 COPY pyproject.toml poetry.lock ./
-RUN poetry install --no-root --without dev --no-interaction
+# Use 'poetry sync' which is the modern replacement for 'install --sync'
+RUN poetry sync --no-root --without dev --no-interaction
 
 # Stage 2: Builder - A complete copy of the source code.
 FROM python:3.11-slim-bookworm AS builder
@@ -24,8 +25,8 @@ FROM base AS testing
 WORKDIR /app
 COPY --from=poetry-base ${POETRY_HOME} ${POETRY_HOME}
 COPY --from=builder /app /app
-# Install all dependencies, including the 'dev' group
-RUN poetry install --no-root --no-interaction
+# Use 'poetry sync' to install all dependencies, including the 'dev' group
+RUN poetry sync --no-root --no-interaction
 # Install system packages needed by the entrypoint.
 RUN apt-get update && apt-get install -y --no-install-recommends gosu passwd \
   && rm -rf /var/lib/apt/lists/*
