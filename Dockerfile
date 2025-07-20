@@ -3,6 +3,7 @@
 FROM python:3.11-slim-bookworm AS poetry-base
 ENV POETRY_HOME="/opt/poetry"
 ENV POETRY_VIRTUALENVS_CREATE=false
+# Install curl, which is needed for the Poetry installer.
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
   && rm -rf /var/lib/apt/lists/*
 RUN curl -sSL https://install.python-poetry.org | python3 -
@@ -12,7 +13,8 @@ ENV PATH="$POETRY_HOME/bin:$PATH"
 FROM poetry-base AS base
 WORKDIR /app
 COPY pyproject.toml poetry.lock ./
-# Use 'poetry sync' which is the modern replacement for 'install --sync'
+# Regenerate lock file if inconsistent, then sync dependencies.
+RUN poetry lock --no-interaction
 RUN poetry sync --no-root --without dev --no-interaction
 
 # Stage 2: Builder - A complete copy of the source code.
@@ -25,7 +27,8 @@ FROM base AS testing
 WORKDIR /app
 COPY --from=poetry-base ${POETRY_HOME} ${POETRY_HOME}
 COPY --from=builder /app /app
-# Use 'poetry sync' to install all dependencies, including the 'dev' group
+# Regenerate lock file if inconsistent, then sync all dependencies.
+RUN poetry lock --no-interaction
 RUN poetry sync --no-root --no-interaction
 # Install system packages needed by the entrypoint.
 RUN apt-get update && apt-get install -y --no-install-recommends gosu passwd \
