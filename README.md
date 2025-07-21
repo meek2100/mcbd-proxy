@@ -157,6 +157,15 @@ Servers can be defined via environment variables (which take priority) or in a `
 
 The application includes a robust health check used by Docker to monitor its status, verifying that the configuration is valid and the main process is alive.
 
+## Usage
+
+1.  Ensure your `docker-compose.yml` is configured and running
+    (`docker compose up -d`).
+2.  **For Bedrock Edition (PC/Mobile):** Players connect to the IP address of
+    your server on the configured Bedrock listen port (e.g., `19132`).
+3.  **For Java Edition:** Players connect to the IP address of your server on
+    the configured Java listen port (e.g., `25565`).
+
 ## Console (Switch, Xbox, PlayStation) Support
 
 To allow Minecraft Bedrock Edition on consoles to connect, you need to use a DNS redirector service like `Pugmatt/BedrockConnect`. The main `docker-compose.yml` file contains a commented-out, optional service for this purpose.
