@@ -61,7 +61,6 @@ def configure_logging(log_level: str, log_format: str):
 async def _update_heartbeat(app_config, shutdown_event: asyncio.Event):
     """
     Periodically writes a timestamp to the heartbeat file to signal liveness.
-    Uses configurable interval from app_config and stops when shutdown_event is set.
     """
     log.debug("Starting heartbeat update loop.")
     while not shutdown_event.is_set():
@@ -77,19 +76,25 @@ async def _update_heartbeat(app_config, shutdown_event: asyncio.Event):
             continue  # This is the normal loop condition
         except Exception:
             log.error("Failed to update heartbeat file.", exc_info=True)
+            # Sleep even on error to avoid a tight error loop
             await asyncio.sleep(app_config.healthcheck_heartbeat_interval)
 
 
 async def shutdown(
     sig: Optional[signal.Signals],
-    proxy_server: AsyncProxy,
+    proxy_server: Optional[AsyncProxy],
     shutdown_event: asyncio.Event,
 ):
     """Gracefully shutdown tasks and set the shutdown event."""
     if shutdown_event.is_set():
         return
-    log.warning("Shutdown signal received, initiating graceful shutdown...", signal=sig)
-    await proxy_server.shutdown()
+
+    log.warning(
+        "Shutdown signal received, initiating graceful shutdown...",
+        signal=sig.name if sig else "UNKNOWN",
+    )
+    if proxy_server:
+        await proxy_server.shutdown()
     shutdown_event.set()
 
 
@@ -118,27 +123,28 @@ async def amain():
     if sys.platform != "win32":
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(
-                sig,
-                lambda s=sig: asyncio.create_task(
-                    shutdown(s, proxy_server, shutdown_event)
-                ),
-            )
+
+            def handler(s=sig):
+                return asyncio.create_task(shutdown(s, proxy_server, shutdown_event))
+
+            loop.add_signal_handler(sig, handler)
         if hasattr(signal, "SIGHUP"):
             loop.add_signal_handler(signal.SIGHUP, proxy_server.schedule_reload)
 
     # Start background tasks
     heartbeat_task = asyncio.create_task(_update_heartbeat(app_config, shutdown_event))
     proxy_task = asyncio.create_task(proxy_server.start())
+    all_tasks = [heartbeat_task, proxy_task]
 
-    # Wait indefinitely until a shutdown signal is received
+    log.info("Nether-bridge is running. Waiting for shutdown signal...")
     await shutdown_event.wait()
+    log.info("Shutdown event received, cleaning up tasks.")
 
     # Clean up tasks
-    log.debug("Shutdown event received, cleaning up tasks.")
-    heartbeat_task.cancel()
-    proxy_task.cancel()
-    await asyncio.gather(heartbeat_task, proxy_task, return_exceptions=True)
+    for task in all_tasks:
+        if not task.done():
+            task.cancel()
+    await asyncio.gather(*all_tasks, return_exceptions=True)
 
     log.debug("Closing Docker manager session.")
     await docker_manager.close()
@@ -147,9 +153,7 @@ async def amain():
 
 def health_check():
     """
-    Performs a two-stage health check:
-    1. Checks if the configuration can be loaded.
-    2. Checks if the heartbeat timestamp in the file is recent.
+    Performs a two-stage health check.
     """
     try:
         app_config = load_app_config()
@@ -181,7 +185,6 @@ def main():
     if "--healthcheck" in sys.argv:
         health_check()
     else:
-        log.info("Starting Nether-bridge application...")
         try:
             asyncio.run(amain())
         except KeyboardInterrupt:

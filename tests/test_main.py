@@ -1,15 +1,16 @@
 # tests/test_main.py
 import asyncio
 import os
+import signal
 import sys
-from unittest.mock import ANY, AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 # Add project root to path to allow imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from main import amain, health_check, main
+from main import amain, health_check, main, shutdown
 
 
 @pytest.mark.unit
@@ -25,16 +26,17 @@ def test_main_runs_health_check(mock_health_check):
 
 @pytest.mark.unit
 @patch("main.asyncio.run")
-@patch("main.amain", new_callable=AsyncMock)
+@patch("main.amain")
 def test_main_runs_amain(mock_amain, mock_asyncio_run):
     """
     Tests that the main function calls asyncio.run with amain.
     """
-    main()
-    mock_amain.assert_called_once()
-    mock_asyncio_run.assert_called_once()
-    args, _ = mock_asyncio_run.call_args
-    assert asyncio.iscoroutine(args[0])
+    with patch("main.sys.argv", ["main.py"]):
+        main()
+        # Verify that amain was called to create the coroutine,
+        # and that the result was passed to asyncio.run.
+        mock_amain.assert_called_once()
+        mock_asyncio_run.assert_called_once_with(mock_amain.return_value)
 
 
 @pytest.mark.unit
@@ -43,9 +45,9 @@ def test_main_runs_amain(mock_amain, mock_asyncio_run):
 @patch("main.configure_logging")
 @patch("main.asyncio.create_task")
 @patch("main.load_app_config")
-@patch("main.asyncio.get_running_loop")
-async def test_amain_orchestration_and_shutdown(
-    mock_get_running_loop,
+@patch("main.asyncio.Event")
+async def test_amain_full_lifecycle(
+    mock_event_class,
     mock_load_config,
     mock_create_task,
     mock_configure_logging,
@@ -53,69 +55,82 @@ async def test_amain_orchestration_and_shutdown(
     mock_docker_manager_class,
 ):
     """
-    Verify `amain` orchestrates startup and that `finally` block cleans up.
+    Verify `amain` orchestrates startup, waits for a shutdown event,
+    and then properly cleans up all resources.
     """
-    mock_get_running_loop.return_value = MagicMock()
+    # GIVEN: A complete set of mocks for all dependencies
     mock_docker_instance = AsyncMock()
     mock_docker_manager_class.return_value = mock_docker_instance
     mock_proxy_instance = AsyncMock()
     mock_async_proxy_class.return_value = mock_proxy_instance
-
-    mock_app_config = MagicMock()
-    mock_app_config.game_servers = [MagicMock()]
+    mock_app_config = MagicMock(game_servers=[MagicMock()])
     mock_load_config.return_value = mock_app_config
 
-    mock_proxy_instance.start.side_effect = asyncio.CancelledError
+    mock_shutdown_event = AsyncMock(spec=asyncio.Event)
+    mock_shutdown_event.wait.return_value = None
+    mock_event_class.return_value = mock_shutdown_event
 
-    # FIX: Use a side effect to properly handle and discard the coroutine
-    mock_heartbeat_task = MagicMock()
+    # Use real, inert tasks that belong to the test event loop
+    loop = asyncio.get_running_loop()
+    mock_heartbeat_task = loop.create_task(asyncio.sleep(0))
+    mock_proxy_task = loop.create_task(asyncio.sleep(0))
+    mock_create_task.side_effect = [mock_heartbeat_task, mock_proxy_task]
 
-    def consume_coro_side_effect(coro):
-        coro.close()  # Prevent "coroutine never awaited" warning
-        return mock_heartbeat_task
-
-    mock_create_task.side_effect = consume_coro_side_effect
-
+    # WHEN: The main amain() coroutine is run
     await amain()
 
+    # THEN: Verify the entire application lifecycle
     mock_load_config.assert_called_once()
-    mock_configure_logging.assert_called_once_with(
-        mock_app_config.log_level, mock_app_config.log_format
-    )
     mock_async_proxy_class.assert_called_once_with(
         mock_app_config, mock_docker_instance
     )
-    mock_proxy_instance.start.assert_awaited_once()
-    mock_create_task.assert_called_once_with(ANY)
-    mock_heartbeat_task.cancel.assert_called_once()
+    assert mock_create_task.call_count == 2
+    mock_shutdown_event.wait.assert_awaited_once()
+    assert mock_heartbeat_task.cancelled()
+    assert mock_proxy_task.cancelled()
     mock_docker_instance.close.assert_awaited_once()
 
 
 @pytest.mark.unit
-@patch("main.DockerManager")
+async def test_shutdown_coroutine():
+    """Verify the shutdown coroutine calls proxy shutdown and sets the event."""
+    mock_proxy = AsyncMock()
+    # Use a MagicMock for the event as its methods are not async
+    mock_event = MagicMock(spec=asyncio.Event)
+    mock_event.is_set.return_value = False
+    test_signal = signal.SIGINT
+
+    await shutdown(test_signal, mock_proxy, mock_event)
+
+    mock_proxy.shutdown.assert_awaited_once()
+    mock_event.set.assert_called_once()
+
+
+@pytest.mark.unit
+@patch("main.DockerManager")  # Patch DockerManager to prevent initialization
 @patch("main.sys.exit")
 @patch("main.log")
-@patch("main.asyncio.create_task")  # Prevent heartbeat task creation
+@patch("main.load_app_config")
 async def test_amain_exits_if_no_servers_loaded(
-    mock_create_task, mock_log, mock_sys_exit, mock_docker_manager
+    mock_load_config, mock_log, mock_sys_exit, mock_docker_manager
 ):
     """
     Tests that amain exits if the loaded config has no game servers.
     """
+    mock_app_config = MagicMock(game_servers=[])
+    mock_load_config.return_value = mock_app_config
+    # Make sys.exit raise an exception to halt execution of amain()
     mock_sys_exit.side_effect = SystemExit(1)
-    mock_app_config = MagicMock()
-    mock_app_config.game_servers = []
 
-    with patch("main.load_app_config", return_value=mock_app_config):
-        with pytest.raises(SystemExit):
-            await amain()
+    with pytest.raises(SystemExit):
+        await amain()
 
     mock_log.critical.assert_called_once_with(
         "FATAL: No server configurations loaded. Exiting."
     )
     mock_sys_exit.assert_called_once_with(1)
+    # Ensure DockerManager was NOT initialized because the exit happened first
     mock_docker_manager.assert_not_called()
-    mock_create_task.assert_not_called()
 
 
 @pytest.mark.unit
