@@ -66,8 +66,7 @@ async def test_amain_orchestration_and_shutdown(
     mock_load_config.return_value = mock_app_config
 
     mock_proxy_instance.start.side_effect = asyncio.CancelledError
-    # FIX: Use a standard MagicMock for the task object itself, as its
-    # .cancel() method is synchronous.
+    # FIX: Use a standard MagicMock for the task, as .cancel() is sync
     mock_heartbeat_task = MagicMock()
     mock_create_task.return_value = mock_heartbeat_task
 
@@ -98,7 +97,7 @@ async def test_amain_exits_if_no_servers_loaded(
     """
     mock_sys_exit.side_effect = SystemExit(1)
     mock_app_config = MagicMock()
-    mock_app_config.game_servers = []  # No servers
+    mock_app_config.game_servers = []
 
     with patch("main.load_app_config", return_value=mock_app_config):
         with pytest.raises(SystemExit):
