@@ -95,8 +95,9 @@ async def test_amain_orchestration_and_shutdown(
 @patch("main.DockerManager")
 @patch("main.sys.exit")
 @patch("main.log")
+@patch("main.asyncio.create_task")
 async def test_amain_exits_if_no_servers_loaded(
-    mock_log, mock_sys_exit, mock_docker_manager
+    mock_create_task, mock_log, mock_sys_exit, mock_docker_manager
 ):
     """
     Tests that amain exits if the loaded config has no game servers.
@@ -114,6 +115,7 @@ async def test_amain_exits_if_no_servers_loaded(
     )
     mock_sys_exit.assert_called_once_with(1)
     mock_docker_manager.assert_not_called()
+    mock_create_task.assert_not_called()
 
 
 @pytest.mark.unit

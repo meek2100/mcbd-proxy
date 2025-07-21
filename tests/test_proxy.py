@@ -187,7 +187,7 @@ async def test_reload_configuration(mock_load_config, proxy, mock_java_server_co
         coro.close()
         return MagicMock()
 
-    # FIX: Use a real task, as it's awaitable and has a sync .cancel()
+    # FIX: Use real tasks so they are awaitable and have a real .cancel()
     old_listener_task = asyncio.create_task(asyncio.sleep(1))
     tcp_session_task = asyncio.create_task(asyncio.sleep(1))
     proxy.server_tasks["listeners"] = [old_listener_task]
@@ -244,6 +244,7 @@ async def test_monitor_stops_idle_server(proxy, mock_docker_manager):
     )
     mock_docker_manager.is_container_running.return_value = True
 
+    # FIX: Use side_effect to allow the loop to run once, then exit.
     with patch("asyncio.sleep", side_effect=[None, StopTestLoop()]):
         try:
             await proxy._monitor_server_activity()
@@ -282,6 +283,7 @@ async def test_monitor_respects_per_server_idle_timeout(proxy, mock_docker_manag
     proxy._ready_events[server_config.name] = asyncio.Event()
     mock_docker_manager.is_container_running.return_value = True
 
+    # FIX: Use side_effect to allow the loop to run once, then exit.
     with patch("asyncio.sleep", side_effect=[None, StopTestLoop()]):
         try:
             await proxy._monitor_server_activity()
