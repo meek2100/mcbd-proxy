@@ -56,8 +56,6 @@ async def test_amain_orchestration_and_shutdown(
     Verify `amain` orchestrates startup and that `finally` block cleans up.
     """
     mock_get_running_loop.return_value = MagicMock()
-
-    # FIX: Configure MagicMock classes to return AsyncMock instances
     mock_docker_instance = AsyncMock()
     mock_docker_manager_class.return_value = mock_docker_instance
     mock_proxy_instance = AsyncMock()
@@ -68,7 +66,9 @@ async def test_amain_orchestration_and_shutdown(
     mock_load_config.return_value = mock_app_config
 
     mock_proxy_instance.start.side_effect = asyncio.CancelledError
-    mock_heartbeat_task = AsyncMock()
+    # FIX: Use a standard MagicMock for the task object itself, as its
+    # .cancel() method is synchronous.
+    mock_heartbeat_task = MagicMock()
     mock_create_task.return_value = mock_heartbeat_task
 
     await amain()
