@@ -1,36 +1,27 @@
 # tests/helpers.py
 """
-Asynchronous helper functions for testing.
+Shared helper functions for unit, integration, and load tests.
 """
 
 import asyncio
-import os  # Added for path manipulation
+import os
 import re
-import sys  # Added for sys.path manipulation
+import sys
+import time
+from pathlib import Path
 
 import aiodocker
+import pytest
 import requests
 import structlog
-from mcstatus import BedrockServer, JavaServer
+from aiodocker.exceptions import DockerError
+
+# --- Constants ---
+BEDROCK_PROXY_PORT = 19132
+JAVA_PROXY_PORT = 25565
+PROMETHEUS_PORT = 8000
 
 log = structlog.get_logger()
-
-
-def add_project_root_to_path():
-    """
-    Adds the project's root directory to sys.path.
-    This allows test files in subdirectories to import modules from the root.
-    Should be called once at the beginning of each test script that needs it.
-    """
-    # Get the directory of the current file (helpers.py)
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    # Go up two levels to reach the project root
-    project_root = os.path.abspath(os.path.join(current_dir, "..", ".."))
-    if project_root not in sys.path:
-        sys.path.insert(0, project_root)
-
-
-# --- Minecraft Protocol Constants and Helpers ---
 
 # The raw packet for a Bedrock Edition "Unconnected Ping".
 BEDROCK_UNCONNECTED_PING = (
@@ -39,7 +30,31 @@ BEDROCK_UNCONNECTED_PING = (
 )
 
 
-def encode_varint(value: int) -> bytes:
+def add_project_root_to_path():
+    """Adds the project root to the Python path for module resolution."""
+    project_root = Path(__file__).parent.parent
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
+
+add_project_root_to_path()
+# Now that path is set, we can import from mcstatus
+from mcstatus import BedrockServer, JavaServer  # noqa: E402
+
+
+def get_proxy_host():
+    """
+    Determines the correct IP address or hostname for the proxy based on the
+    test environment.
+    """
+    if os.environ.get("CI_MODE"):
+        return "nether-bridge"
+    if os.environ.get("DOCKER_HOST_IP"):
+        return os.environ["DOCKER_HOST_IP"]
+    return "127.0.0.1"
+
+
+def encode_varint(value):
     """Helper to encode VarInt for Java protocol."""
     buf = b""
     while True:
@@ -53,178 +68,124 @@ def encode_varint(value: int) -> bytes:
     return buf
 
 
-def get_java_handshake_and_status_request_packets(
-    host: str, port: int
-) -> tuple[bytes, bytes]:
-    """
-    Constructs the two packets needed to request a status from a Java server.
-    """
+def get_java_handshake_and_status_request_packets(host, port):
+    """Constructs the two packets needed to request a status from a Java server."""
     server_address_bytes = host.encode("utf-8")
-    # Protocol version for 1.20.1 is 754. Adapt this if targeting different
-    # Minecraft Java versions that change protocol.
-    protocol_version = 754
-    next_state_status = 1  # Next state for status request
-
     handshake_payload = (
-        encode_varint(protocol_version)
+        b"\x00"  # Protocol version (0 for status)
+        + encode_varint(754)  # Minecraft version
         + encode_varint(len(server_address_bytes))
         + server_address_bytes
         + port.to_bytes(2, byteorder="big")
-        + encode_varint(next_state_status)
+        + encode_varint(1)  # Next state: status
     )
-    # Packet ID for Handshake is 0x00
-    handshake_packet = (
-        encode_varint(len(handshake_payload) + 1) + b"\x00" + handshake_payload
-    )
+    handshake_packet = encode_varint(len(handshake_payload)) + handshake_payload
 
-    status_request_payload = b""
-    # Packet ID for Status Request is 0x00 (within status state)
+    status_request_payload = b"\x00"  # Empty payload for status request
     status_request_packet = (
-        encode_varint(len(status_request_payload) + 1)
-        + b"\x00"
-        + status_request_payload
+        encode_varint(len(status_request_payload)) + status_request_payload
     )
 
     return handshake_packet, status_request_packet
 
 
-# --- Test Environment Specific Helpers ---
-
-
-def get_proxy_host() -> str:
+async def get_active_sessions_metric(proxy_host: str, server_name: str) -> int:
     """
-    Determines the correct IP address or hostname for the proxy.
-    It checks the environment in a specific order of precedence to support
-    different testing scenarios (in-container, remote host, CI).
+    Queries the proxy's /metrics endpoint and returns the number of active
+    sessions for a specific server.
     """
-    # In CI or when tests run inside a container, use the service name.
-    if os.environ.get("CI_MODE") or os.environ.get("NB_TEST_MODE") == "container":
-        return "nether-bridge"
+    try:
+        metrics_url = f"http://{proxy_host}:{PROMETHEUS_PORT}/metrics"
+        response = await asyncio.to_thread(requests.get, metrics_url, timeout=5)
+        response.raise_for_status()
 
-    # For remote testing, an explicit IP can be provided.
-    if "PROXY_IP" in os.environ:
-        return os.environ["PROXY_IP"]
+        pattern = re.compile(
+            rf'netherbridge_active_connections{{server="{server_name}"}}\s+([0-9\.]+)'
+        )
+        match = pattern.search(response.text)
 
-    # The original also correctly checked for DOCKER_HOST_IP for remote tests.
-    if "DOCKER_HOST_IP" in os.environ:
-        return os.environ["DOCKER_HOST_IP"]
-
-    # Fallback for local runs on the host machine.
-    return "127.0.0.1"
+        if match:
+            value_str = match.group(1)
+            return int(float(value_str))
+        return 0
+    except (requests.RequestException, ValueError) as e:
+        pytest.fail(f"Could not retrieve or parse active sessions metric: {e}")
 
 
 async def wait_for_container_status(
     docker_client: aiodocker.Docker,
     container_name: str,
-    expected_status: str,
-    timeout: int = 60,
+    target_status: str,
+    timeout: int = 120,
 ) -> bool:
-    """Asynchronously waits for a container to reach the expected status."""
+    """Waits for a container to enter a target status."""
+    start_time = time.time()
     log.info(
-        "Waiting for container status",
-        container=container_name,
-        expected=expected_status,
+        f"Waiting for '{container_name}' to be '{target_status}'...",
         timeout=timeout,
     )
-    start_time = asyncio.get_event_loop().time()
-    while asyncio.get_event_loop().time() - start_time < timeout:
+    while time.time() - start_time < timeout:
         try:
             container = await docker_client.containers.get(container_name)
-            container_info = await container.show()
-            current_status = container_info.get("State", {}).get("Status", "unknown")
-            if current_status == expected_status:
+            info = await container.show()
+            current_status = info["State"]["Status"]
+            log.debug(f"Status of '{container_name}': {current_status}")
+            if current_status == target_status:
                 log.info(
-                    "Container reached expected status",
-                    container=container_name,
-                    status=current_status,
+                    f"Container '{container_name}' reached '{target_status}'.",
                 )
                 return True
-        except aiodocker.exceptions.DockerError as e:
-            if e.status != 404:
-                log.error("Docker error checking status", exc_info=True)
-        except Exception:
-            log.error("Unexpected error checking status", exc_info=True)
-
-        await asyncio.sleep(1)
-
-    log.error(
-        "Timeout waiting for container status",
-        container=container_name,
-        expected=expected_status,
-    )
+        except DockerError as e:
+            if e.status == 404 and target_status == "exited":
+                log.info(f"Container '{container_name}' not found, assuming exited.")
+                return True
+        await asyncio.sleep(2)
+    log.error(f"Timeout waiting for '{container_name}' to be '{target_status}'.")
     return False
 
 
 async def wait_for_mc_server_ready(
-    server_type: str, host: str, port: int, timeout: int = 120, initial_delay: int = 5
-) -> bool:
-    """Asynchronously waits for a Minecraft server to become queryable."""
+    server_type: str,
+    host: str,
+    port: int,
+    timeout: int = 120,
+    interval: int = 2,
+    initial_delay: int = 5,
+):
+    """
+    Waits for a Minecraft server to become query-ready via mcstatus,
+    with an initial delay to allow the server to initialize.
+    """
+    start_time = time.time()
     log.info(
-        "Waiting for Minecraft server to be ready",
-        server=server_type,
-        host=host,
-        port=port,
+        f"Waiting for {server_type} server at {host}:{port} to be ready...",
     )
-    # The initial_delay gives the server a moment to start listening
-    # before mcstatus begins querying.
-    await asyncio.sleep(initial_delay)
-    start_time = asyncio.get_event_loop().time()
 
-    while asyncio.get_event_loop().time() - start_time < timeout:
+    if initial_delay > 0:
+        log.debug("Initial delay before polling...", delay=initial_delay)
+        await asyncio.sleep(initial_delay)
+
+    while time.time() - start_time < timeout:
         try:
+            lookup_str = f"{host}:{port}"
             if server_type == "java":
-                server = await JavaServer.async_lookup(host, port)
-            elif server_type == "bedrock":
-                # BedrockServer.lookup is synchronous; run it in a thread
-                server = await asyncio.to_thread(BedrockServer.lookup, host, port)
+                server = await JavaServer.async_lookup(lookup_str, timeout=interval)
             else:
-                log.error("Unknown server type", server_type=server_type)
-                return False
-
+                server = await asyncio.to_thread(
+                    BedrockServer.lookup, lookup_str, timeout=interval
+                )
             status = await server.async_status()
             log.info(
-                "Server is ready!",
-                server=server_type,
-                players=status.players.online,
+                f"Server at {host}:{port} is ready!",
+                latency=f"{status.latency:.2f}ms",
             )
             return True
-        except Exception as e:
-            log.debug("Server not ready yet, retrying...", error=str(e))
-            await asyncio.sleep(5)  # Consistent retry interval
-        # If the sleep gets cancelled, it's okay, let the loop continue
-        # to re-evaluate the overall timeout.
+        except Exception:
+            log.debug(f"Server at {host}:{port} not ready, retrying...")
+        await asyncio.sleep(interval)
 
-    log.error("Timeout waiting for server", server=server_type)
+    log.error(f"Timeout waiting for {host}:{port} to be ready.")
     return False
-
-
-async def check_port_listening(
-    host: str, port: int, protocol: str = "tcp", timeout: int = 1
-) -> bool:
-    """Asynchronously checks if a port is actively listening."""
-    if protocol == "tcp":
-        try:
-            # Attempt to open a connection; if successful, port is listening
-            fut = asyncio.open_connection(host, port)
-            reader, writer = await asyncio.wait_for(fut, timeout=timeout)
-            writer.close()
-            await writer.wait_closed()
-            return True
-        except (asyncio.TimeoutError, ConnectionRefusedError, OSError):
-            return False
-    else:  # udp
-        loop = asyncio.get_running_loop()
-        try:
-            # For UDP, just try to create a datagram endpoint. If it succeeds,
-            # it means the port is available to send/receive, implying a listener.
-            # This is a less direct check than TCP.
-            transport, _ = await loop.create_datagram_endpoint(
-                lambda: asyncio.DatagramProtocol(), remote_addr=(host, port)
-            )
-            transport.close()
-            return True
-        except (OSError, asyncio.TimeoutError):
-            return False
 
 
 async def wait_for_log_message(
@@ -233,81 +194,48 @@ async def wait_for_log_message(
     message: str,
     timeout: int = 30,
 ) -> bool:
-    """
-    Asynchronously waits for a specific message to appear in a container's logs.
-    """
-    log.info(
-        "Waiting for log message",
-        container=container_name,
-        message=message,
-        timeout=timeout,
-    )
-    start_time = asyncio.get_event_loop().time()
+    """Waits for a specific message to appear in a container's logs."""
+    log.info(f"Waiting for message in '{container_name}': '{message}'...")
     try:
         container = await docker_client.containers.get(container_name)
-    except aiodocker.exceptions.DockerError as e:
-        log.error(
-            "Could not get container for log check",
-            container=container_name,
-            error=str(e),
-        )
-        return False
-
-    # Start streaming logs from 'since' a bit before current time
-    # to catch logs that might have just occurred.
-    # The `follow=True` makes it stream new logs.
-    async for line in container.log(
-        follow=True, since=int(start_time - 5), stdout=True, stderr=True
-    ):
-        decoded_line = line.strip()
-        log.debug(f"[{container_name} log]: {decoded_line}")
-        if message in decoded_line:
-            log.info("Found log message.", container=container_name, message=message)
-            return True
-        if asyncio.get_event_loop().time() - start_time > timeout:
-            log.warning(
-                "Timeout waiting for log message.",
-                container=container_name,
-                message=message,
-            )
-            break
-        # Briefly yield control to the event loop
-        await asyncio.sleep(0.1)  # Prevent busy-waiting
+        async for line in container.log(
+            stdout=True, stderr=True, follow=True, since=int(time.time())
+        ):
+            if message in line:
+                log.info(f"Found message in '{container_name}'.")
+                return True
+            if time.time() - timeout > 0:
+                log.error(f"Timeout waiting for message in '{container_name}'.")
+                return False
+    except asyncio.TimeoutError:
+        log.error(f"Timeout waiting for message in '{container_name}'.")
+    except Exception as e:
+        log.error(f"Error reading logs for '{container_name}': {e}")
     return False
 
 
-async def get_active_sessions_metric(proxy_host: str, server_name: str) -> int:
+async def check_port_listening(
+    host: str, port: int, protocol: str = "tcp", timeout: int = 5
+) -> bool:
     """
-    Queries the proxy's /metrics endpoint and returns the number of active sessions.
+    Asynchronously checks if a specified TCP or UDP port is actively listening.
     """
-    metrics_url = f"http://{proxy_host}:8000/metrics"
     try:
-        # Use asyncio-compatible HTTP client if possible, or run sync in thread
-        # For simplicity in testing, requests can be run in a thread.
-        # In a real app, aiohttp would be preferred.
-        response = await asyncio.to_thread(requests.get, metrics_url, timeout=5)
-        response.raise_for_status()
-
-        # The new metric name is netherbridge_active_connections and label is 'server'
-        pattern = re.compile(
-            rf'netherbridge_active_connections{{server="{server_name}"}}\s+'
-            r"([0-9\.]+)"
-        )
-        match = pattern.search(response.text)
-
-        if match:
-            value_str = match.group(1)
-            # Metrics values can be float, convert to int for session count
-            return int(float(value_str))
-        log.warning("Active sessions metric not found.", server=server_name)
-        return 0
-    except requests.RequestException as e:
-        log.error(
-            f"Could not retrieve or parse active sessions metric: {e}", exc_info=True
-        )
-        return -1  # Indicate failure to retrieve
-    except Exception as e:
-        log.error(
-            f"Unexpected error getting active sessions metric: {e}", exc_info=True
-        )
-        return -1
+        if protocol == "tcp":
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port), timeout=timeout
+            )
+            writer.close()
+            await writer.wait_closed()
+        else:  # udp
+            loop = asyncio.get_running_loop()
+            transport, _ = await asyncio.wait_for(
+                loop.create_datagram_endpoint(
+                    lambda: asyncio.DatagramProtocol(), remote_addr=(host, port)
+                ),
+                timeout=timeout,
+            )
+            transport.close()
+        return True
+    except (OSError, asyncio.TimeoutError):
+        return False
