@@ -72,7 +72,6 @@ def mock_tcp_streams():
     reader.read = AsyncMock(side_effect=[b"some data", b""])
     reader.at_eof.side_effect = [False, True]
 
-    # .close() is a sync method on the real object, so it should be a MagicMock
     writer.close = MagicMock()
     writer.wait_closed = AsyncMock()
     writer.is_closing.return_value = False
@@ -82,9 +81,9 @@ def mock_tcp_streams():
 @pytest.mark.asyncio
 async def test_shutdown_handler_cancels_tasks(proxy):
     """Verify the shutdown handler cancels all registered tasks."""
-    task1 = asyncio.create_task(asyncio.sleep(1))
-    task2 = asyncio.create_task(asyncio.sleep(1))
-    tcp_task = asyncio.create_task(asyncio.sleep(1))
+    task1 = asyncio.create_task(asyncio.sleep(0.1))
+    task2 = asyncio.create_task(asyncio.sleep(0.1))
+    tcp_task = asyncio.create_task(asyncio.sleep(0.1))
     proxy.server_tasks = {"listeners": [task1], "monitor": task2}
     proxy.active_tcp_sessions = {tcp_task: "server"}
 
@@ -135,7 +134,6 @@ async def test_handle_tcp_connection_success(
         mock_java_server_config.host, mock_java_server_config.port
     )
     assert proxy._proxy_data.await_count == 2
-    # FIX: Use assert_called_once for the synchronous close() method
     client_writer.close.assert_called_once()
     await client_writer.wait_closed()
     proxy.metrics_manager.dec_active_connections.assert_called_once()
@@ -156,7 +154,6 @@ async def test_handle_tcp_connection_backend_fails(
 
     proxy._ensure_server_started.assert_awaited_once()
     mock_open_conn.assert_awaited_once()
-    # FIX: Use assert_called_once for the synchronous close() method
     client_writer.close.assert_called_once()
     await client_writer.wait_closed()
     proxy.metrics_manager.dec_active_connections.assert_called_once()
@@ -177,7 +174,6 @@ async def test_proxy_data_flow(proxy, mock_tcp_streams):
     proxy.metrics_manager.inc_bytes_transferred.assert_called_once_with(
         "test_server", "c2s", len(test_data)
     )
-    # FIX: Use assert_called_once for the synchronous close() method
     writer.close.assert_called_once()
     await writer.wait_closed()
 
@@ -194,9 +190,16 @@ async def test_reload_configuration(
     mock_java_server_config,
 ):
     """Verify the configuration reload process."""
+
+    # FIX: Define a side effect that consumes the coroutine to prevent warnings
+    def consume_coro_side_effect(coro):
+        coro.close()  # Discard the coroutine to prevent warning
+        return MagicMock()
+
+    mock_create_task.side_effect = consume_coro_side_effect
     old_listener_task = AsyncMock()
     proxy.server_tasks["listeners"] = [old_listener_task]
-    tcp_session_task = asyncio.create_task(asyncio.sleep(1))
+    tcp_session_task = asyncio.create_task(asyncio.sleep(0.1))
     proxy.active_tcp_sessions = {tcp_session_task: "server"}
     new_config = MagicMock(spec=AppConfig, game_servers=[mock_java_server_config])
     mock_load_config.return_value = new_config
@@ -210,7 +213,6 @@ async def test_reload_configuration(
     assert mock_gather.await_count == 2
     mock_load_config.assert_called_once()
     proxy._ensure_all_servers_stopped_on_startup.assert_awaited_once()
-    # FIX: Assertion is brittle; just check that tasks were created
     mock_create_task.assert_called()
 
 
@@ -222,7 +224,7 @@ async def test_handle_tcp_connection_rejects_max_sessions(
     Verify TCP connections are rejected when max_concurrent_sessions is hit.
     """
     proxy.app_config.max_concurrent_sessions = 1
-    dummy_task = asyncio.create_task(asyncio.sleep(1))
+    dummy_task = asyncio.create_task(asyncio.sleep(0.1))
     proxy.active_tcp_sessions = {dummy_task: "server1"}
     client_reader, client_writer = mock_tcp_streams
     proxy._ensure_server_started = AsyncMock()
@@ -232,7 +234,6 @@ async def test_handle_tcp_connection_rejects_max_sessions(
     )
 
     proxy._ensure_server_started.assert_not_called()
-    # FIX: Use assert_called_once for the synchronous close() method
     client_writer.close.assert_called_once()
     await client_writer.wait_closed()
     dummy_task.cancel()
@@ -290,7 +291,6 @@ async def test_monitor_respects_per_server_idle_timeout(proxy, mock_docker_manag
     proxy._ready_events[server_config.name] = asyncio.Event()
     mock_docker_manager.is_container_running.return_value = True
 
-    # FIX: Allow one sleep to let the loop run once before stopping
     with patch("asyncio.sleep", side_effect=[None, StopTestLoop]):
         try:
             await proxy._monitor_server_activity()
