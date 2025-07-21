@@ -38,8 +38,8 @@ def test_main_runs_amain(mock_amain, mock_asyncio_run):
 
 
 @pytest.mark.unit
-@patch("main.DockerManager", new_callable=AsyncMock)
-@patch("main.AsyncProxy", new_callable=AsyncMock)
+@patch("main.DockerManager")
+@patch("main.AsyncProxy")
 @patch("main.configure_logging")
 @patch("main.asyncio.create_task")
 @patch("main.load_app_config")
@@ -56,8 +56,12 @@ async def test_amain_orchestration_and_shutdown(
     Verify `amain` orchestrates startup and that `finally` block cleans up.
     """
     mock_get_running_loop.return_value = MagicMock()
-    mock_docker_instance = mock_docker_manager_class.return_value
-    mock_proxy_instance = mock_async_proxy_class.return_value
+
+    # FIX: Configure MagicMock classes to return AsyncMock instances
+    mock_docker_instance = AsyncMock()
+    mock_docker_manager_class.return_value = mock_docker_instance
+    mock_proxy_instance = AsyncMock()
+    mock_async_proxy_class.return_value = mock_proxy_instance
 
     mock_app_config = MagicMock()
     mock_app_config.game_servers = [MagicMock()]
@@ -83,7 +87,7 @@ async def test_amain_orchestration_and_shutdown(
 
 
 @pytest.mark.unit
-@patch("main.DockerManager", new_callable=AsyncMock)
+@patch("main.DockerManager")
 @patch("main.sys.exit")
 @patch("main.log")
 async def test_amain_exits_if_no_servers_loaded(
@@ -92,13 +96,11 @@ async def test_amain_exits_if_no_servers_loaded(
     """
     Tests that amain exits if the loaded config has no game servers.
     """
-    # FIX: Make the mock sys.exit raise an exception to halt execution
     mock_sys_exit.side_effect = SystemExit(1)
     mock_app_config = MagicMock()
     mock_app_config.game_servers = []  # No servers
 
     with patch("main.load_app_config", return_value=mock_app_config):
-        # FIX: Catch the SystemExit exception to confirm it was called
         with pytest.raises(SystemExit):
             await amain()
 
