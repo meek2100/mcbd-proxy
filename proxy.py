@@ -294,6 +294,13 @@ class AsyncProxy:
                 data = await reader.read(4096)
                 if not data:
                     break
+                # Add verbose logging for data transfer
+                log.debug(
+                    "Proxying data",
+                    server=server_name,
+                    direction=direction,
+                    bytes=len(data),
+                )
                 self.metrics_manager.inc_bytes_transferred(
                     server_name, direction, len(data)
                 )
@@ -404,6 +411,12 @@ class AsyncProxy:
                 tcp_sessions = sum(
                     1 for name in self.active_tcp_sessions.values() if name == sc.name
                 )
+                log.debug(
+                    "Checking server activity",
+                    server=sc.name,
+                    tcp_sessions=tcp_sessions,
+                    udp_sessions=udp_sessions,
+                )
 
                 if (tcp_sessions + udp_sessions) > 0:
                     self._update_activity(sc.name)
@@ -509,6 +522,13 @@ class BedrockProtocol(asyncio.DatagramProtocol):
             client_info["last_activity"] = time.time()
             backend_protocol = client_info.get("protocol")
             if backend_protocol and backend_protocol.transport:
+                # Add verbose logging for UDP forwarding
+                log.debug(
+                    "Forwarding UDP packet to backend",
+                    client=addr,
+                    server=self.server_config.name,
+                    bytes=len(data),
+                )
                 backend_protocol.transport.sendto(data)
             else:
                 client_info["queue"].append(data)
@@ -586,6 +606,13 @@ class BackendProtocol(asyncio.DatagramProtocol):
         self.transport = transport
 
     def datagram_received(self, data: bytes, _addr: tuple):
+        # Add verbose logging for UDP forwarding
+        log.debug(
+            "Forwarding UDP packet to client",
+            client=self.client_addr,
+            server=self.server_config.name,
+            bytes=len(data),
+        )
         self.proxy.metrics_manager.inc_bytes_transferred(
             self.server_config.name, "s2c", len(data)
         )
