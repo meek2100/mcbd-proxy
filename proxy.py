@@ -243,9 +243,17 @@ class AsyncProxy:
         ):
             return
 
+        lock_wait_start = time.time()
+        log.debug("Waiting to acquire startup lock...", server=server_config.name)
         async with self._startup_locks[server_config.name]:
-            # Double-check readiness after acquiring the lock in case another
-            # task already finished the startup while this one was waiting.
+            lock_wait_duration = time.time() - lock_wait_start
+            if lock_wait_duration > 0.1:
+                log.warning(
+                    "High contention on startup lock.",
+                    server=server_config.name,
+                    wait_seconds=f"{lock_wait_duration:.2f}",
+                )
+
             if self._ready_events[server_config.name].is_set():
                 return
 
@@ -259,9 +267,12 @@ class AsyncProxy:
             duration = time.time() - start_time
             self.metrics_manager.observe_startup_duration(server_config.name, duration)
             self._server_state[server_config.name]["is_running"] = True
-            # Set the event to release any other tasks waiting for this server.
             self._ready_events[server_config.name].set()
-            log.info("Server startup complete.", server=server_config.name)
+            log.info(
+                "Server startup complete.",
+                server=server_config.name,
+                duration=f"{duration:.2f}s",
+            )
 
     def _update_activity(self, server_name: str):
         """Updates the last activity timestamp for a server."""
@@ -323,17 +334,13 @@ class AsyncProxy:
 
         proxy_task = None
         try:
-            # This will either return immediately if the server is ready, or it
-            # will start the server and wait for the _ready_event.
             await self._ensure_server_started(server_config)
 
-            # Once the server is ready, establish a connection to it.
             server_reader, server_writer = await asyncio.open_connection(
                 server_config.host, server_config.port
             )
             log.info("Connected to backend server", server=server_config.name)
 
-            # Create two tasks to proxy data concurrently in both directions.
             to_client_task = asyncio.create_task(
                 self._proxy_data(
                     server_reader, client_writer, server_config.name, "s2c"
@@ -345,7 +352,6 @@ class AsyncProxy:
                 )
             )
 
-            # Wait for either proxy task to complete (e.g., client disconnects).
             proxy_task = asyncio.gather(to_client_task, to_server_task)
             self.active_tcp_sessions[proxy_task] = server_config.name
             await proxy_task
@@ -393,7 +399,6 @@ class AsyncProxy:
                 if not is_running:
                     continue
 
-                # Count active sessions for this server
                 udp_proto = self.udp_protocols.get(sc.name, MagicMock(client_map={}))
                 udp_sessions = len(udp_proto.client_map)
                 tcp_sessions = sum(
@@ -404,7 +409,6 @@ class AsyncProxy:
                     self._update_activity(sc.name)
                     continue
 
-                # Determine the correct idle timeout (server-specific or global)
                 idle_timeout = (
                     sc.idle_timeout
                     if sc.idle_timeout is not None
@@ -495,8 +499,6 @@ class BedrockProtocol(asyncio.DatagramProtocol):
             self.proxy.metrics_manager.inc_active_connections(self.server_config.name)
             loop = asyncio.get_running_loop()
             task = loop.create_task(self._create_backend_connection(addr, data))
-            # Create a session entry with a queue for packets that arrive
-            # before the backend connection is fully established.
             self.client_map[addr] = {
                 "task": task,
                 "last_activity": time.time(),
@@ -507,10 +509,8 @@ class BedrockProtocol(asyncio.DatagramProtocol):
             client_info["last_activity"] = time.time()
             backend_protocol = client_info.get("protocol")
             if backend_protocol and backend_protocol.transport:
-                # Backend is ready, forward the packet immediately.
                 backend_protocol.transport.sendto(data)
             else:
-                # Backend not ready, queue the packet to prevent it being lost.
                 client_info["queue"].append(data)
 
     async def _create_backend_connection(self, client_addr: tuple, initial_data: bytes):
@@ -538,8 +538,6 @@ class BedrockProtocol(asyncio.DatagramProtocol):
                 client_info = self.client_map[client_addr]
                 client_info["protocol"] = protocol
 
-                # Process the initial packet and any queued packets now that
-                # the backend transport is ready.
                 if transport and not transport.is_closing():
                     transport.sendto(initial_data)
                     for queued_data in client_info["queue"]:
