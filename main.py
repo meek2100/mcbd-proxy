@@ -30,7 +30,7 @@ def configure_logging(log_level: str, log_format: str):
         stream=sys.stdout,
         level=log_level.upper(),
     )
-
+    # ... (logging configuration remains the same)
     shared_processors = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_logger_name,
@@ -68,6 +68,7 @@ async def _update_heartbeat(app_config, shutdown_event: asyncio.Event):
             current_time = int(time.time())
             HEARTBEAT_FILE.write_text(str(current_time))
             log.debug("Heartbeat updated.", timestamp=current_time)
+            # Shield the wait so it can't be cancelled directly
             await asyncio.wait_for(
                 asyncio.shield(shutdown_event.wait()),
                 timeout=app_config.healthcheck_heartbeat_interval,
@@ -76,7 +77,6 @@ async def _update_heartbeat(app_config, shutdown_event: asyncio.Event):
             continue  # This is the normal loop condition
         except Exception:
             log.error("Failed to update heartbeat file.", exc_info=True)
-            # Sleep even on error to avoid a tight error loop
             await asyncio.sleep(app_config.healthcheck_heartbeat_interval)
 
 
@@ -137,6 +137,7 @@ async def amain():
     all_tasks = [heartbeat_task, proxy_task]
 
     log.info("Nether-bridge is running. Waiting for shutdown signal...")
+    # THIS IS THE CRITICAL FIX: Wait here until a signal handler sets the event.
     await shutdown_event.wait()
     log.info("Shutdown event received, cleaning up tasks.")
 

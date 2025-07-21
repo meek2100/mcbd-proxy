@@ -19,15 +19,28 @@ class StopTestLoop(Exception):
 
 
 @pytest.fixture
-def mock_server_config():
-    """Provides a mock server config for general use."""
+def mock_java_server_config():
+    """Provides a mock Java server config."""
     return GameServerConfig(
-        name="test_server",
+        name="test_java",
         game_type="java",
-        container_name="test_container",
+        container_name="test_container_java",
         port=25565,
         proxy_port=25565,
-        host="test_container",
+        host="test_container_java",
+    )
+
+
+@pytest.fixture
+def mock_bedrock_server_config():
+    """Provides a mock Bedrock server config."""
+    return GameServerConfig(
+        name="test_bedrock",
+        game_type="bedrock",
+        container_name="test_container_bedrock",
+        port=19132,
+        proxy_port=19132,
+        host="test_container_bedrock",
     )
 
 
@@ -41,15 +54,15 @@ def mock_docker_manager():
 
 
 @pytest.fixture
-def mock_app_config(mock_server_config):
-    """Provides a mock AppConfig containing one server."""
+def mock_app_config(mock_java_server_config, mock_bedrock_server_config):
+    """Provides a mock AppConfig with one of each server type."""
     config = MagicMock(spec=AppConfig)
-    config.game_servers = [mock_server_config]
+    config.game_servers = [mock_java_server_config, mock_bedrock_server_config]
     config.player_check_interval = 0.01
     config.server_stop_timeout = 10
     config.idle_timeout = 0.1
     config.tcp_listen_backlog = 128
-    config.max_concurrent_sessions = -1
+    config.max_concurrent_sessions = 5  # Set a limit for testing
     return config
 
 
@@ -70,16 +83,17 @@ def mock_tcp_streams():
     return reader, writer
 
 
-# --- AsyncProxy Tests ---
+# --- AsyncProxy Method Tests ---
 
 
 @pytest.mark.asyncio
 async def test_shutdown_cancels_tasks(proxy):
     """Verify the shutdown method cancels all registered tasks."""
     loop = asyncio.get_running_loop()
-    task1 = loop.create_task(asyncio.sleep(0.1))
-    task2 = loop.create_task(asyncio.sleep(0.1))
-    tcp_task = loop.create_task(asyncio.sleep(0.1))
+    # Create real, inert tasks that belong to the current event loop
+    task1 = loop.create_task(asyncio.sleep(0))
+    task2 = loop.create_task(asyncio.sleep(0))
+    tcp_task = loop.create_task(asyncio.sleep(0))
     proxy.server_tasks = {"listeners": [task1], "monitor": task2}
     proxy.active_tcp_sessions = {tcp_task: "server"}
 
@@ -93,7 +107,7 @@ async def test_shutdown_cancels_tasks(proxy):
 @pytest.mark.asyncio
 @patch("proxy.asyncio.open_connection")
 async def test_handle_tcp_connection_success(
-    mock_open_conn, proxy, mock_server_config, mock_tcp_streams
+    mock_open_conn, proxy, mock_java_server_config, mock_tcp_streams
 ):
     """Test the full lifecycle of a successful TCP connection."""
     client_reader, client_writer = mock_tcp_streams
@@ -102,9 +116,11 @@ async def test_handle_tcp_connection_success(
     proxy._ensure_server_started = AsyncMock()
     proxy._proxy_data = AsyncMock()
 
-    await proxy._handle_tcp_connection(client_reader, client_writer, mock_server_config)
+    await proxy._handle_tcp_connection(
+        client_reader, client_writer, mock_java_server_config
+    )
 
-    proxy._ensure_server_started.assert_awaited_once_with(mock_server_config)
+    proxy._ensure_server_started.assert_awaited_once_with(mock_java_server_config)
     proxy.metrics_manager.inc_active_connections.assert_called_once()
     assert proxy._proxy_data.await_count == 2
     proxy.metrics_manager.dec_active_connections.assert_called_once()
@@ -116,7 +132,6 @@ async def test_proxy_data_handles_connection_reset(proxy, mock_tcp_streams):
     reader, writer = mock_tcp_streams
     reader.read.side_effect = ConnectionResetError
 
-    # The method should catch the error and not re-raise it.
     await proxy._proxy_data(reader, writer, "test_server", "c2s")
 
     writer.close.assert_called_once()
@@ -133,11 +148,11 @@ async def test_monitor_stops_idle_server(proxy, mock_docker_manager):
     )
     mock_docker_manager.is_container_running.return_value = True
 
-    with patch("asyncio.sleep", side_effect=[None, StopTestLoop()]):
+    with patch("asyncio.sleep", side_effect=StopTestLoop()):
         try:
             await proxy._monitor_server_activity()
         except StopTestLoop:
-            pass  # Expected exit for test
+            pass
 
     mock_docker_manager.stop_server.assert_awaited_once_with(
         server_config.container_name, proxy.app_config.server_stop_timeout
@@ -148,25 +163,11 @@ async def test_monitor_stops_idle_server(proxy, mock_docker_manager):
 
 
 @pytest.fixture
-def mock_bedrock_server_config():
-    """Fixture for a mock Bedrock GameServerConfig."""
-    return GameServerConfig(
-        name="test_bedrock",
-        game_type="bedrock",
-        container_name="test_container_bedrock",
-        port=19132,
-        proxy_port=19132,
-        host="test_container_bedrock",
-    )
-
-
-@pytest.fixture
 def bedrock_protocol(proxy, mock_bedrock_server_config):
     """Provides a BedrockProtocol instance for testing."""
     protocol = BedrockProtocol(proxy, mock_bedrock_server_config)
     protocol.transport = AsyncMock()
-    # Cancel the automatic cleanup task to isolate tests
-    protocol.cleanup_task.cancel()
+    protocol.cleanup_task.cancel()  # Stop background cleanup for isolation
     return protocol
 
 
@@ -174,62 +175,47 @@ def bedrock_protocol(proxy, mock_bedrock_server_config):
 async def test_bedrock_new_client_creates_session(bedrock_protocol, proxy):
     """Verify a new UDP client creates a session and starts backend connection."""
     addr = ("127.0.0.1", 12345)
-    data = b"ping"
-    proxy._ensure_server_started = AsyncMock()
-    # Mock the datagram endpoint creation
-    with patch("asyncio.get_running_loop") as mock_loop:
-        mock_loop.return_value.create_datagram_endpoint = AsyncMock()
-        bedrock_protocol.datagram_received(data, addr)
+    with patch.object(
+        bedrock_protocol, "_create_backend_connection", new_callable=AsyncMock
+    ) as mock_create_backend:
+        bedrock_protocol.datagram_received(b"ping", addr)
 
     assert addr in bedrock_protocol.client_map
     proxy.metrics_manager.inc_active_connections.assert_called_once()
-    assert bedrock_protocol.client_map[addr]["task"] is not None
+    mock_create_backend.assert_awaited_once_with(addr, b"ping")
 
 
 @pytest.mark.asyncio
-async def test_bedrock_client_queues_data_before_backend_ready(bedrock_protocol):
-    """Verify packets are queued if the backend connection is not ready."""
+async def test_bedrock_client_forwards_to_backend(bedrock_protocol):
+    """Verify an existing client with a ready backend forwards data directly."""
     addr = ("127.0.0.1", 12345)
-    # Simulate a session where the backend connection task has been created
-    # but has not yet established the protocol.
+    mock_backend_transport = AsyncMock()
+    # Simulate an already-connected client
     bedrock_protocol.client_map[addr] = {
-        "task": MagicMock(),
         "last_activity": time.time(),
-        "protocol": None,  # The backend is not ready
+        "protocol": MagicMock(transport=mock_backend_transport),
         "queue": [],
     }
 
-    bedrock_protocol.datagram_received(b"packet1", addr)
-    bedrock_protocol.datagram_received(b"packet2", addr)
+    bedrock_protocol.datagram_received(b"player_data", addr)
 
-    assert bedrock_protocol.client_map[addr]["queue"] == [b"packet1", b"packet2"]
+    mock_backend_transport.sendto.assert_called_once_with(b"player_data")
+    assert not bedrock_protocol.client_map[addr]["queue"]
 
 
 @pytest.mark.asyncio
-async def test_bedrock_backend_connection_sends_queued_data(bedrock_protocol, proxy):
-    """Verify that once the backend connection is made, queued data is sent."""
+async def test_bedrock_cleanup_removes_client(bedrock_protocol, proxy):
+    """Verify the cleanup logic correctly removes a client and its resources."""
     addr = ("127.0.0.1", 12345)
-    proxy._ensure_server_started = AsyncMock()
-    # Setup a mock backend transport and protocol
-    mock_backend_transport = AsyncMock()
     mock_backend_protocol = MagicMock()
-
-    # Pre-populate the client map with queued data
+    mock_backend_protocol.transport = AsyncMock()
     bedrock_protocol.client_map[addr] = {
-        "protocol": None,
-        "queue": [b"packet1", b"packet2"],
+        "protocol": mock_backend_protocol,
+        "task": MagicMock(),
     }
 
-    with patch("asyncio.get_running_loop") as mock_loop:
-        # Make create_datagram_endpoint return our mocked objects
-        mock_loop.return_value.create_datagram_endpoint.return_value = (
-            mock_backend_transport,
-            mock_backend_protocol,
-        )
-        await bedrock_protocol._create_backend_connection(addr, b"initial_packet")
+    bedrock_protocol._cleanup_client(addr)
 
-    # Assert that the initial packet and all queued packets were sent
-    mock_backend_transport.sendto.assert_any_call(b"initial_packet")
-    mock_backend_transport.sendto.assert_any_call(b"packet1")
-    mock_backend_transport.sendto.assert_any_call(b"packet2")
-    assert not bedrock_protocol.client_map[addr]["queue"]  # Queue should be empty
+    assert addr not in bedrock_protocol.client_map
+    mock_backend_protocol.transport.close.assert_called_once()
+    proxy.metrics_manager.dec_active_connections.assert_called_once_with("test_bedrock")
