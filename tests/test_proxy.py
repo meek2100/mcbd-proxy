@@ -74,6 +74,7 @@ def mock_tcp_streams():
 
     writer.drain = AsyncMock()
     writer.close = AsyncMock()
+    # FIX: This line was missing, causing the unit test failure.
     writer.wait_closed = AsyncMock()
     writer.is_closing.return_value = False
     return reader, writer
@@ -212,7 +213,9 @@ async def test_reload_configuration(
 async def test_handle_tcp_connection_rejects_max_sessions(
     proxy, mock_java_server_config, mock_tcp_streams
 ):
-    """Verify TCP connections are rejected when max_concurrent_sessions is hit."""
+    """
+    Verify TCP connections are rejected when max_concurrent_sessions is hit.
+    """
     proxy.app_config.max_concurrent_sessions = 1
     dummy_task = asyncio.create_task(asyncio.sleep(1))
     proxy.active_tcp_sessions = {dummy_task: "server1"}
@@ -257,7 +260,8 @@ async def test_monitor_stops_idle_server(proxy, mock_docker_manager):
 @pytest.mark.asyncio
 async def test_monitor_respects_per_server_idle_timeout(proxy, mock_docker_manager):
     """
-    Tests that the monitor task uses the per-server idle timeout if configured.
+    Tests that the monitor task uses the per-server idle timeout if
+    configured.
     """
     per_server_timeout = 5
     server_config = GameServerConfig(
