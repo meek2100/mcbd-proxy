@@ -294,7 +294,6 @@ class AsyncProxy:
                 data = await reader.read(4096)
                 if not data:
                     break
-                # Add verbose logging for data transfer
                 log.debug(
                     "Proxying data",
                     server=server_name,
@@ -522,7 +521,6 @@ class BedrockProtocol(asyncio.DatagramProtocol):
             client_info["last_activity"] = time.time()
             backend_protocol = client_info.get("protocol")
             if backend_protocol and backend_protocol.transport:
-                # Add verbose logging for UDP forwarding
                 log.debug(
                     "Forwarding UDP packet to backend",
                     client=addr,
@@ -606,7 +604,6 @@ class BackendProtocol(asyncio.DatagramProtocol):
         self.transport = transport
 
     def datagram_received(self, data: bytes, _addr: tuple):
-        # Add verbose logging for UDP forwarding
         log.debug(
             "Forwarding UDP packet to client",
             client=self.client_addr,
