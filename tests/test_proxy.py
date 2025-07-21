@@ -127,6 +127,22 @@ async def test_handle_tcp_connection_success(
 
 
 @pytest.mark.asyncio
+async def test_handle_tcp_connection_rejects_max_sessions(
+    proxy, mock_java_server_config, mock_tcp_streams
+):
+    """Test that new TCP connections are rejected when max_sessions is reached."""
+    proxy.app_config.max_concurrent_sessions = 1
+    proxy.active_tcp_sessions = {MagicMock(): "fake_session"}
+    _reader, writer = mock_tcp_streams
+
+    await proxy._handle_tcp_connection(_reader, writer, mock_java_server_config)
+
+    # Ensure no new metrics were incremented and the connection was closed
+    proxy.metrics_manager.inc_active_connections.assert_not_called()
+    writer.close.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_proxy_data_handles_connection_reset(proxy, mock_tcp_streams):
     """Test that _proxy_data handles ConnectionResetError gracefully."""
     reader, writer = mock_tcp_streams
