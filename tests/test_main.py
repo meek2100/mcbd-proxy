@@ -95,7 +95,7 @@ async def test_amain_orchestration_and_shutdown(
 @patch("main.DockerManager")
 @patch("main.sys.exit")
 @patch("main.log")
-@patch("main.asyncio.create_task")
+@patch("main.asyncio.create_task")  # Prevent heartbeat task creation
 async def test_amain_exits_if_no_servers_loaded(
     mock_create_task, mock_log, mock_sys_exit, mock_docker_manager
 ):
