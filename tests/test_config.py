@@ -29,17 +29,17 @@ def test_load_config_with_dynamic_servers():
         "LOG_LEVEL": "DEBUG",
         # Server 1: Java
         "NB_1_NAME": "Test Java",
-        "NB_1_GAME_TYPE": "java",
+        "NB_1_SERVER_TYPE": "java",  # FIX: Was NB_1_GAME_TYPE
         "NB_1_CONTAINER_NAME": "mc-java-test",
-        "NB_1_PORT": "25565",
-        "NB_1_PROXY_PORT": "25565",
-        "NB_1_IDLE_TIMEOUT": "300",  # Added test for idle_timeout
+        "NB_1_INTERNAL_PORT": "25565",
+        "NB_1_LISTEN_PORT": "25565",
+        "NB_1_IDLE_TIMEOUT": "300",
         # Server 2: Bedrock
         "NB_2_NAME": "Test Bedrock",
-        "NB_2_GAME_TYPE": "bedrock",
+        "NB_2_SERVER_TYPE": "bedrock",  # FIX: Was NB_2_GAME_TYPE
         "NB_2_CONTAINER_NAME": "mc-bedrock-test",
-        "NB_2_PORT": "19132",
-        "NB_2_PROXY_PORT": "19132",
+        "NB_2_INTERNAL_PORT": "19132",
+        "NB_2_LISTEN_PORT": "19132",
         "NB_2_PRE_WARM": "true",
     }
     with patch.dict(os.environ, mock_env, clear=True):
@@ -47,7 +47,6 @@ def test_load_config_with_dynamic_servers():
         assert config.log_level == "DEBUG"
         assert len(config.game_servers) == 2
 
-        # Verify Java server config
         java_server = config.game_servers[0]
         assert java_server.name == "Test Java"
         assert java_server.game_type == "java"
@@ -55,24 +54,23 @@ def test_load_config_with_dynamic_servers():
         assert java_server.port == 25565
         assert java_server.query_port == 25565
         assert java_server.pre_warm is False
-        assert java_server.idle_timeout == 300  # Added assertion
+        assert java_server.idle_timeout == 300
 
-        # Verify Bedrock server config
         bedrock_server = config.game_servers[1]
         assert bedrock_server.name == "Test Bedrock"
         assert bedrock_server.game_type == "bedrock"
         assert bedrock_server.port == 19132
         assert bedrock_server.pre_warm is True
-        assert bedrock_server.idle_timeout is None  # No idle_timeout set
+        assert bedrock_server.idle_timeout is None
 
 
 def test_load_config_with_query_port_override():
     """Tests that query_port can be set independently from the game port."""
     mock_env = {
         "NB_1_CONTAINER_NAME": "mc-test",
-        "NB_1_GAME_TYPE": "java",
-        "NB_1_PORT": "25565",
-        "NB_1_PROXY_PORT": "25565",
+        "NB_1_SERVER_TYPE": "java",  # FIX: Was NB_1_GAME_TYPE
+        "NB_1_INTERNAL_PORT": "25565",
+        "NB_1_LISTEN_PORT": "25565",
         "NB_1_QUERY_PORT": "25575",
     }
     with patch.dict(os.environ, mock_env, clear=True):
@@ -86,9 +84,8 @@ def test_load_config_missing_required_field_raises_error():
     mock_env = {
         "NB_1_NAME": "Incomplete Server",
         "NB_1_CONTAINER_NAME": "mc-incomplete",
-        "NB_1_PORT": "12345",
-        "NB_1_PROXY_PORT": "12345",
-        # NB_1_GAME_TYPE is missing
+        "NB_1_INTERNAL_PORT": "12345",
+        "NB_1_LISTEN_PORT": "12345",
     }
     with patch.dict(os.environ, mock_env, clear=True):
         with pytest.raises(ValidationError):
@@ -101,9 +98,9 @@ def test_load_config_invalid_value_type_raises_error():
     """
     mock_env = {
         "NB_1_CONTAINER_NAME": "mc-test",
-        "NB_1_GAME_TYPE": "java",
-        "NB_1_PORT": "not-a-number",
-        "NB_1_PROXY_PORT": "25565",
+        "NB_1_SERVER_TYPE": "java",
+        "NB_1_INTERNAL_PORT": "not-a-number",
+        "NB_1_LISTEN_PORT": "25565",
     }
     with patch.dict(os.environ, mock_env, clear=True):
         with pytest.raises(ValidationError):

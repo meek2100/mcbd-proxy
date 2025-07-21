@@ -13,10 +13,9 @@ from main import amain, health_check, main
 
 
 @pytest.mark.unit
-@patch("main.health_check")
 @patch("main.sys.argv", ["main.py", "--healthcheck"])
-@patch("main.configure_logging")
-def test_main_runs_health_check(mock_config_logging, mock_health_check):
+@patch("main.health_check")
+def test_main_runs_health_check(mock_health_check):
     """
     Tests that main calls health_check when '--healthcheck' is provided.
     """
@@ -25,44 +24,36 @@ def test_main_runs_health_check(mock_config_logging, mock_health_check):
 
 
 @pytest.mark.unit
-@patch("main.amain")
 @patch("main.asyncio.run")
-@patch("main.sys.argv", ["main.py"])
-@patch("main.configure_logging")
-def test_main_runs_amain(mock_config_logging, mock_asyncio_run, mock_amain):
+@patch("main.amain", new_callable=AsyncMock)
+def test_main_runs_amain(mock_amain, mock_asyncio_run):
     """
     Tests that the main function calls asyncio.run with amain.
     """
-    # FIX: Configure the mock to return a predictable object
-    amain_coro_sentinel = "amain_coroutine"
-    mock_amain.return_value = amain_coro_sentinel
-
     main()
-
-    # FIX: Assert that run was called with that predictable object
-    mock_asyncio_run.assert_called_once_with(amain_coro_sentinel)
+    # FIX: Assert that amain() was called once to create the coroutine
+    mock_amain.assert_called_once()
+    # FIX: Assert that run was called with the coroutine object amain returned
+    mock_asyncio_run.assert_called_once_with(mock_amain.return_value)
 
 
 @pytest.mark.unit
 @patch("main.DockerManager")
 @patch("main.AsyncProxy")
+@patch("main.configure_logging")
 @patch("main.asyncio.create_task")
 @patch("main.load_app_config")
-@patch("main.asyncio.get_running_loop")
-@patch("main.configure_logging")
+@patch("main.sys.platform", "linux")  # Mock platform to avoid OS-specific issues
 async def test_amain_orchestration_and_shutdown(
-    mock_configure_logging,
-    mock_get_running_loop,
     mock_load_config,
     mock_create_task,
+    mock_configure_logging,
     mock_async_proxy_class,
     mock_docker_manager_class,
 ):
     """
     Verify `amain` orchestrates startup and that `finally` block cleans up.
     """
-    mock_loop = MagicMock()
-    mock_get_running_loop.return_value = mock_loop
     mock_docker_instance = mock_docker_manager_class.return_value = AsyncMock()
     mock_proxy_instance = mock_async_proxy_class.return_value = AsyncMock()
 
@@ -90,26 +81,19 @@ async def test_amain_orchestration_and_shutdown(
 
 
 @pytest.mark.unit
-@patch("main.DockerManager")  # FIX: Add mock to prevent real instantiation
-@patch("main.log")
 @patch("main.sys.exit")
-@patch("main.load_app_config")
-@patch("main.configure_logging")
+@patch("main.log")
 async def test_amain_exits_if_no_servers_loaded(
-    mock_configure_logging,
-    mock_load_config,
-    mock_sys_exit,
     mock_log,
-    mock_docker_manager,  # FIX: Accept the mock as an argument
+    mock_sys_exit,
 ):
     """
     Tests that amain exits if the loaded config has no game servers.
     """
     mock_app_config = MagicMock()
-    mock_app_config.game_servers = []
-    mock_load_config.return_value = mock_app_config
-
-    await amain()
+    mock_app_config.game_servers = []  # No servers
+    with patch("main.load_app_config", return_value=mock_app_config):
+        await amain()
 
     mock_log.critical.assert_called_once_with(
         "FATAL: No server configurations loaded. Exiting."

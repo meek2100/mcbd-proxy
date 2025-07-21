@@ -40,7 +40,7 @@ def configure_logging(log_level: str, log_format: str):
 
     if log_format == "json":
         processors = shared_processors + [
-            structlog.processors.StackInfoRenderer(),  # Re-introduced
+            structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
             structlog.processors.JSONRenderer(),
         ]
@@ -66,7 +66,6 @@ async def _update_heartbeat(app_config):
         try:
             current_time = int(time.time())
             HEARTBEAT_FILE.write_text(str(current_time))
-            # Use configurable interval for heartbeat
             await asyncio.sleep(app_config.healthcheck_heartbeat_interval)
         except asyncio.CancelledError:
             log.info("Heartbeat task cancelled.")
@@ -78,11 +77,8 @@ async def _update_heartbeat(app_config):
 async def amain():
     """The main asynchronous entrypoint for the application."""
     app_config = load_app_config()
-
-    # Configure logging based on the loaded app_config
     configure_logging(app_config.log_level, app_config.log_format)
 
-    # Add back APP_IMAGE_METADATA logging
     app_metadata = os.environ.get("APP_IMAGE_METADATA")
     if app_metadata:
         try:
@@ -91,7 +87,6 @@ async def amain():
         except json.JSONDecodeError:
             log.warning("Could not parse APP_IMAGE_METADATA", metadata=app_metadata)
 
-    # Add check for loaded game servers as per the plan
     if not app_config.game_servers:
         log.critical("FATAL: No server configurations loaded. Exiting.")
         sys.exit(1)
@@ -99,18 +94,14 @@ async def amain():
     docker_manager = DockerManager(app_config)
     proxy_server = AsyncProxy(app_config, docker_manager)
 
-    def sighup_handler():
-        """Schedules a configuration reload inside the running proxy."""
-        log.warning("SIGHUP received, scheduling configuration reload.")
-        proxy_server.schedule_reload()
+    # FIX: Signal handlers are not supported on Windows ProactorEventLoop.
+    if sys.platform != "win32":
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, proxy_server._shutdown_handler, sig)
+        if hasattr(signal, "SIGHUP"):
+            loop.add_signal_handler(signal.SIGHUP, proxy_server.schedule_reload)
 
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, proxy_server._shutdown_handler, sig)
-    if hasattr(signal, "SIGHUP"):
-        loop.add_signal_handler(signal.SIGHUP, sighup_handler)
-
-    # Pass app_config to heartbeat task
     heartbeat_task = asyncio.create_task(_update_heartbeat(app_config))
     try:
         await proxy_server.start()
@@ -136,7 +127,6 @@ def health_check():
             sys.exit(1)
 
         heartbeat_age = int(time.time()) - int(HEARTBEAT_FILE.read_text())
-        # Use the configurable threshold from AppConfig
         if heartbeat_age > app_config.healthcheck_stale_threshold:
             print(f"Health check failed: Heartbeat is stale ({heartbeat_age}s).")
             sys.exit(1)
@@ -147,15 +137,12 @@ def health_check():
         print(f"Health check failed during execution: {e}")
         sys.exit(1)
     except Exception as e:
-        # Catch configuration loading errors for health check
         print(f"Health check failed during config load: {e}")
         sys.exit(1)
 
 
 def main():
     """Main entrypoint function to be called by the script."""
-    # Early configuration to ensure healthcheck can log errors.
-    # Uses environment variables directly for initial logging setup.
     early_log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
     early_log_format = os.environ.get("NB_LOG_FORMATTER", "console")
     configure_logging(early_log_level, early_log_format)
