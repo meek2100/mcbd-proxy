@@ -66,9 +66,15 @@ async def test_amain_orchestration_and_shutdown(
     mock_load_config.return_value = mock_app_config
 
     mock_proxy_instance.start.side_effect = asyncio.CancelledError
-    # FIX: Use a standard MagicMock for the task, as .cancel() is sync
+
+    # FIX: Use a side effect that returns a consistent mock object
     mock_heartbeat_task = MagicMock()
-    mock_create_task.return_value = mock_heartbeat_task
+
+    def consume_coro_side_effect(coro):
+        coro.close()
+        return mock_heartbeat_task
+
+    mock_create_task.side_effect = consume_coro_side_effect
 
     await amain()
 
