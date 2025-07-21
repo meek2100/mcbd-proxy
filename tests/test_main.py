@@ -67,11 +67,11 @@ async def test_amain_orchestration_and_shutdown(
 
     mock_proxy_instance.start.side_effect = asyncio.CancelledError
 
-    # FIX: Use a side effect that returns a consistent mock object
+    # FIX: Use a side effect to properly handle and discard the coroutine
     mock_heartbeat_task = MagicMock()
 
     def consume_coro_side_effect(coro):
-        coro.close()
+        coro.close()  # Prevent "coroutine never awaited" warning
         return mock_heartbeat_task
 
     mock_create_task.side_effect = consume_coro_side_effect
