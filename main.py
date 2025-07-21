@@ -62,13 +62,15 @@ async def _update_heartbeat(app_config):
     Periodically writes a timestamp to the heartbeat file to signal liveness.
     Uses configurable interval from app_config.
     """
+    log.debug("Starting heartbeat update loop.")
     while True:
         try:
             current_time = int(time.time())
             HEARTBEAT_FILE.write_text(str(current_time))
+            log.debug("Heartbeat updated.", timestamp=current_time)
             await asyncio.sleep(app_config.healthcheck_heartbeat_interval)
         except asyncio.CancelledError:
-            log.info("Heartbeat task cancelled.")
+            log.debug("Heartbeat task cancelled.")
             break
         except Exception:
             log.error("Failed to update heartbeat file.", exc_info=True)
@@ -94,7 +96,6 @@ async def amain():
     docker_manager = DockerManager(app_config)
     proxy_server = AsyncProxy(app_config, docker_manager)
 
-    # FIX: Signal handlers are not supported on Windows ProactorEventLoop.
     if sys.platform != "win32":
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -109,9 +110,9 @@ async def amain():
         log.info("Main application task was cancelled.")
     finally:
         heartbeat_task.cancel()
-        log.info("Closing Docker manager session.")
+        log.debug("Closing Docker manager session.")
         await docker_manager.close()
-        log.info("Shutdown complete.")
+        log.debug("Shutdown complete.")
 
 
 def health_check():
@@ -150,6 +151,7 @@ def main():
     if "--healthcheck" in sys.argv:
         health_check()
     else:
+        log.debug("Starting application...")
         try:
             asyncio.run(amain())
         except KeyboardInterrupt:
@@ -162,4 +164,4 @@ def main():
         finally:
             if HEARTBEAT_FILE.exists():
                 HEARTBEAT_FILE.unlink(missing_ok=True)
-                log.info("Removed heartbeat file on shutdown.")
+                log.debug("Removed heartbeat file on shutdown.")
