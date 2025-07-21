@@ -103,15 +103,13 @@ def load_app_config() -> AppConfig:
     load_dotenv()
     log.info("Loading application configuration...")
 
-    # 1. Load Server Definitions (Prioritizing Environment)
     game_servers = []
     i = 1
     while f"NB_{i}_CONTAINER_NAME" in os.environ:
         try:
-            # Pydantic handles type coercion from strings to appropriate types
             server_data = {
                 "name": os.getenv(f"NB_{i}_NAME", f"Server-{i}"),
-                "game_type": os.getenv(f"NB_{i}_GAME_TYPE"),
+                "server_type": os.getenv(f"NB_{i}_SERVER_TYPE"),
                 "container_name": os.getenv(f"NB_{i}_CONTAINER_NAME"),
                 "host": os.getenv(f"NB_{i}_HOST"),
                 "port": os.getenv(f"NB_{i}_PORT"),
@@ -144,9 +142,8 @@ def load_app_config() -> AppConfig:
                 ]
             except (ValidationError, json.JSONDecodeError) as e:
                 log.error("Failed to load or parse servers.json", error=e)
-                raise  # Re-raise to ensure fatal config errors halt startup
+                raise
 
-    # 2. Load Global Settings (Env > JSON > Defaults)
     final_settings = {}
     settings_file = Path("settings.json")
     if settings_file.is_file():
@@ -154,22 +151,14 @@ def load_app_config() -> AppConfig:
             final_settings = json.loads(settings_file.read_text())
         except json.JSONDecodeError:
             log.error("Could not parse settings.json", path=settings_file)
-            raise  # Re-raise to ensure fatal config errors halt startup
+            raise
 
-    # Environment variables override JSON and defaults via Pydantic's aliases
-    # and direct lookup.
-    # Populate a temporary dictionary with environment variables,
-    # then pass to model_validate.
     env_overrides = {}
     for field_name, field_info in AppConfig.model_fields.items():
-        # Use alias if available, otherwise assume field_name is the env var
         env_var_name = field_info.alias or field_name.upper()
         if env_var_name in os.environ:
-            # Pydantic will handle type coercion for values passed to .model_validate
             env_overrides[field_name] = os.environ[env_var_name]
 
-    # Combine settings from file with environment overrides.
-    # Env overrides take precedence.
     combined_settings = {**final_settings, **env_overrides}
 
     try:
