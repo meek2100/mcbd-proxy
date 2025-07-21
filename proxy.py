@@ -1,8 +1,6 @@
 # proxy.py
 import asyncio
-import signal
 import time
-from typing import Optional
 from unittest.mock import MagicMock
 
 import structlog
@@ -41,23 +39,16 @@ class AsyncProxy:
         self._reload_requested = True
         log.warning("Configuration reload has been scheduled.")
 
-    def _shutdown_handler(self, sig: Optional[signal.Signals] = None):
-        """Schedules the async shutdown task from a synchronous signal handler."""
-        if sig:
-            log.warning("Shutdown signal received", signal=sig.name)
-        # This is a non-async method to be compatible with signal handlers.
-        # It creates a task to run the actual async shutdown logic.
-        asyncio.create_task(self.shutdown())
-
     async def shutdown(self):
         """Gracefully cancels all running tasks."""
         log.info("Cancelling active tasks for shutdown...")
 
         # Cancel all active player TCP sessions
-        for task in list(self.active_tcp_sessions.keys()):
+        tcp_tasks = list(self.active_tcp_sessions.keys())
+        for task in tcp_tasks:
             if not task.done():
                 task.cancel()
-        await asyncio.gather(*self.active_tcp_sessions.keys(), return_exceptions=True)
+        await asyncio.gather(*tcp_tasks, return_exceptions=True)
 
         # Cancel all main server tasks (listeners, monitor, etc.)
         all_server_tasks = []
@@ -83,11 +74,10 @@ class AsyncProxy:
                 "Cancelling active TCP sessions",
                 count=len(self.active_tcp_sessions),
             )
-            for task in list(self.active_tcp_sessions.keys()):
+            tcp_tasks = list(self.active_tcp_sessions.keys())
+            for task in tcp_tasks:
                 task.cancel()
-            await asyncio.gather(
-                *self.active_tcp_sessions.keys(), return_exceptions=True
-            )
+            await asyncio.gather(*tcp_tasks, return_exceptions=True)
             self.active_tcp_sessions.clear()
 
         listener_tasks = self.server_tasks.get("listeners", [])
