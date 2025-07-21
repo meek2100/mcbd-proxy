@@ -48,10 +48,10 @@ def mock_bedrock_server_config():
 @pytest.fixture
 def mock_docker_manager():
     """Provides a mock DockerManager with explicit async methods."""
-    manager = AsyncMock()
+    manager = MagicMock()
     manager.is_container_running = AsyncMock(return_value=False)
     manager.start_server = AsyncMock(return_value=True)
-    manager.stop_server = AsyncMock()  # Explicitly make this an AsyncMock
+    manager.stop_server = AsyncMock()
     return manager
 
 
@@ -91,11 +91,10 @@ def mock_tcp_streams():
 @pytest.mark.asyncio
 async def test_shutdown_cancels_tasks(proxy):
     """Verify the shutdown method cancels all registered tasks."""
-    loop = asyncio.get_running_loop()
-    # Use tasks that run long enough to be cancelled
-    task1 = loop.create_task(asyncio.sleep(0.1))
-    task2 = loop.create_task(asyncio.sleep(0.1))
-    tcp_task = loop.create_task(asyncio.sleep(0.1))
+    # Use tasks that run long enough to be cancelled, not complete instantly.
+    task1 = asyncio.create_task(asyncio.sleep(0.01))
+    task2 = asyncio.create_task(asyncio.sleep(0.01))
+    tcp_task = asyncio.create_task(asyncio.sleep(0.01))
     proxy.server_tasks = {"listeners": [task1], "monitor": task2}
     proxy.active_tcp_sessions = {tcp_task: "server"}
 
@@ -181,15 +180,17 @@ async def test_monitor_stops_idle_server(proxy, mock_docker_manager):
 @pytest_asyncio.fixture
 async def bedrock_protocol(proxy, mock_bedrock_server_config):
     """Provides a BedrockProtocol instance for testing."""
+    # This is now an async fixture, so the event loop is running.
     protocol = BedrockProtocol(proxy, mock_bedrock_server_config)
     protocol.transport = AsyncMock()
-    # Manually call connection_made to start the cleanup task in a loop
     protocol.connection_made(protocol.transport)
+
     yield protocol
-    # Cleanup the task after the test
+
+    # Clean up the background task
     if protocol.cleanup_task:
         protocol.cleanup_task.cancel()
-        await asyncio.sleep(0)  # Allow cancellation to propagate
+        await asyncio.sleep(0)
 
 
 @pytest.mark.asyncio

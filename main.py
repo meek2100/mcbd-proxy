@@ -132,20 +132,16 @@ async def amain():
             loop.add_signal_handler(signal.SIGHUP, proxy_server.schedule_reload)
 
     # Start background tasks
-    heartbeat_task = asyncio.create_task(_update_heartbeat(app_config, shutdown_event))
-    proxy_task = asyncio.create_task(proxy_server.start())
-    all_tasks = [heartbeat_task, proxy_task]
+    asyncio.create_task(_update_heartbeat(app_config, shutdown_event))
+    asyncio.create_task(proxy_server.start())
 
     log.info("Nether-bridge is running. Waiting for shutdown signal...")
-    # THIS IS THE CRITICAL FIX: Wait here until a signal handler sets the event.
     await shutdown_event.wait()
-    log.info("Shutdown event received, cleaning up tasks.")
 
-    # Clean up tasks
-    for task in all_tasks:
-        if not task.done():
-            task.cancel()
-    await asyncio.gather(*all_tasks, return_exceptions=True)
+    log.info("Shutdown event received, cleaning up remaining tasks.")
+    # At this point, signal handlers have already cancelled primary tasks.
+    # We just need to give them a moment to complete.
+    await asyncio.sleep(0.1)
 
     log.debug("Closing Docker manager session.")
     await docker_manager.close()

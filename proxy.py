@@ -428,9 +428,13 @@ class BedrockProtocol(asyncio.DatagramProtocol):
         self.server_config = server_config
         self.transport = None
         self.client_map = {}
-        # FIX: Defer task creation until the event loop is running.
         self.cleanup_task: Optional[asyncio.Task] = None
         super().__init__()
+
+    def connection_made(self, transport: asyncio.DatagramTransport):
+        """Initializes transport and starts the idle client monitor task."""
+        self.transport = transport
+        self.cleanup_task = asyncio.create_task(self._monitor_idle_clients())
 
     def _cleanup_client(self, addr: tuple):
         """Gracefully cleans up a single client session."""
@@ -446,25 +450,33 @@ class BedrockProtocol(asyncio.DatagramProtocol):
 
     async def _monitor_idle_clients(self):
         """Periodically scans for and removes idle UDP clients."""
+        log.debug("Starting UDP idle client monitor.", server=self.server_config.name)
         while True:
             try:
                 await asyncio.sleep(self.proxy.app_config.player_check_interval)
             except asyncio.CancelledError:
+                log.debug(
+                    "UDP idle client monitor cancelled.",
+                    server=self.server_config.name,
+                )
                 break
+
             idle_timeout = (
                 self.server_config.idle_timeout
                 if self.server_config.idle_timeout is not None
                 else self.proxy.app_config.idle_timeout
             )
             now = time.time()
-            for addr, info in list(self.client_map.items()):
-                if now - info.get("last_activity", 0) > idle_timeout:
-                    self._cleanup_client(addr)
+            idle_clients = {
+                addr
+                for addr, info in self.client_map.items()
+                if now - info.get("last_activity", 0) > idle_timeout
+            }
 
-    def connection_made(self, transport: asyncio.DatagramTransport):
-        self.transport = transport
-        # FIX: Start the background task here, where a loop is guaranteed.
-        self.cleanup_task = asyncio.create_task(self._monitor_idle_clients())
+            if idle_clients:
+                log.info("Found idle UDP clients to clean up.", count=len(idle_clients))
+                for addr in idle_clients:
+                    self._cleanup_client(addr)
 
     def datagram_received(self, data: bytes, addr: tuple):
         """Handles incoming datagrams from clients."""
