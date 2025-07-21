@@ -11,6 +11,12 @@ from proxy import AsyncProxy
 pytestmark = pytest.mark.unit
 
 
+class StopTestLoop(Exception):
+    """Custom exception to cleanly break out of test loops."""
+
+    pass
+
+
 @pytest.fixture
 def mock_java_server_config():
     """Fixture for a mock Java GameServerConfig."""
@@ -180,7 +186,6 @@ async def test_reload_configuration(
 ):
     """Verify the configuration reload process."""
 
-    # FIX: Define a side effect that consumes the coroutine to prevent warnings
     def consume_coro_side_effect(coro):
         coro.close()
         return MagicMock()
@@ -243,12 +248,12 @@ async def test_monitor_stops_idle_server(proxy, mock_docker_manager):
     )
     mock_docker_manager.is_container_running.return_value = True
 
-    # FIX: Use asyncio.wait_for to test one loop iteration cleanly.
-    with patch("asyncio.sleep", new_callable=AsyncMock):
+    # FIX: Revert to the exception-based pattern to prevent tests from hanging
+    with patch("asyncio.sleep", side_effect=StopTestLoop):
         try:
-            await asyncio.wait_for(proxy._monitor_server_activity(), timeout=0.1)
-        except asyncio.TimeoutError:
-            pass  # Expected exit condition for the test
+            await proxy._monitor_server_activity()
+        except StopTestLoop:
+            pass
 
     mock_docker_manager.stop_server.assert_awaited_once_with(
         container_name, proxy.app_config.server_stop_timeout
@@ -282,10 +287,11 @@ async def test_monitor_respects_per_server_idle_timeout(proxy, mock_docker_manag
     proxy._ready_events[server_config.name] = asyncio.Event()
     mock_docker_manager.is_container_running.return_value = True
 
-    with patch("asyncio.sleep", new_callable=AsyncMock):
+    # FIX: Revert to the exception-based pattern to prevent tests from hanging
+    with patch("asyncio.sleep", side_effect=StopTestLoop):
         try:
-            await asyncio.wait_for(proxy._monitor_server_activity(), timeout=0.1)
-        except asyncio.TimeoutError:
+            await proxy._monitor_server_activity()
+        except StopTestLoop:
             pass
 
     mock_docker_manager.stop_server.assert_awaited_once_with(
