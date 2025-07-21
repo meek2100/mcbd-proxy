@@ -206,7 +206,10 @@ class AsyncProxy:
 
                 transport, protocol = await loop.create_datagram_endpoint(
                     protocol_factory,
-                    local_addr=(server_config.proxy_host, server_config.proxy_port),
+                    local_addr=(
+                        server_config.proxy_host,
+                        server_config.proxy_port,
+                    ),
                 )
                 self.udp_protocols[server_config.name] = protocol
                 await asyncio.Future()
@@ -228,7 +231,11 @@ class AsyncProxy:
                 del self.udp_protocols[server_config.name]
 
     async def _ensure_server_started(self, server_config: GameServerConfig):
-        """Ensures a server is running, handling startup logic concurrently."""
+        """
+        Ensures a server is running, handling startup logic concurrently.
+        Uses a lock to prevent multiple tasks from starting the same server
+        and an event to signal when the server is fully ready for traffic.
+        """
         if self._ready_events[
             server_config.name
         ].is_set() and await self.docker_manager.is_container_running(
@@ -237,6 +244,8 @@ class AsyncProxy:
             return
 
         async with self._startup_locks[server_config.name]:
+            # Double-check readiness after acquiring the lock in case another
+            # task already finished the startup while this one was waiting.
             if self._ready_events[server_config.name].is_set():
                 return
 
@@ -250,6 +259,7 @@ class AsyncProxy:
             duration = time.time() - start_time
             self.metrics_manager.observe_startup_duration(server_config.name, duration)
             self._server_state[server_config.name]["is_running"] = True
+            # Set the event to release any other tasks waiting for this server.
             self._ready_events[server_config.name].set()
             log.info("Server startup complete.", server=server_config.name)
 
@@ -264,7 +274,10 @@ class AsyncProxy:
         server_name: str,
         direction: str,
     ):
-        """Proxies data between a client and a server until EOF."""
+        """
+        Asynchronously streams data from a reader to a writer.
+        This function acts as one half of a bidirectional proxy connection.
+        """
         try:
             while not reader.at_eof():
                 data = await reader.read(4096)
@@ -292,7 +305,9 @@ class AsyncProxy:
         client_writer: asyncio.StreamWriter,
         server_config: GameServerConfig,
     ):
-        """Handles a new client connection for a TCP server."""
+        """
+        Handles the entire lifecycle of a single client TCP connection.
+        """
         client_addr = client_writer.get_extra_info("peername")
         log.info("New TCP connection", client=client_addr, server=server_config.name)
 
@@ -308,22 +323,29 @@ class AsyncProxy:
 
         proxy_task = None
         try:
+            # This will either return immediately if the server is ready, or it
+            # will start the server and wait for the _ready_event.
             await self._ensure_server_started(server_config)
 
+            # Once the server is ready, establish a connection to it.
             server_reader, server_writer = await asyncio.open_connection(
                 server_config.host, server_config.port
             )
             log.info("Connected to backend server", server=server_config.name)
 
-            to_client = self._proxy_data(
-                server_reader, client_writer, server_config.name, "s2c"
+            # Create two tasks to proxy data concurrently in both directions.
+            to_client_task = asyncio.create_task(
+                self._proxy_data(
+                    server_reader, client_writer, server_config.name, "s2c"
+                )
             )
-            to_server = self._proxy_data(
-                client_reader, server_writer, server_config.name, "c2s"
+            to_server_task = asyncio.create_task(
+                self._proxy_data(
+                    client_reader, server_writer, server_config.name, "c2s"
+                )
             )
-            to_client_task = asyncio.create_task(to_client)
-            to_server_task = asyncio.create_task(to_server)
 
+            # Wait for either proxy task to complete (e.g., client disconnects).
             proxy_task = asyncio.gather(to_client_task, to_server_task)
             self.active_tcp_sessions[proxy_task] = server_config.name
             await proxy_task
@@ -346,7 +368,10 @@ class AsyncProxy:
             log.info("TCP session closed", client=client_addr)
 
     async def _monitor_server_activity(self):
-        """Periodically checks for idle servers and reload requests."""
+        """
+        A background task that periodically checks for idle servers and handles
+        scheduled configuration reloads.
+        """
         log.info("Starting server activity monitor.")
         while True:
             try:
@@ -368,6 +393,7 @@ class AsyncProxy:
                 if not is_running:
                     continue
 
+                # Count active sessions for this server
                 udp_proto = self.udp_protocols.get(sc.name, MagicMock(client_map={}))
                 udp_sessions = len(udp_proto.client_map)
                 tcp_sessions = sum(
@@ -378,6 +404,7 @@ class AsyncProxy:
                     self._update_activity(sc.name)
                     continue
 
+                # Determine the correct idle timeout (server-specific or global)
                 idle_timeout = (
                     sc.idle_timeout
                     if sc.idle_timeout is not None
@@ -400,8 +427,9 @@ class AsyncProxy:
 
 class BedrockProtocol(asyncio.DatagramProtocol):
     """
-    Handles UDP traffic for Bedrock servers. It creates a "UDP session" for
-    each new client address, routing traffic to a dedicated backend socket.
+    Protocol for the main public-facing UDP listener for a Bedrock server.
+    It manages "sessions" based on client addresses and resolves a race
+    condition by queuing packets that arrive during backend setup.
     """
 
     def __init__(self, proxy: AsyncProxy, server_config: GameServerConfig):
@@ -449,6 +477,7 @@ class BedrockProtocol(asyncio.DatagramProtocol):
         self.transport = transport
 
     def datagram_received(self, data: bytes, addr: tuple):
+        """Handles incoming datagrams from clients."""
         self.proxy._update_activity(self.server_config.name)
         self.proxy.metrics_manager.inc_bytes_transferred(
             self.server_config.name, "c2s", len(data)
@@ -466,19 +495,22 @@ class BedrockProtocol(asyncio.DatagramProtocol):
             self.proxy.metrics_manager.inc_active_connections(self.server_config.name)
             loop = asyncio.get_running_loop()
             task = loop.create_task(self._create_backend_connection(addr, data))
+            # Create a session entry with a queue for packets that arrive
+            # before the backend connection is fully established.
             self.client_map[addr] = {
                 "task": task,
                 "last_activity": time.time(),
                 "protocol": None,
-                "queue": [],  # Queue for packets arriving during setup
+                "queue": [],
             }
         else:
             client_info["last_activity"] = time.time()
             backend_protocol = client_info.get("protocol")
             if backend_protocol and backend_protocol.transport:
+                # Backend is ready, forward the packet immediately.
                 backend_protocol.transport.sendto(data)
             else:
-                # FIX: Queue packets if backend isn't ready yet
+                # Backend not ready, queue the packet to prevent it being lost.
                 client_info["queue"].append(data)
 
     async def _create_backend_connection(self, client_addr: tuple, initial_data: bytes):
@@ -506,7 +538,8 @@ class BedrockProtocol(asyncio.DatagramProtocol):
                 client_info = self.client_map[client_addr]
                 client_info["protocol"] = protocol
 
-                # FIX: Process the queue now that the backend is ready
+                # Process the initial packet and any queued packets now that
+                # the backend transport is ready.
                 if transport and not transport.is_closing():
                     transport.sendto(initial_data)
                     for queued_data in client_info["queue"]:
@@ -531,7 +564,11 @@ class BedrockProtocol(asyncio.DatagramProtocol):
 
 
 class BackendProtocol(asyncio.DatagramProtocol):
-    """Protocol to handle communication from the backend Bedrock server."""
+    """
+    Protocol to handle communication from the backend Bedrock server.
+    Its sole purpose is to forward packets back to the correct client
+    via the main listener's transport.
+    """
 
     def __init__(
         self,

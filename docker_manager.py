@@ -17,7 +17,8 @@ log = structlog.get_logger()
 class DockerManager:
     """
     An asynchronous manager for starting, stopping, and inspecting Docker
-    containers for the game servers.
+    containers for the game servers. It encapsulates all interactions with
+    the Docker daemon using the aiodocker library.
     """
 
     def __init__(self, app_config: AppConfig):
@@ -31,7 +32,8 @@ class DockerManager:
     ) -> AsyncGenerator[Optional[DockerContainer], None]:
         """
         An async context manager to safely get a container object.
-        Handles exceptions gracefully if the container is not found.
+        Handles exceptions gracefully if the container is not found,
+        yielding None instead of raising an error.
         """
         container = None
         try:
@@ -59,7 +61,8 @@ class DockerManager:
 
     async def is_container_running(self, container_name: str) -> bool:
         """
-        Asynchronously checks if a container is running.
+        Asynchronously checks if a container's state is 'running'.
+        Returns False if the container doesn't exist or an API error occurs.
         """
         log.debug("Checking container status", container_name=container_name)
         async with self.get_container(container_name) as container:
@@ -85,7 +88,9 @@ class DockerManager:
 
     async def start_server(self, server_config: GameServerConfig) -> bool:
         """
-        Asynchronously starts a Docker container and waits for it to be queryable.
+        Asynchronously starts a Docker container and waits for the game
+        server within it to become queryable.
+
         Returns True on success, False on failure.
         """
         container_name = server_config.container_name
@@ -97,7 +102,8 @@ class DockerManager:
             try:
                 await container.start()
                 log.info(
-                    "Container started successfully", container_name=container_name
+                    "Container started successfully",
+                    container_name=container_name,
                 )
                 await asyncio.sleep(self.app_config.server_startup_delay)
                 return await self.wait_for_server_query_ready(server_config)
@@ -130,7 +136,8 @@ class DockerManager:
                 try:
                     await container.stop(t=stop_timeout)
                     log.info(
-                        "Container stopped successfully", container_name=container_name
+                        "Container stopped successfully",
+                        container_name=container_name,
                     )
                 except aiodocker.exceptions.DockerError:
                     log.error(
@@ -143,8 +150,10 @@ class DockerManager:
         self, server_config: GameServerConfig, timeout: Optional[int] = None
     ) -> bool:
         """
-        Asynchronously waits for a Minecraft server to become queryable.
-        Returns True if ready, False if it times out.
+        Asynchronously polls a Minecraft server using mcstatus until it
+        responds to a status query or a timeout is reached.
+
+        Returns True if the server becomes ready, False if it times out.
         """
         start_time = time.time()
         wait_timeout = timeout or self.app_config.server_startup_timeout
@@ -163,6 +172,8 @@ class DockerManager:
                         lookup_str, timeout=query_timeout
                     )
                 else:
+                    # BedrockServer.lookup is synchronous, so it's run in a
+                    # thread pool to avoid blocking the event loop.
                     server = await asyncio.to_thread(
                         BedrockServer.lookup, lookup_str, timeout=query_timeout
                     )
