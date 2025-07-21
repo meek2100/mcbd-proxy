@@ -32,7 +32,6 @@ def test_main_runs_amain(mock_amain, mock_asyncio_run):
     """
     main()
     mock_amain.assert_called_once()
-    # FIX: Assert that run was called once, then check the argument type
     mock_asyncio_run.assert_called_once()
     args, _ = mock_asyncio_run.call_args
     assert asyncio.iscoroutine(args[0])
@@ -93,10 +92,15 @@ async def test_amain_exits_if_no_servers_loaded(
     """
     Tests that amain exits if the loaded config has no game servers.
     """
+    # FIX: Make the mock sys.exit raise an exception to halt execution
+    mock_sys_exit.side_effect = SystemExit(1)
     mock_app_config = MagicMock()
     mock_app_config.game_servers = []  # No servers
+
     with patch("main.load_app_config", return_value=mock_app_config):
-        await amain()
+        # FIX: Catch the SystemExit exception to confirm it was called
+        with pytest.raises(SystemExit):
+            await amain()
 
     mock_log.critical.assert_called_once_with(
         "FATAL: No server configurations loaded. Exiting."
