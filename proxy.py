@@ -172,11 +172,10 @@ class AsyncProxy:
         )
         self.server_tasks["metrics"] = asyncio.create_task(self.metrics_manager.start())
 
-        # FIX: Correctly flatten the list of tasks for asyncio.gather
         all_tasks = (
             self.server_tasks.get("listeners", [])
-            + [self.server_tasks["monitor"]]
-            + [self.server_tasks["metrics"]]
+            + [self.server_tasks.get("monitor")]
+            + [self.server_tasks.get("metrics")]
         )
         await asyncio.gather(*filter(None, all_tasks), return_exceptions=True)
 
