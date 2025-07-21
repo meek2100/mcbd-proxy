@@ -107,13 +107,14 @@ def load_app_config() -> AppConfig:
     i = 1
     while f"NB_{i}_CONTAINER_NAME" in os.environ:
         try:
+            # FIX: Use the correct original env var names for ports
             server_data = {
                 "name": os.getenv(f"NB_{i}_NAME", f"Server-{i}"),
                 "server_type": os.getenv(f"NB_{i}_SERVER_TYPE"),
                 "container_name": os.getenv(f"NB_{i}_CONTAINER_NAME"),
                 "host": os.getenv(f"NB_{i}_HOST"),
-                "port": os.getenv(f"NB_{i}_PORT"),
-                "proxy_port": os.getenv(f"NB_{i}_PROXY_PORT"),
+                "internal_port": os.getenv(f"NB_{i}_INTERNAL_PORT"),
+                "listen_port": os.getenv(f"NB_{i}_LISTEN_PORT"),
                 "proxy_host": os.getenv(f"NB_{i}_PROXY_HOST", "0.0.0.0"),
                 "query_port": os.getenv(f"NB_{i}_QUERY_PORT"),
                 "pre_warm": os.getenv(f"NB_{i}_PRE_WARM", "false").lower()

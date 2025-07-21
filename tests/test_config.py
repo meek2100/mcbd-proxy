@@ -29,14 +29,14 @@ def test_load_config_with_dynamic_servers():
         "LOG_LEVEL": "DEBUG",
         # Server 1: Java
         "NB_1_NAME": "Test Java",
-        "NB_1_SERVER_TYPE": "java",  # FIX: Was NB_1_GAME_TYPE
+        "NB_1_SERVER_TYPE": "java",
         "NB_1_CONTAINER_NAME": "mc-java-test",
         "NB_1_INTERNAL_PORT": "25565",
         "NB_1_LISTEN_PORT": "25565",
         "NB_1_IDLE_TIMEOUT": "300",
         # Server 2: Bedrock
         "NB_2_NAME": "Test Bedrock",
-        "NB_2_SERVER_TYPE": "bedrock",  # FIX: Was NB_2_GAME_TYPE
+        "NB_2_SERVER_TYPE": "bedrock",
         "NB_2_CONTAINER_NAME": "mc-bedrock-test",
         "NB_2_INTERNAL_PORT": "19132",
         "NB_2_LISTEN_PORT": "19132",
@@ -68,7 +68,7 @@ def test_load_config_with_query_port_override():
     """Tests that query_port can be set independently from the game port."""
     mock_env = {
         "NB_1_CONTAINER_NAME": "mc-test",
-        "NB_1_SERVER_TYPE": "java",  # FIX: Was NB_1_GAME_TYPE
+        "NB_1_SERVER_TYPE": "java",
         "NB_1_INTERNAL_PORT": "25565",
         "NB_1_LISTEN_PORT": "25565",
         "NB_1_QUERY_PORT": "25575",

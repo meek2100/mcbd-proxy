@@ -31,9 +31,7 @@ def test_main_runs_amain(mock_amain, mock_asyncio_run):
     Tests that the main function calls asyncio.run with amain.
     """
     main()
-    # FIX: Assert that amain() was called once to create the coroutine
     mock_amain.assert_called_once()
-    # FIX: Assert that run was called with the coroutine object amain returned
     mock_asyncio_run.assert_called_once_with(mock_amain.return_value)
 
 
@@ -43,8 +41,9 @@ def test_main_runs_amain(mock_amain, mock_asyncio_run):
 @patch("main.configure_logging")
 @patch("main.asyncio.create_task")
 @patch("main.load_app_config")
-@patch("main.sys.platform", "linux")  # Mock platform to avoid OS-specific issues
+@patch("main.asyncio.get_running_loop")
 async def test_amain_orchestration_and_shutdown(
+    mock_get_running_loop,
     mock_load_config,
     mock_create_task,
     mock_configure_logging,
@@ -54,6 +53,9 @@ async def test_amain_orchestration_and_shutdown(
     """
     Verify `amain` orchestrates startup and that `finally` block cleans up.
     """
+    # FIX: Mock the event loop to avoid platform-specific errors on Windows
+    mock_get_running_loop.return_value = MagicMock()
+
     mock_docker_instance = mock_docker_manager_class.return_value = AsyncMock()
     mock_proxy_instance = mock_async_proxy_class.return_value = AsyncMock()
 
@@ -81,11 +83,11 @@ async def test_amain_orchestration_and_shutdown(
 
 
 @pytest.mark.unit
+@patch("main.DockerManager")  # FIX: Mock DockerManager to prevent instantiation
 @patch("main.sys.exit")
 @patch("main.log")
 async def test_amain_exits_if_no_servers_loaded(
-    mock_log,
-    mock_sys_exit,
+    mock_log, mock_sys_exit, mock_docker_manager
 ):
     """
     Tests that amain exits if the loaded config has no game servers.
@@ -99,6 +101,8 @@ async def test_amain_exits_if_no_servers_loaded(
         "FATAL: No server configurations loaded. Exiting."
     )
     mock_sys_exit.assert_called_once_with(1)
+    # Assert DockerManager was NOT instantiated
+    mock_docker_manager.assert_not_called()
 
 
 @pytest.mark.unit
