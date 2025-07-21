@@ -11,6 +11,7 @@ import signal
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 import structlog
 
@@ -57,23 +58,39 @@ def configure_logging(log_level: str, log_format: str):
     )
 
 
-async def _update_heartbeat(app_config):
+async def _update_heartbeat(app_config, shutdown_event: asyncio.Event):
     """
     Periodically writes a timestamp to the heartbeat file to signal liveness.
-    Uses configurable interval from app_config.
+    Uses configurable interval from app_config and stops when shutdown_event is set.
     """
     log.debug("Starting heartbeat update loop.")
-    while True:
+    while not shutdown_event.is_set():
         try:
             current_time = int(time.time())
             HEARTBEAT_FILE.write_text(str(current_time))
             log.debug("Heartbeat updated.", timestamp=current_time)
-            await asyncio.sleep(app_config.healthcheck_heartbeat_interval)
-        except asyncio.CancelledError:
-            log.debug("Heartbeat task cancelled.")
-            break
+            await asyncio.wait_for(
+                asyncio.shield(shutdown_event.wait()),
+                timeout=app_config.healthcheck_heartbeat_interval,
+            )
+        except asyncio.TimeoutError:
+            continue  # This is the normal loop condition
         except Exception:
             log.error("Failed to update heartbeat file.", exc_info=True)
+            await asyncio.sleep(app_config.healthcheck_heartbeat_interval)
+
+
+async def shutdown(
+    sig: Optional[signal.Signals],
+    proxy_server: AsyncProxy,
+    shutdown_event: asyncio.Event,
+):
+    """Gracefully shutdown tasks and set the shutdown event."""
+    if shutdown_event.is_set():
+        return
+    log.warning("Shutdown signal received, initiating graceful shutdown...", signal=sig)
+    await proxy_server.shutdown()
+    shutdown_event.set()
 
 
 async def amain():
@@ -93,26 +110,39 @@ async def amain():
         log.critical("FATAL: No server configurations loaded. Exiting.")
         sys.exit(1)
 
+    shutdown_event = asyncio.Event()
     docker_manager = DockerManager(app_config)
     proxy_server = AsyncProxy(app_config, docker_manager)
 
+    # Register signal handlers only on non-Windows platforms
     if sys.platform != "win32":
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, proxy_server._shutdown_handler, sig)
+            loop.add_signal_handler(
+                sig,
+                lambda s=sig: asyncio.create_task(
+                    shutdown(s, proxy_server, shutdown_event)
+                ),
+            )
         if hasattr(signal, "SIGHUP"):
             loop.add_signal_handler(signal.SIGHUP, proxy_server.schedule_reload)
 
-    heartbeat_task = asyncio.create_task(_update_heartbeat(app_config))
-    try:
-        await proxy_server.start()
-    except asyncio.CancelledError:
-        log.info("Main application task was cancelled.")
-    finally:
-        heartbeat_task.cancel()
-        log.debug("Closing Docker manager session.")
-        await docker_manager.close()
-        log.debug("Shutdown complete.")
+    # Start background tasks
+    heartbeat_task = asyncio.create_task(_update_heartbeat(app_config, shutdown_event))
+    proxy_task = asyncio.create_task(proxy_server.start())
+
+    # Wait indefinitely until a shutdown signal is received
+    await shutdown_event.wait()
+
+    # Clean up tasks
+    log.debug("Shutdown event received, cleaning up tasks.")
+    heartbeat_task.cancel()
+    proxy_task.cancel()
+    await asyncio.gather(heartbeat_task, proxy_task, return_exceptions=True)
+
+    log.debug("Closing Docker manager session.")
+    await docker_manager.close()
+    log.info("Shutdown complete.")
 
 
 def health_check():
@@ -151,7 +181,7 @@ def main():
     if "--healthcheck" in sys.argv:
         health_check()
     else:
-        log.debug("Starting application...")
+        log.info("Starting Nether-bridge application...")
         try:
             asyncio.run(amain())
         except KeyboardInterrupt:
