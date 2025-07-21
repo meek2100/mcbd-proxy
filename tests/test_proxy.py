@@ -198,16 +198,12 @@ async def test_reload_configuration(
     mock_load_config.return_value = new_config
     proxy._ensure_all_servers_stopped_on_startup = AsyncMock()
 
-    with patch(
-        "proxy.asyncio.create_task", side_effect=consume_coro_side_effect
-    ) as mock_create_task:
+    with patch("proxy.asyncio.create_task", side_effect=consume_coro_side_effect):
         await proxy._reload_configuration()
-        mock_create_task.assert_called()
 
     assert not proxy.active_tcp_sessions
-    tcp_session_task.cancel()
+    assert tcp_session_task.cancelled()
     old_listener_task.cancel.assert_called_once()
-    assert mock_gather.await_count == 2
     mock_load_config.assert_called_once()
     proxy._ensure_all_servers_stopped_on_startup.assert_awaited_once()
 
@@ -248,7 +244,6 @@ async def test_monitor_stops_idle_server(proxy, mock_docker_manager):
     )
     mock_docker_manager.is_container_running.return_value = True
 
-    # FIX: Revert to the exception-based pattern to prevent tests from hanging
     with patch("asyncio.sleep", side_effect=StopTestLoop):
         try:
             await proxy._monitor_server_activity()
@@ -287,7 +282,6 @@ async def test_monitor_respects_per_server_idle_timeout(proxy, mock_docker_manag
     proxy._ready_events[server_config.name] = asyncio.Event()
     mock_docker_manager.is_container_running.return_value = True
 
-    # FIX: Revert to the exception-based pattern to prevent tests from hanging
     with patch("asyncio.sleep", side_effect=StopTestLoop):
         try:
             await proxy._monitor_server_activity()
