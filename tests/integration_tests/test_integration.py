@@ -41,12 +41,9 @@ PROXY_HOST = get_proxy_host()
 @pytest_asyncio.fixture(scope="function")
 async def docker_manager(docker_client_fixture):
     """Provides a DockerManager instance for the test function."""
-    # Note: app_config is usually passed during DockerManager init in main.
-    # For testing, a mock is okay or it can be set later if needed.
     manager = DockerManager(app_config=None)
     manager.docker = docker_client_fixture
     yield manager
-    # Ensure DockerManager's aiodocker client is closed after test
     await manager.close()
 
 
@@ -58,29 +55,23 @@ async def test_java_server_lifecycle(
     stop.
     """
     container_name = "mc-java"
-    server_name = "Java Creative"  # Matches name in servers.json
+    server_name = "Java Creative"
     proxy_port = 25565
-    idle_timeout = 30  # Matches NB_IDLE_TIMEOUT in docker-compose.tests.yml
+    idle_timeout = 30
 
-    # FIX: Explicitly stop the container to prevent race conditions.
     await docker_manager.stop_server(container_name, 10)
 
-    # Ensure server is initially stopped
     assert not await docker_manager.is_container_running(container_name), (
         f"Java container {container_name} should be initially stopped."
     )
-    # Ensure proxy is listening on the port
     assert await check_port_listening(PROXY_HOST, proxy_port, protocol="tcp"), (
         f"Proxy not listening on TCP port {proxy_port}."
     )
 
-    # Trigger server startup by attempting a connection
     try:
-        # Client connection to trigger startup
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(PROXY_HOST, proxy_port), timeout=10
         )
-        # Send a minimal handshake packet to fully establish the session
         handshake_packet, _ = await asyncio.to_thread(
             lambda h, p: get_java_handshake_and_status_request_packets(h, p),
             PROXY_HOST,
@@ -92,7 +83,6 @@ async def test_java_server_lifecycle(
             f"Sent initial handshake to {server_name} via proxy to trigger startup."
         )
     except (ConnectionRefusedError, asyncio.TimeoutError) as e:
-        # This is expected if the server isn't instantly ready, proxy holds conn
         log.info(
             f"Initial connection attempt to {server_name} got "
             f"{type(e).__name__}. Proceeding, proxy should be starting server."
@@ -102,7 +92,6 @@ async def test_java_server_lifecycle(
             writer.close()
             await writer.wait_closed()
 
-    # Assert proxy logs the startup
     assert await wait_for_log_message(
         docker_manager.docker,
         "nether-bridge",
@@ -110,7 +99,6 @@ async def test_java_server_lifecycle(
         timeout=10,
     ), "Proxy did not log start of Java server."
 
-    # Assert container starts and becomes ready
     assert await wait_for_container_status(
         docker_manager.docker, container_name, "running", timeout=120
     ), f"Java container {container_name} failed to start."
@@ -118,13 +106,11 @@ async def test_java_server_lifecycle(
         "Java server did not become query-ready through proxy."
     )
 
-    # Assert active sessions metric is 0 after connection is closed
     assert await get_active_sessions_metric(PROXY_HOST, server_name) == 0, (
         "Active sessions metric did not reset to 0 after initial connection."
     )
 
-    # Wait for idle shutdown
-    log_message_timeout = idle_timeout + 15  # Give some buffer
+    log_message_timeout = idle_timeout + 15
     assert await wait_for_log_message(
         docker_manager.docker,
         "nether-bridge",
@@ -132,12 +118,10 @@ async def test_java_server_lifecycle(
         timeout=log_message_timeout,
     ), "Proxy did not log idle shutdown of Java server."
 
-    # Assert container stops
     assert await wait_for_container_status(
         docker_manager.docker, container_name, "exited", timeout=idle_timeout + 20
     ), f"Java container {container_name} did not stop after idle timeout."
 
-    # Assert active sessions metric is 0 after shutdown
     assert await get_active_sessions_metric(PROXY_HOST, server_name) == 0, (
         "Active sessions metric did not reset to 0 after idle shutdown."
     )
@@ -151,23 +135,20 @@ async def test_bedrock_server_lifecycle(
     stop.
     """
     container_name = "mc-bedrock"
-    server_name = "Bedrock Survival"  # Matches name in servers.json
+    server_name = "Bedrock Survival"
     proxy_port = 19132
-    idle_timeout = 30  # Matches NB_IDLE_TIMEOUT in docker-compose.tests.yml
+    idle_timeout = 30
 
-    # Explicitly stop the container to ensure a clean state before the test.
+    # FIX: Explicitly stop the container for a clean, reliable test state.
     await docker_manager.stop_server(container_name, 10)
 
-    # Ensure server is initially stopped
     assert not await docker_manager.is_container_running(container_name), (
         f"Bedrock container {container_name} should be initially stopped."
     )
-    # Ensure proxy is listening on the port
     assert await check_port_listening(PROXY_HOST, proxy_port, protocol="udp"), (
         f"Proxy not listening on UDP port {proxy_port}."
     )
 
-    # Trigger server startup by sending a UDP packet
     loop = asyncio.get_running_loop()
     transport, _ = await loop.create_datagram_endpoint(
         lambda: asyncio.DatagramProtocol(), remote_addr=(PROXY_HOST, proxy_port)
@@ -175,15 +156,13 @@ async def test_bedrock_server_lifecycle(
     transport.sendto(BEDROCK_UNCONNECTED_PING)
     transport.close()
 
-    # Assert proxy logs the startup
     assert await wait_for_log_message(
         docker_manager.docker,
         "nether-bridge",
-        "New UDP client",  # First UDP packet log
+        "New UDP client",
         timeout=10,
     ), "Proxy did not log new UDP client for Bedrock server."
 
-    # Assert container starts and becomes ready
     assert await wait_for_container_status(
         docker_manager.docker, container_name, "running", timeout=120
     ), f"Bedrock container {container_name} failed to start."
@@ -191,13 +170,10 @@ async def test_bedrock_server_lifecycle(
         "Bedrock server did not become query-ready through proxy."
     )
 
-    # Assert active sessions metric is 1 (or at least > 0)
-    # Note: UDP session count can be transient depending on test timing
     assert await get_active_sessions_metric(PROXY_HOST, server_name) >= 0, (
         "Failed to get active sessions metric for Bedrock."
     )
 
-    # Wait for idle shutdown
     log_message_timeout = idle_timeout + 15
     assert await wait_for_log_message(
         docker_manager.docker,
@@ -206,12 +182,10 @@ async def test_bedrock_server_lifecycle(
         timeout=log_message_timeout,
     ), "Proxy did not log idle shutdown of Bedrock server."
 
-    # Assert container stops
     assert await wait_for_container_status(
         docker_manager.docker, container_name, "exited", timeout=idle_timeout + 20
     ), f"Bedrock container {container_name} did not stop after idle timeout."
 
-    # Assert active sessions metric is 0 after shutdown
     assert await get_active_sessions_metric(PROXY_HOST, server_name) == 0, (
         "Active sessions metric did not reset to 0 after Bedrock idle shutdown."
     )
@@ -225,20 +199,15 @@ async def test_java_server_pre_warm_startup(
     automatically with the proxy, without requiring a client connection.
     """
     container_name = "mc-java"
-    # Note: This test requires 'Java Pre-warm' server to be configured
-    # in servers.json with pre_warm: true and listening on a distinct port.
-    # For now, it will re-use mc-java container by injecting config.
     pre_warm_server_name = "Java Pre-warm"
-    pre_warm_proxy_port = 25566  # A new, dedicated port
+    pre_warm_proxy_port = 25566
 
-    # 1. Ensure server is initially stopped
     log.info(f"Ensuring {container_name} is stopped before pre-warm test.")
     await docker_manager.stop_server(container_name, 10)
     assert not await docker_manager.is_container_running(container_name), (
         f"Java container {container_name} should be initially stopped."
     )
 
-    # 2. Inject a servers.json with a pre_warm entry
     log.info("Injecting servers.json with a pre_warm server entry...")
     new_config = {
         "servers": [
@@ -246,7 +215,7 @@ async def test_java_server_pre_warm_startup(
                 "name": pre_warm_server_name,
                 "game_type": "java",
                 "proxy_port": pre_warm_proxy_port,
-                "container_name": container_name,  # Reuse existing container
+                "container_name": container_name,
                 "port": 25565,
                 "pre_warm": True,
             }
@@ -264,7 +233,6 @@ async def test_java_server_pre_warm_startup(
         await proxy_container.put_archive(b"/app", tar_stream.read())
         log.info(f"New servers.json injected into {proxy_container.id}.")
 
-        # 3. Send SIGHUP to proxy to reload config
         log.info(f"Sending SIGHUP to nether-bridge {proxy_container.id}...")
         await proxy_container.kill(signal=signal.SIGHUP)
         assert await wait_for_log_message(
@@ -274,7 +242,6 @@ async def test_java_server_pre_warm_startup(
             timeout=15,
         ), "Proxy did not log completion of configuration reload after SIGHUP."
 
-    # 4. Assert proxy logs pre-warm startup and container is running
     assert await wait_for_container_status(
         docker_manager.docker, container_name, "running", timeout=120
     ), f"Pre-warmed Java container {container_name} failed to start."
@@ -295,12 +262,10 @@ async def test_sighup_reloads_configuration(
     new_port = 19134
     old_java_port = 25565
 
-    # 1. Ensure proxy is ready and listening on old port
     assert await check_port_listening(PROXY_HOST, old_java_port), (
         f"Proxy not listening on old Java port {old_java_port} initially."
     )
 
-    # 2. Prepare new config to inject
     new_config = {
         "servers": [
             {
@@ -313,7 +278,6 @@ async def test_sighup_reloads_configuration(
         ]
     }
 
-    # 3. Inject new config file into nether-bridge container
     async with docker_manager.get_container("nether-bridge") as container:
         assert container is not None, "nether-bridge container not found"
         tar_stream = io.BytesIO()
@@ -326,11 +290,9 @@ async def test_sighup_reloads_configuration(
         await container.put_archive(b"/app", tar_stream.read())
         log.info(f"New servers.json injected into {container.id}.")
 
-        # 4. Send SIGHUP signal to the proxy
         await container.kill(signal=signal.SIGHUP)
         log.info(f"SIGHUP sent to nether-bridge container {container.id}.")
 
-    # 5. Assert proxy logs the reload completion
     assert await wait_for_log_message(
         docker_manager.docker,
         "nether-bridge",
@@ -338,11 +300,9 @@ async def test_sighup_reloads_configuration(
         timeout=15,
     ), "Proxy did not log completion of configuration reload after SIGHUP."
 
-    # 6. Verify new configuration is active and old one is not
     assert await check_port_listening(PROXY_HOST, new_port, protocol="udp"), (
         f"Proxy did not start listening on new port {new_port} after reload."
     )
-    # Give a brief moment for old listeners to close
     await asyncio.sleep(2)
     assert not await check_port_listening(PROXY_HOST, old_java_port), (
         "Proxy did not stop listening on old Java port after reload."
@@ -359,7 +319,6 @@ async def test_proxy_restarts_crashed_server(
     container_name = "mc-java"
     proxy_port = 25565
 
-    # 1. Trigger initial server startup via proxy connection
     log.info("Triggering initial Java server start via proxy.")
     client_reader, client_writer = None, None
     try:
@@ -391,7 +350,6 @@ async def test_proxy_restarts_crashed_server(
         timeout=10,
     ), "Proxy did not log server startup completion for initial start."
 
-    # 2. Manually stop (simulate crash) the server container
     log.info(f"Manually stopping container: {container_name} to crash.")
     async with docker_manager.get_container(container_name) as container:
         assert container is not None, f"{container_name} container not found."
@@ -402,7 +360,6 @@ async def test_proxy_restarts_crashed_server(
 
     await asyncio.sleep(1)
 
-    # 3. Attempt a new connection to trigger proxy restart
     log.info(f"Attempting new connection to trigger restart for {container_name}.")
     client_reader_2, client_writer_2 = None, None
     try:
@@ -423,7 +380,6 @@ async def test_proxy_restarts_crashed_server(
             client_writer_2.close()
             await client_writer_2.wait_closed()
 
-    # 4. Assert proxy logs its intent to restart the server
     assert await wait_for_log_message(
         docker_manager.docker,
         "nether-bridge",
@@ -431,7 +387,6 @@ async def test_proxy_restarts_crashed_server(
         timeout=10,
     ), "Proxy did not log that it was attempting to restart the server."
 
-    # 5. Assert server is running again
     assert await wait_for_container_status(
         docker_manager.docker, container_name, "running", timeout=120
     ), f"Proxy did not restart the crashed server {container_name}."
@@ -446,7 +401,6 @@ async def test_proxy_cleans_up_session_on_container_crash(
     container_name = "mc-java"
     proxy_port = 25565
 
-    # 1. Pre-warm the server and establish a connection
     log.info("Establishing connection to Java server for session cleanup test.")
     reader, writer = None, None
     try:
@@ -476,7 +430,6 @@ async def test_proxy_cleans_up_session_on_container_crash(
 
         log.info("Client connected and session established. Proxy is active.")
 
-        # 2. Forcibly kill the backend server container
         log.info(f"Forcibly killing container: {container_name}")
         async with docker_manager.get_container(container_name) as container:
             await container.kill()
@@ -486,13 +439,11 @@ async def test_proxy_cleans_up_session_on_container_crash(
 
         await asyncio.sleep(1)
 
-        # 3. Attempt to send data from client, which should now fail
         log.info("Attempting to send data to trigger proxy's error handling...")
         with pytest.raises((ConnectionResetError, BrokenPipeError, OSError)):
             writer.write(b"data_after_crash")
             await writer.drain()
 
-        # 4. Assert that the PROXY detected the error and logged the cleanup
         assert await wait_for_log_message(
             docker_manager.docker,
             "nether-bridge",

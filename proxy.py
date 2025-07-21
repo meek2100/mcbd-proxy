@@ -160,6 +160,7 @@ class AsyncProxy:
             if sc.pre_warm
         ]
         if pre_warm_tasks:
+            log.info("Pre-warming servers...", count=len(pre_warm_tasks))
             await asyncio.gather(*pre_warm_tasks, return_exceptions=True)
 
         self.server_tasks["listeners"] = [
@@ -430,7 +431,8 @@ class BedrockProtocol(asyncio.DatagramProtocol):
                 await asyncio.sleep(self.proxy.app_config.player_check_interval)
             except asyncio.CancelledError:
                 log.info(
-                    "UDP client monitor cancelled.", server=self.server_config.name
+                    "UDP client monitor cancelled.",
+                    server=self.server_config.name,
                 )
                 break
             idle_timeout = (
@@ -452,7 +454,9 @@ class BedrockProtocol(asyncio.DatagramProtocol):
             self.server_config.name, "c2s", len(data)
         )
 
-        if addr not in self.client_map:
+        client_info = self.client_map.get(addr)
+
+        if not client_info:
             max_sessions = self.proxy.app_config.max_concurrent_sessions
             if max_sessions != -1 and len(self.client_map) >= max_sessions:
                 log.warning("Max UDP sessions reached. Dropping packet.", client=addr)
@@ -462,30 +466,52 @@ class BedrockProtocol(asyncio.DatagramProtocol):
             self.proxy.metrics_manager.inc_active_connections(self.server_config.name)
             loop = asyncio.get_running_loop()
             task = loop.create_task(self._create_backend_connection(addr, data))
-            self.client_map[addr] = {"task": task, "last_activity": time.time()}
+            self.client_map[addr] = {
+                "task": task,
+                "last_activity": time.time(),
+                "protocol": None,
+                "queue": [],  # Queue for packets arriving during setup
+            }
         else:
-            self.client_map[addr]["last_activity"] = time.time()
-            backend_protocol = self.client_map[addr].get("protocol")
+            client_info["last_activity"] = time.time()
+            backend_protocol = client_info.get("protocol")
             if backend_protocol and backend_protocol.transport:
                 backend_protocol.transport.sendto(data)
+            else:
+                # FIX: Queue packets if backend isn't ready yet
+                client_info["queue"].append(data)
 
     async def _create_backend_connection(self, client_addr: tuple, initial_data: bytes):
         """
-        Establishes a backend UDP connection and sends initial data.
+        Establishes a backend UDP connection, sends initial data, and processes
+        any queued packets.
         """
         try:
             await self.proxy._ensure_server_started(self.server_config)
             loop = asyncio.get_running_loop()
             transport, protocol = await loop.create_datagram_endpoint(
                 lambda: BackendProtocol(
-                    self.proxy, self.server_config, self.transport, client_addr
+                    self.proxy,
+                    self.server_config,
+                    self.transport,
+                    client_addr,
                 ),
-                remote_addr=(self.server_config.host, self.server_config.port),
+                remote_addr=(
+                    self.server_config.host,
+                    self.server_config.port,
+                ),
             )
+
             if client_addr in self.client_map:
-                self.client_map[client_addr]["protocol"] = protocol
-            if transport and not transport.is_closing():
-                transport.sendto(initial_data)
+                client_info = self.client_map[client_addr]
+                client_info["protocol"] = protocol
+
+                # FIX: Process the queue now that the backend is ready
+                if transport and not transport.is_closing():
+                    transport.sendto(initial_data)
+                    for queued_data in client_info["queue"]:
+                        transport.sendto(queued_data)
+                    client_info["queue"].clear()
         except Exception:
             log.error(
                 "Error creating backend UDP connection.",
