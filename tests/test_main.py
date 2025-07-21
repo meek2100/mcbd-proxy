@@ -33,30 +33,29 @@ def test_main_runs_amain(mock_amain, mock_asyncio_run):
     """
     with patch("main.sys.argv", ["main.py"]):
         main()
-        # Verify that amain was called to create the coroutine,
-        # and that the result was passed to asyncio.run.
+        # Verify that amain was called to create the coroutine
         mock_amain.assert_called_once()
+        # Verify that the result was passed to asyncio.run
         mock_asyncio_run.assert_called_once_with(mock_amain.return_value)
 
 
 @pytest.mark.unit
+@patch("main._update_heartbeat", new_callable=AsyncMock)
 @patch("main.DockerManager")
 @patch("main.AsyncProxy")
 @patch("main.configure_logging")
-@patch("main.asyncio.create_task")
 @patch("main.load_app_config")
 @patch("main.asyncio.Event")
 async def test_amain_full_lifecycle(
     mock_event_class,
     mock_load_config,
-    mock_create_task,
     mock_configure_logging,
     mock_async_proxy_class,
     mock_docker_manager_class,
+    mock_update_heartbeat,
 ):
     """
-    Verify `amain` orchestrates startup, waits for a shutdown event,
-    and then properly cleans up all resources.
+    Verify `amain` orchestrates startup, waits, and then cleans up.
     """
     # GIVEN: A complete set of mocks for all dependencies
     mock_docker_instance = AsyncMock()
@@ -70,12 +69,6 @@ async def test_amain_full_lifecycle(
     mock_shutdown_event.wait.return_value = None
     mock_event_class.return_value = mock_shutdown_event
 
-    # Use real, inert tasks that belong to the test event loop
-    loop = asyncio.get_running_loop()
-    mock_heartbeat_task = loop.create_task(asyncio.sleep(0))
-    mock_proxy_task = loop.create_task(asyncio.sleep(0))
-    mock_create_task.side_effect = [mock_heartbeat_task, mock_proxy_task]
-
     # WHEN: The main amain() coroutine is run
     await amain()
 
@@ -84,10 +77,9 @@ async def test_amain_full_lifecycle(
     mock_async_proxy_class.assert_called_once_with(
         mock_app_config, mock_docker_instance
     )
-    assert mock_create_task.call_count == 2
+    mock_update_heartbeat.assert_awaited_once()
+    mock_proxy_instance.start.assert_awaited_once()
     mock_shutdown_event.wait.assert_awaited_once()
-    assert mock_heartbeat_task.cancelled()
-    assert mock_proxy_task.cancelled()
     mock_docker_instance.close.assert_awaited_once()
 
 
@@ -95,13 +87,14 @@ async def test_amain_full_lifecycle(
 async def test_shutdown_coroutine():
     """Verify the shutdown coroutine calls proxy shutdown and sets the event."""
     mock_proxy = AsyncMock()
-    # Use a MagicMock for the event as its methods are not async
+    # Use MagicMock for the event as its methods (is_set) are not async
     mock_event = MagicMock(spec=asyncio.Event)
     mock_event.is_set.return_value = False
     test_signal = signal.SIGINT
 
     await shutdown(test_signal, mock_proxy, mock_event)
 
+    # Verify that the proxy's shutdown is awaited and the event is set
     mock_proxy.shutdown.assert_awaited_once()
     mock_event.set.assert_called_once()
 
@@ -112,7 +105,7 @@ async def test_shutdown_coroutine():
 @patch("main.log")
 @patch("main.load_app_config")
 async def test_amain_exits_if_no_servers_loaded(
-    mock_load_config, mock_log, mock_sys_exit, mock_docker_manager
+    mock_load_config, mock_log, mock_sys_exit, mock_docker_manager_class
 ):
     """
     Tests that amain exits if the loaded config has no game servers.
@@ -130,7 +123,7 @@ async def test_amain_exits_if_no_servers_loaded(
     )
     mock_sys_exit.assert_called_once_with(1)
     # Ensure DockerManager was NOT initialized because the exit happened first
-    mock_docker_manager.assert_not_called()
+    mock_docker_manager_class.assert_not_called()
 
 
 @pytest.mark.unit
