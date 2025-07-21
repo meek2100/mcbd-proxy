@@ -11,12 +11,6 @@ from proxy import AsyncProxy
 pytestmark = pytest.mark.unit
 
 
-class StopTestLoop(Exception):
-    """Custom exception to cleanly break out of test loops."""
-
-    pass
-
-
 @pytest.fixture
 def mock_java_server_config():
     """Fixture for a mock Java GameServerConfig."""
@@ -180,23 +174,17 @@ async def test_proxy_data_flow(proxy, mock_tcp_streams):
 
 @pytest.mark.asyncio
 @patch("proxy.load_app_config")
-@patch("proxy.asyncio.create_task")
 @patch("proxy.asyncio.gather", new_callable=AsyncMock)
 async def test_reload_configuration(
-    mock_gather,
-    mock_create_task,
-    mock_load_config,
-    proxy,
-    mock_java_server_config,
+    mock_gather, mock_load_config, proxy, mock_java_server_config
 ):
     """Verify the configuration reload process."""
 
     # FIX: Define a side effect that consumes the coroutine to prevent warnings
     def consume_coro_side_effect(coro):
-        coro.close()  # Discard the coroutine to prevent warning
+        coro.close()
         return MagicMock()
 
-    mock_create_task.side_effect = consume_coro_side_effect
     old_listener_task = AsyncMock()
     proxy.server_tasks["listeners"] = [old_listener_task]
     tcp_session_task = asyncio.create_task(asyncio.sleep(0.1))
@@ -205,7 +193,11 @@ async def test_reload_configuration(
     mock_load_config.return_value = new_config
     proxy._ensure_all_servers_stopped_on_startup = AsyncMock()
 
-    await proxy._reload_configuration()
+    with patch(
+        "proxy.asyncio.create_task", side_effect=consume_coro_side_effect
+    ) as mock_create_task:
+        await proxy._reload_configuration()
+        mock_create_task.assert_called()
 
     assert not proxy.active_tcp_sessions
     tcp_session_task.cancel()
@@ -213,7 +205,6 @@ async def test_reload_configuration(
     assert mock_gather.await_count == 2
     mock_load_config.assert_called_once()
     proxy._ensure_all_servers_stopped_on_startup.assert_awaited_once()
-    mock_create_task.assert_called()
 
 
 @pytest.mark.asyncio
@@ -252,12 +243,12 @@ async def test_monitor_stops_idle_server(proxy, mock_docker_manager):
     )
     mock_docker_manager.is_container_running.return_value = True
 
-    # FIX: Allow one sleep to let the loop run once before stopping
-    with patch("asyncio.sleep", side_effect=[None, StopTestLoop]):
+    # FIX: Use asyncio.wait_for to test one loop iteration cleanly.
+    with patch("asyncio.sleep", new_callable=AsyncMock):
         try:
-            await proxy._monitor_server_activity()
-        except StopTestLoop:
-            pass
+            await asyncio.wait_for(proxy._monitor_server_activity(), timeout=0.1)
+        except asyncio.TimeoutError:
+            pass  # Expected exit condition for the test
 
     mock_docker_manager.stop_server.assert_awaited_once_with(
         container_name, proxy.app_config.server_stop_timeout
@@ -291,10 +282,10 @@ async def test_monitor_respects_per_server_idle_timeout(proxy, mock_docker_manag
     proxy._ready_events[server_config.name] = asyncio.Event()
     mock_docker_manager.is_container_running.return_value = True
 
-    with patch("asyncio.sleep", side_effect=[None, StopTestLoop]):
+    with patch("asyncio.sleep", new_callable=AsyncMock):
         try:
-            await proxy._monitor_server_activity()
-        except StopTestLoop:
+            await asyncio.wait_for(proxy._monitor_server_activity(), timeout=0.1)
+        except asyncio.TimeoutError:
             pass
 
     mock_docker_manager.stop_server.assert_awaited_once_with(
