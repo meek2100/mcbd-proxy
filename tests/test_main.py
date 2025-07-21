@@ -32,12 +32,15 @@ def test_main_runs_amain(mock_amain, mock_asyncio_run):
     """
     main()
     mock_amain.assert_called_once()
-    mock_asyncio_run.assert_called_once_with(mock_amain.return_value)
+    # FIX: Assert that run was called once, then check the argument type
+    mock_asyncio_run.assert_called_once()
+    args, _ = mock_asyncio_run.call_args
+    assert asyncio.iscoroutine(args[0])
 
 
 @pytest.mark.unit
-@patch("main.DockerManager")
-@patch("main.AsyncProxy")
+@patch("main.DockerManager", new_callable=AsyncMock)
+@patch("main.AsyncProxy", new_callable=AsyncMock)
 @patch("main.configure_logging")
 @patch("main.asyncio.create_task")
 @patch("main.load_app_config")
@@ -53,11 +56,9 @@ async def test_amain_orchestration_and_shutdown(
     """
     Verify `amain` orchestrates startup and that `finally` block cleans up.
     """
-    # FIX: Mock the event loop to avoid platform-specific errors on Windows
     mock_get_running_loop.return_value = MagicMock()
-
-    mock_docker_instance = mock_docker_manager_class.return_value = AsyncMock()
-    mock_proxy_instance = mock_async_proxy_class.return_value = AsyncMock()
+    mock_docker_instance = mock_docker_manager_class.return_value
+    mock_proxy_instance = mock_async_proxy_class.return_value
 
     mock_app_config = MagicMock()
     mock_app_config.game_servers = [MagicMock()]
@@ -83,7 +84,7 @@ async def test_amain_orchestration_and_shutdown(
 
 
 @pytest.mark.unit
-@patch("main.DockerManager")  # FIX: Mock DockerManager to prevent instantiation
+@patch("main.DockerManager", new_callable=AsyncMock)
 @patch("main.sys.exit")
 @patch("main.log")
 async def test_amain_exits_if_no_servers_loaded(
@@ -101,7 +102,6 @@ async def test_amain_exits_if_no_servers_loaded(
         "FATAL: No server configurations loaded. Exiting."
     )
     mock_sys_exit.assert_called_once_with(1)
-    # Assert DockerManager was NOT instantiated
     mock_docker_manager.assert_not_called()
 
 
