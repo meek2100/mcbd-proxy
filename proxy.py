@@ -1,6 +1,7 @@
 # proxy.py
 import asyncio
 import time
+from typing import Optional
 from unittest.mock import MagicMock
 
 import structlog
@@ -427,7 +428,8 @@ class BedrockProtocol(asyncio.DatagramProtocol):
         self.server_config = server_config
         self.transport = None
         self.client_map = {}
-        self.cleanup_task = asyncio.create_task(self._monitor_idle_clients())
+        # FIX: Defer task creation until the event loop is running.
+        self.cleanup_task: Optional[asyncio.Task] = None
         super().__init__()
 
     def _cleanup_client(self, addr: tuple):
@@ -461,6 +463,8 @@ class BedrockProtocol(asyncio.DatagramProtocol):
 
     def connection_made(self, transport: asyncio.DatagramTransport):
         self.transport = transport
+        # FIX: Start the background task here, where a loop is guaranteed.
+        self.cleanup_task = asyncio.create_task(self._monitor_idle_clients())
 
     def datagram_received(self, data: bytes, addr: tuple):
         """Handles incoming datagrams from clients."""
@@ -535,7 +539,8 @@ class BedrockProtocol(asyncio.DatagramProtocol):
     def connection_lost(self, exc):
         if exc:
             log.error("UDP listener connection lost.", exc=exc)
-        self.cleanup_task.cancel()
+        if self.cleanup_task:
+            self.cleanup_task.cancel()
         for addr in list(self.client_map.keys()):
             self._cleanup_client(addr)
 

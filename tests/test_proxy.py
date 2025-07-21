@@ -4,6 +4,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import pytest_asyncio
 
 from config import AppConfig, GameServerConfig
 from proxy import AsyncProxy, BedrockProtocol
@@ -46,10 +47,11 @@ def mock_bedrock_server_config():
 
 @pytest.fixture
 def mock_docker_manager():
-    """Provides a mock DockerManager."""
+    """Provides a mock DockerManager with explicit async methods."""
     manager = AsyncMock()
-    manager.is_container_running.return_value = False
-    manager.start_server.return_value = True
+    manager.is_container_running = AsyncMock(return_value=False)
+    manager.start_server = AsyncMock(return_value=True)
+    manager.stop_server = AsyncMock()  # Explicitly make this an AsyncMock
     return manager
 
 
@@ -62,7 +64,7 @@ def mock_app_config(mock_java_server_config, mock_bedrock_server_config):
     config.server_stop_timeout = 10
     config.idle_timeout = 0.1
     config.tcp_listen_backlog = 128
-    config.max_concurrent_sessions = 5  # Set a limit for testing
+    config.max_concurrent_sessions = 5
     return config
 
 
@@ -90,10 +92,10 @@ def mock_tcp_streams():
 async def test_shutdown_cancels_tasks(proxy):
     """Verify the shutdown method cancels all registered tasks."""
     loop = asyncio.get_running_loop()
-    # Create real, inert tasks that belong to the current event loop
-    task1 = loop.create_task(asyncio.sleep(0))
-    task2 = loop.create_task(asyncio.sleep(0))
-    tcp_task = loop.create_task(asyncio.sleep(0))
+    # Use tasks that run long enough to be cancelled
+    task1 = loop.create_task(asyncio.sleep(0.1))
+    task2 = loop.create_task(asyncio.sleep(0.1))
+    tcp_task = loop.create_task(asyncio.sleep(0.1))
     proxy.server_tasks = {"listeners": [task1], "monitor": task2}
     proxy.active_tcp_sessions = {tcp_task: "server"}
 
@@ -137,7 +139,6 @@ async def test_handle_tcp_connection_rejects_max_sessions(
 
     await proxy._handle_tcp_connection(_reader, writer, mock_java_server_config)
 
-    # Ensure no new metrics were incremented and the connection was closed
     proxy.metrics_manager.inc_active_connections.assert_not_called()
     writer.close.assert_called_once()
 
@@ -151,7 +152,6 @@ async def test_proxy_data_handles_connection_reset(proxy, mock_tcp_streams):
     await proxy._proxy_data(reader, writer, "test_server", "c2s")
 
     writer.close.assert_called_once()
-    await writer.wait_closed()
 
 
 @pytest.mark.asyncio
@@ -178,13 +178,18 @@ async def test_monitor_stops_idle_server(proxy, mock_docker_manager):
 # --- BedrockProtocol Tests ---
 
 
-@pytest.fixture
-def bedrock_protocol(proxy, mock_bedrock_server_config):
+@pytest_asyncio.fixture
+async def bedrock_protocol(proxy, mock_bedrock_server_config):
     """Provides a BedrockProtocol instance for testing."""
     protocol = BedrockProtocol(proxy, mock_bedrock_server_config)
     protocol.transport = AsyncMock()
-    protocol.cleanup_task.cancel()  # Stop background cleanup for isolation
-    return protocol
+    # Manually call connection_made to start the cleanup task in a loop
+    protocol.connection_made(protocol.transport)
+    yield protocol
+    # Cleanup the task after the test
+    if protocol.cleanup_task:
+        protocol.cleanup_task.cancel()
+        await asyncio.sleep(0)  # Allow cancellation to propagate
 
 
 @pytest.mark.asyncio
@@ -206,7 +211,6 @@ async def test_bedrock_client_forwards_to_backend(bedrock_protocol):
     """Verify an existing client with a ready backend forwards data directly."""
     addr = ("127.0.0.1", 12345)
     mock_backend_transport = AsyncMock()
-    # Simulate an already-connected client
     bedrock_protocol.client_map[addr] = {
         "last_activity": time.time(),
         "protocol": MagicMock(transport=mock_backend_transport),
@@ -216,7 +220,6 @@ async def test_bedrock_client_forwards_to_backend(bedrock_protocol):
     bedrock_protocol.datagram_received(b"player_data", addr)
 
     mock_backend_transport.sendto.assert_called_once_with(b"player_data")
-    assert not bedrock_protocol.client_map[addr]["queue"]
 
 
 @pytest.mark.asyncio

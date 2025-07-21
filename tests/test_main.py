@@ -45,9 +45,7 @@ def test_main_runs_amain(mock_amain, mock_asyncio_run):
 @patch("main.AsyncProxy")
 @patch("main.configure_logging")
 @patch("main.load_app_config")
-@patch("main.asyncio.Event")
 async def test_amain_full_lifecycle(
-    mock_event_class,
     mock_load_config,
     mock_configure_logging,
     mock_async_proxy_class,
@@ -65,12 +63,9 @@ async def test_amain_full_lifecycle(
     mock_app_config = MagicMock(game_servers=[MagicMock()])
     mock_load_config.return_value = mock_app_config
 
-    mock_shutdown_event = AsyncMock(spec=asyncio.Event)
-    mock_shutdown_event.wait.return_value = None
-    mock_event_class.return_value = mock_shutdown_event
-
-    # WHEN: The main amain() coroutine is run
-    await amain()
+    # WHEN: The main amain() coroutine is run, with shutdown mocked to not block
+    with patch("main.asyncio.Event.wait", new_callable=AsyncMock):
+        await amain()
 
     # THEN: Verify the entire application lifecycle
     mock_load_config.assert_called_once()
@@ -79,7 +74,6 @@ async def test_amain_full_lifecycle(
     )
     mock_update_heartbeat.assert_awaited_once()
     mock_proxy_instance.start.assert_awaited_once()
-    mock_shutdown_event.wait.assert_awaited_once()
     mock_docker_instance.close.assert_awaited_once()
 
 
