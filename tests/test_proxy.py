@@ -48,10 +48,10 @@ def mock_bedrock_server_config():
 @pytest.fixture
 def mock_docker_manager():
     """Provides a mock DockerManager with explicit async methods."""
-    manager = AsyncMock()
+    manager = MagicMock()
     manager.is_container_running = AsyncMock(return_value=False)
     manager.start_server = AsyncMock(return_value=True)
-    manager.stop_server = AsyncMock()  # Explicitly make this an AsyncMock
+    manager.stop_server = AsyncMock()
     return manager
 
 
@@ -164,7 +164,10 @@ async def test_monitor_stops_idle_server(proxy, mock_docker_manager):
     )
     mock_docker_manager.is_container_running.return_value = True
 
-    with patch("asyncio.sleep", side_effect=StopTestLoop()):
+    # FIX: Allow the loop to run once before stopping it.
+    # The first sleep completes, the logic runs, and the second sleep raises
+    # the exception to exit the test.
+    with patch("asyncio.sleep", side_effect=[None, StopTestLoop()]):
         try:
             await proxy._monitor_server_activity()
         except StopTestLoop:

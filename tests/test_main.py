@@ -26,20 +26,23 @@ def test_main_runs_health_check(mock_health_check):
 
 @pytest.mark.unit
 @patch("main.asyncio.run")
-@patch("main.amain")
+@patch("main.amain", new_callable=AsyncMock)
 def test_main_runs_amain(mock_amain, mock_asyncio_run):
     """
-    Tests that the main function calls asyncio.run with amain.
+    Tests that the main function calls asyncio.run with the amain coroutine.
     """
     with patch("main.sys.argv", ["main.py"]):
         main()
         # Verify that amain was called to create the coroutine
-        mock_amain.assert_called_once()
-        # Verify that the result was passed to asyncio.run
-        mock_asyncio_run.assert_called_once_with(mock_amain.return_value)
+        mock_amain.assert_awaited_once()
+        # Verify that the coroutine object was passed to asyncio.run
+        mock_asyncio_run.assert_called_once()
+        assert asyncio.iscoroutine(mock_asyncio_run.call_args.args[0])
 
 
 @pytest.mark.unit
+@patch("main.sys.platform", "linux")  # Mock platform to test signal handlers
+@patch("main.asyncio.get_running_loop")
 @patch("main.asyncio.create_task")
 @patch("main.DockerManager")
 @patch("main.AsyncProxy")
@@ -51,6 +54,7 @@ async def test_amain_full_lifecycle(
     mock_async_proxy_class,
     mock_docker_manager_class,
     mock_create_task,
+    mock_get_loop,
 ):
     """
     Verify `amain` orchestrates startup, waits, and then cleans up.
@@ -58,14 +62,24 @@ async def test_amain_full_lifecycle(
     # GIVEN: A complete set of mocks for all dependencies
     mock_docker_instance = AsyncMock()
     mock_docker_manager_class.return_value = mock_docker_instance
-    mock_proxy_instance = AsyncMock()
+
+    # FIX: Use a MagicMock for the proxy and attach AsyncMocks for async methods.
+    # This prevents `schedule_reload` (a sync method) from being an AsyncMock,
+    # which would cause a TypeError with `add_signal_handler`.
+    mock_proxy_instance = MagicMock()
+    mock_proxy_instance.start = AsyncMock()
+    mock_proxy_instance.shutdown = AsyncMock()
     mock_async_proxy_class.return_value = mock_proxy_instance
+
     mock_app_config = MagicMock(game_servers=[MagicMock()])
     mock_load_config.return_value = mock_app_config
 
-    mock_heartbeat_task = MagicMock(spec=asyncio.Task)
-    mock_proxy_task = MagicMock(spec=asyncio.Task)
+    mock_heartbeat_task = AsyncMock(spec=asyncio.Task)
+    mock_proxy_task = AsyncMock(spec=asyncio.Task)
     mock_create_task.side_effect = [mock_heartbeat_task, mock_proxy_task]
+
+    mock_loop = MagicMock()
+    mock_get_loop.return_value = mock_loop
 
     # WHEN: The main amain() coroutine is run, with shutdown mocked to not block
     with patch("main.asyncio.Event.wait", new_callable=AsyncMock):
