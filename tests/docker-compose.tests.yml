@@ -28,7 +28,7 @@ services:
       - NB_INITIAL_SERVER_QUERY_DELAY=2
       - NB_HEALTHCHECK_STALE_THRESHOLD=10
       - NB_HEARTBEAT_INTERVAL=5
-    command: sh -c "echo 'Container is running and waiting...' && tail -f /dev/null"
+    command: --generate-test-config python main.py
 
   mc-bedrock:
     build:
