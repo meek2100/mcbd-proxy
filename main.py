@@ -123,7 +123,7 @@ async def amain():
     if sys.platform != "win32":
         loop = asyncio.get_running_loop()
 
-        # FIX: Use a defined function to avoid lambda late-binding issues
+        # Use a defined function to avoid lambda late-binding issues
         def create_shutdown_task(s):
             return lambda: asyncio.create_task(
                 shutdown(s, proxy_server, shutdown_event)
@@ -139,6 +139,7 @@ async def amain():
     proxy_task = asyncio.create_task(proxy_server.start())
 
     log.info("Nether-bridge is running. Waiting for shutdown signal...")
+    # This is the critical fix: Wait here until a signal handler sets the event.
     await shutdown_event.wait()
     log.info("Shutdown event received, cleaning up tasks.")
 
