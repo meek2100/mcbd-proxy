@@ -189,7 +189,8 @@ async def bedrock_protocol(proxy, mock_bedrock_server_config):
     # Cleanup the task after the test
     if protocol.cleanup_task:
         protocol.cleanup_task.cancel()
-        await asyncio.sleep(0)  # Allow cancellation to propagate
+        # Allow cancellation to propagate
+        await asyncio.sleep(0)
 
 
 @pytest.mark.asyncio
@@ -203,7 +204,9 @@ async def test_bedrock_new_client_creates_session(bedrock_protocol, proxy):
 
     assert addr in bedrock_protocol.client_map
     proxy.metrics_manager.inc_active_connections.assert_called_once()
-    mock_create_backend.assert_awaited_once_with(addr, b"ping")
+    # The method is NOT awaited, it's run in a background task.
+    # We just need to ensure it was CALLED.
+    mock_create_backend.assert_called_once_with(addr, b"ping")
 
 
 @pytest.mark.asyncio
@@ -211,9 +214,12 @@ async def test_bedrock_client_forwards_to_backend(bedrock_protocol):
     """Verify an existing client with a ready backend forwards data directly."""
     addr = ("127.0.0.1", 12345)
     mock_backend_transport = AsyncMock()
+    # This mock needs its sendto method to also be an AsyncMock to avoid warnings
+    mock_backend_protocol = MagicMock(transport=mock_backend_transport)
+
     bedrock_protocol.client_map[addr] = {
         "last_activity": time.time(),
-        "protocol": MagicMock(transport=mock_backend_transport),
+        "protocol": mock_backend_protocol,
         "queue": [],
     }
 
