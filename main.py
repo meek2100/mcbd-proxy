@@ -68,13 +68,14 @@ async def _update_heartbeat(app_config, shutdown_event: asyncio.Event):
             current_time = int(time.time())
             HEARTBEAT_FILE.write_text(str(current_time))
             log.debug("Heartbeat updated.", timestamp=current_time)
-            # Shield the wait so it can't be cancelled directly
             await asyncio.wait_for(
-                asyncio.shield(shutdown_event.wait()),
+                shutdown_event.wait(),
                 timeout=app_config.healthcheck_heartbeat_interval,
             )
         except asyncio.TimeoutError:
-            continue  # This is the normal loop condition
+            continue
+        except asyncio.CancelledError:
+            break
         except Exception:
             log.error("Failed to update heartbeat file.", exc_info=True)
             await asyncio.sleep(app_config.healthcheck_heartbeat_interval)
@@ -82,8 +83,9 @@ async def _update_heartbeat(app_config, shutdown_event: asyncio.Event):
 
 async def shutdown(
     sig: Optional[signal.Signals],
-    proxy_server: Optional[AsyncProxy],
+    proxy_server: AsyncProxy,
     shutdown_event: asyncio.Event,
+    tasks: list,
 ):
     """Gracefully shutdown tasks and set the shutdown event."""
     if shutdown_event.is_set():
@@ -93,9 +95,15 @@ async def shutdown(
         "Shutdown signal received, initiating graceful shutdown...",
         signal=sig.name if sig else "UNKNOWN",
     )
-    if proxy_server:
-        await proxy_server.shutdown()
     shutdown_event.set()
+
+    # Give heartbeat a moment to stop
+    await asyncio.sleep(0.01)
+
+    await proxy_server.shutdown()
+    for task in tasks:
+        if not task.done():
+            task.cancel()
 
 
 async def amain():
@@ -118,40 +126,37 @@ async def amain():
     shutdown_event = asyncio.Event()
     docker_manager = DockerManager(app_config)
     proxy_server = AsyncProxy(app_config, docker_manager)
+    main_tasks = []
 
-    # Register signal handlers only on non-Windows platforms
+    # Use a defined function to avoid lambda late-binding issues
+    def create_shutdown_handler(s):
+        return lambda: asyncio.create_task(
+            shutdown(s, proxy_server, shutdown_event, main_tasks)
+        )
+
+    loop = asyncio.get_running_loop()
     if sys.platform != "win32":
-        loop = asyncio.get_running_loop()
-
-        # Use a defined function to avoid lambda late-binding issues
-        def create_shutdown_task(s):
-            return lambda: asyncio.create_task(
-                shutdown(s, proxy_server, shutdown_event)
-            )
-
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, create_shutdown_task(sig))
+            loop.add_signal_handler(sig, create_shutdown_handler(sig))
         if hasattr(signal, "SIGHUP"):
             loop.add_signal_handler(signal.SIGHUP, proxy_server.schedule_reload)
 
-    # Start background tasks
-    heartbeat_task = asyncio.create_task(_update_heartbeat(app_config, shutdown_event))
-    proxy_task = asyncio.create_task(proxy_server.start())
+    try:
+        heartbeat_task = asyncio.create_task(
+            _update_heartbeat(app_config, shutdown_event)
+        )
+        proxy_task = asyncio.create_task(proxy_server.start())
+        main_tasks.extend([heartbeat_task, proxy_task])
 
-    log.info("Nether-bridge is running. Waiting for shutdown signal...")
-    # This is the critical fix: Wait here until a signal handler sets the event.
-    await shutdown_event.wait()
-    log.info("Shutdown event received, cleaning up tasks.")
+        log.info("Nether-bridge is running. Waiting for shutdown signal...")
+        await shutdown_event.wait()
+        log.info("Shutdown event received, cleaning up tasks.")
 
-    # Clean up tasks
-    for task in [heartbeat_task, proxy_task]:
-        if not task.done():
-            task.cancel()
-    await asyncio.gather(heartbeat_task, proxy_task, return_exceptions=True)
-
-    log.debug("Closing Docker manager session.")
-    await docker_manager.close()
-    log.info("Shutdown complete.")
+    finally:
+        await asyncio.gather(*main_tasks, return_exceptions=True)
+        log.debug("Closing Docker manager session.")
+        await docker_manager.close()
+        log.info("Shutdown complete.")
 
 
 def health_check():
@@ -190,12 +195,10 @@ def main():
     else:
         try:
             asyncio.run(amain())
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, asyncio.CancelledError):
             log.info("Application interrupted by user.")
-        except Exception as e:
-            log.critical(
-                "Unhandled exception in main application loop.", exc_info=True, error=e
-            )
+        except Exception:
+            log.critical("Unhandled exception in main application loop.", exc_info=True)
             sys.exit(1)
         finally:
             if HEARTBEAT_FILE.exists():

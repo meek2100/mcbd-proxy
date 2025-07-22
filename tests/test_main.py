@@ -31,26 +31,16 @@ def test_main_runs_amain(mock_amain, mock_asyncio_run):
     """
     Tests that the main function calls asyncio.run with the amain coroutine.
     """
-    # GIVEN a mock for the amain coroutine function
-    # The function call `amain()` should return a coroutine object
-    mock_coroutine = asyncio.Future()
-    mock_amain.return_value = mock_coroutine
-
-    # WHEN the main function is called
     with patch("main.sys.argv", ["main.py"]):
         main()
-
-    # THEN verify amain was called to create the coroutine
     mock_amain.assert_called_once()
-    # THEN verify that the exact coroutine object was passed to asyncio.run
-    mock_asyncio_run.assert_called_once_with(mock_coroutine)
+    mock_asyncio_run.assert_called_once_with(mock_amain.return_value)
 
 
 @pytest.mark.unit
 @patch("main.sys.platform", "linux")
-@patch("main.asyncio.gather", new_callable=AsyncMock)  # FIX: Mock gather
-@patch("main.asyncio.get_running_loop")
-@patch("main.asyncio.create_task")
+@patch("main.shutdown", new_callable=AsyncMock)
+@patch("main.asyncio.Event.wait", new_callable=AsyncMock)
 @patch("main.DockerManager")
 @patch("main.AsyncProxy")
 @patch("main.configure_logging")
@@ -60,48 +50,25 @@ async def test_amain_full_lifecycle(
     mock_configure_logging,
     mock_async_proxy_class,
     mock_docker_manager_class,
-    mock_create_task,
-    mock_get_loop,
-    mock_gather,  # Add the new mock to the function signature
+    mock_event_wait,
+    mock_shutdown,
 ):
     """
     Verify `amain` orchestrates startup, waits, and then cleans up.
     """
-    # GIVEN
     mock_docker_instance = AsyncMock()
     mock_docker_manager_class.return_value = mock_docker_instance
-
-    mock_proxy_instance = MagicMock()
-    mock_proxy_instance.start = AsyncMock()
-    mock_proxy_instance.shutdown = AsyncMock()
+    mock_proxy_instance = AsyncMock()
     mock_async_proxy_class.return_value = mock_proxy_instance
-
     mock_app_config = MagicMock(game_servers=[MagicMock()])
     mock_load_config.return_value = mock_app_config
 
-    mock_heartbeat_task = MagicMock(spec=asyncio.Task)
-    mock_proxy_task = MagicMock(spec=asyncio.Task)
-    mock_create_task.side_effect = [mock_heartbeat_task, mock_proxy_task]
+    await amain()
 
-    mock_loop = MagicMock()
-    mock_get_loop.return_value = mock_loop
-
-    # WHEN
-    with patch("main.asyncio.Event.wait", new_callable=AsyncMock):
-        await amain()
-
-    # THEN
     mock_load_config.assert_called_once()
-    mock_async_proxy_class.assert_called_once_with(
-        mock_app_config, mock_docker_instance
-    )
-    assert mock_create_task.call_count == 2
-    mock_heartbeat_task.cancel.assert_called_once()
-    mock_proxy_task.cancel.assert_called_once()
-    # Verify that the cleanup logic tried to gather the tasks
-    mock_gather.assert_awaited_once_with(
-        mock_heartbeat_task, mock_proxy_task, return_exceptions=True
-    )
+    mock_async_proxy_class.assert_called_once()
+    mock_proxy_instance.start.assert_awaited_once()
+    mock_event_wait.assert_awaited_once()
     mock_docker_instance.close.assert_awaited_once()
 
 
@@ -111,12 +78,15 @@ async def test_shutdown_coroutine():
     mock_proxy = AsyncMock()
     mock_event = MagicMock(spec=asyncio.Event)
     mock_event.is_set.return_value = False
+    mock_task = MagicMock(spec=asyncio.Task)
+    mock_task.done.return_value = False
     test_signal = signal.SIGINT
 
-    await shutdown(test_signal, mock_proxy, mock_event)
+    await shutdown(test_signal, mock_proxy, mock_event, [mock_task])
 
     mock_proxy.shutdown.assert_awaited_once()
     mock_event.set.assert_called_once()
+    mock_task.cancel.assert_called_once()
 
 
 @pytest.mark.unit
