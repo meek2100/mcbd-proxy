@@ -31,16 +31,23 @@ def test_main_runs_amain(mock_amain, mock_asyncio_run):
     """
     Tests that the main function calls asyncio.run with the amain coroutine.
     """
+    # GIVEN a mock for the amain coroutine function
+    mock_amain.return_value = asyncio.Future()  # Return a dummy awaitable
+
+    # WHEN the main function is called
     with patch("main.sys.argv", ["main.py"]):
         main()
+
+    # THEN verify that amain was called and its result was passed to asyncio.run
     mock_amain.assert_called_once()
     mock_asyncio_run.assert_called_once_with(mock_amain.return_value)
 
 
 @pytest.mark.unit
 @patch("main.sys.platform", "linux")
-@patch("main.shutdown", new_callable=AsyncMock)
-@patch("main.asyncio.Event.wait", new_callable=AsyncMock)
+@patch("main.asyncio.gather", new_callable=AsyncMock)
+@patch("main.asyncio.get_running_loop")
+@patch("main.asyncio.create_task")
 @patch("main.DockerManager")
 @patch("main.AsyncProxy")
 @patch("main.configure_logging")
@@ -50,25 +57,42 @@ async def test_amain_full_lifecycle(
     mock_configure_logging,
     mock_async_proxy_class,
     mock_docker_manager_class,
-    mock_event_wait,
-    mock_shutdown,
+    mock_create_task,
+    mock_get_loop,
+    mock_gather,
 ):
     """
     Verify `amain` orchestrates startup, waits, and then cleans up.
     """
+    # GIVEN a mock loop where add_signal_handler is also a mock
+    mock_loop = MagicMock()
+    mock_loop.add_signal_handler = MagicMock()
+    mock_get_loop.return_value = mock_loop
+
     mock_docker_instance = AsyncMock()
     mock_docker_manager_class.return_value = mock_docker_instance
+
     mock_proxy_instance = AsyncMock()
     mock_async_proxy_class.return_value = mock_proxy_instance
+
     mock_app_config = MagicMock(game_servers=[MagicMock()])
     mock_load_config.return_value = mock_app_config
 
-    await amain()
+    mock_heartbeat_task = MagicMock(spec=asyncio.Task)
+    mock_proxy_task = MagicMock(spec=asyncio.Task)
+    main_tasks_list = [mock_heartbeat_task, mock_proxy_task]
+    mock_create_task.side_effect = main_tasks_list
 
+    # WHEN amain is run and the shutdown event is immediately triggered
+    with patch("main.asyncio.Event.wait", new_callable=AsyncMock):
+        await amain()
+
+    # THEN verify the entire application lifecycle
     mock_load_config.assert_called_once()
     mock_async_proxy_class.assert_called_once()
+    assert mock_loop.add_signal_handler.call_count == 3  # SIGINT, SIGTERM, SIGHUP
     mock_proxy_instance.start.assert_awaited_once()
-    mock_event_wait.assert_awaited_once()
+    mock_gather.assert_awaited_once_with(*main_tasks_list, return_exceptions=True)
     mock_docker_instance.close.assert_awaited_once()
 
 
