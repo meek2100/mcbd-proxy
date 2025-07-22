@@ -68,16 +68,19 @@ async def _update_heartbeat(app_config, shutdown_event: asyncio.Event):
             current_time = int(time.time())
             HEARTBEAT_FILE.write_text(str(current_time))
             log.debug("Heartbeat updated.", timestamp=current_time)
+            # Shield the wait so it can't be cancelled directly
             await asyncio.wait_for(
-                shutdown_event.wait(),
+                asyncio.shield(shutdown_event.wait()),
                 timeout=app_config.healthcheck_heartbeat_interval,
             )
         except asyncio.TimeoutError:
-            continue
+            continue  # This is the normal loop condition
         except asyncio.CancelledError:
+            log.debug("Heartbeat task cancelled.")
             break
         except Exception:
             log.error("Failed to update heartbeat file.", exc_info=True)
+            # Prevent a fast busy-loop on persistent file errors
             await asyncio.sleep(app_config.healthcheck_heartbeat_interval)
 
 
@@ -85,7 +88,7 @@ async def shutdown(
     sig: Optional[signal.Signals],
     proxy_server: AsyncProxy,
     shutdown_event: asyncio.Event,
-    tasks: list,
+    tasks_to_cancel: list,
 ):
     """Gracefully shutdown tasks and set the shutdown event."""
     if shutdown_event.is_set():
@@ -95,13 +98,18 @@ async def shutdown(
         "Shutdown signal received, initiating graceful shutdown...",
         signal=sig.name if sig else "UNKNOWN",
     )
+    # First, stop new connections and trigger cleanup loops
     shutdown_event.set()
 
-    # Give heartbeat a moment to stop
+    # Allow a brief moment for loops to break
     await asyncio.sleep(0.01)
 
-    await proxy_server.shutdown()
-    for task in tasks:
+    # Shut down the proxy server itself (closes listeners, sessions)
+    if proxy_server:
+        await proxy_server.shutdown()
+
+    # Cancel the main background tasks managed by amain
+    for task in tasks_to_cancel:
         if not task.done():
             task.cancel()
 
@@ -128,20 +136,22 @@ async def amain():
     proxy_server = AsyncProxy(app_config, docker_manager)
     main_tasks = []
 
-    # Use a defined function to avoid lambda late-binding issues
+    # This handler needs access to the tasks list to cancel them
     def create_shutdown_handler(s):
         return lambda: asyncio.create_task(
             shutdown(s, proxy_server, shutdown_event, main_tasks)
         )
 
-    loop = asyncio.get_running_loop()
+    # Register signal handlers only on non-Windows platforms
     if sys.platform != "win32":
+        loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, create_shutdown_handler(sig))
         if hasattr(signal, "SIGHUP"):
             loop.add_signal_handler(signal.SIGHUP, proxy_server.schedule_reload)
 
     try:
+        # Start background tasks
         heartbeat_task = asyncio.create_task(
             _update_heartbeat(app_config, shutdown_event)
         )
@@ -153,6 +163,7 @@ async def amain():
         log.info("Shutdown event received, cleaning up tasks.")
 
     finally:
+        # Final cleanup gather ensures all tasks are complete before exit
         await asyncio.gather(*main_tasks, return_exceptions=True)
         log.debug("Closing Docker manager session.")
         await docker_manager.close()
@@ -198,6 +209,7 @@ def main():
         except (KeyboardInterrupt, asyncio.CancelledError):
             log.info("Application interrupted by user.")
         except Exception:
+            # This will catch any unexpected error during amain() startup
             log.critical("Unhandled exception in main application loop.", exc_info=True)
             sys.exit(1)
         finally:
