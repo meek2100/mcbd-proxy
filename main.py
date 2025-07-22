@@ -60,11 +60,13 @@ class Application:
         self.shutdown_event = asyncio.Event()
         self.tasks: List[asyncio.Task] = []
         self.proxy_server: Optional[AsyncProxy] = None
+        self.docker_manager: Optional[DockerManager] = None
 
     def _setup_signal_handlers(self):
         """Sets up signal handlers for graceful shutdown and reload."""
         if sys.platform == "win32":
-            return  # Signal handlers are not supported on Windows
+            log.warning("Signal handlers are not supported on Windows.")
+            return
 
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -87,7 +89,7 @@ class Application:
         )
         self.shutdown_event.set()
 
-        # Allow heartbeat and other loops to exit cleanly
+        # Allow a brief moment for loops to break
         await asyncio.sleep(0.01)
 
         if self.proxy_server:
@@ -106,8 +108,8 @@ class Application:
             log.critical("FATAL: No server configurations loaded. Exiting.")
             sys.exit(1)
 
-        docker_manager = DockerManager(app_config)
-        self.proxy_server = AsyncProxy(app_config, docker_manager)
+        self.docker_manager = DockerManager(app_config)
+        self.proxy_server = AsyncProxy(app_config, self.docker_manager)
         self._setup_signal_handlers()
 
         try:
@@ -118,37 +120,48 @@ class Application:
             proxy_task = asyncio.create_task(self.proxy_server.start())
             self.tasks.extend([heartbeat_task, proxy_task])
 
-            # This is the main application loop. It runs until a task fails or
-            # shutdown is called. This is more robust than waiting on an event.
-            await asyncio.gather(*self.tasks)
+            # This is the main application loop. It waits for any task to
+            # complete (or fail), which will then trigger a clean shutdown.
+            done, pending = await asyncio.wait(
+                self.tasks, return_when=asyncio.FIRST_COMPLETED
+            )
+
+            # If a task failed, log its exception
+            for task in done:
+                if task.exception():
+                    log.error(
+                        "A critical task failed, initiating shutdown.",
+                        task=task.get_name(),
+                        exc_info=task.exception(),
+                    )
+            # Ensure pending tasks are cancelled before shutdown
+            for task in pending:
+                task.cancel()
 
         except asyncio.CancelledError:
             log.info("Main application task cancelled.")
         finally:
             log.info("Cleaning up resources...")
-            await docker_manager.close()
+            if self.docker_manager:
+                await self.docker_manager.close()
             log.info("Shutdown complete.")
 
 
 async def _update_heartbeat(app_config, shutdown_event: asyncio.Event):
-    """
-    Periodically writes a timestamp to the heartbeat file.
-    """
-    log.debug("Starting heartbeat update loop.")
+    """Periodically writes a timestamp to the heartbeat file."""
+    interval = app_config.healthcheck_heartbeat_interval
     while not shutdown_event.is_set():
         try:
             HEARTBEAT_FILE.write_text(str(int(time.time())))
-            await asyncio.wait_for(
-                shutdown_event.wait(),
-                timeout=app_config.healthcheck_heartbeat_interval,
-            )
+            await asyncio.wait_for(shutdown_event.wait(), timeout=interval)
         except asyncio.TimeoutError:
             continue
         except asyncio.CancelledError:
             break
         except Exception:
             log.error("Failed to update heartbeat file.", exc_info=True)
-            await asyncio.sleep(app_config.healthcheck_heartbeat_interval)
+            # Prevent a fast busy-loop on persistent file errors
+            await asyncio.sleep(interval)
 
 
 def health_check():

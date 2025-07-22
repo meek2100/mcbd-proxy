@@ -9,8 +9,20 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-# Import the class and functions to be tested
+# Import only what is used
 from main import Application, main
+
+
+@pytest.fixture
+def mock_complete_app_config():
+    """A complete mock of AppConfig with necessary integer values."""
+    config = MagicMock()
+    config.game_servers = [MagicMock()]
+    config.log_level = "DEBUG"
+    config.log_format = "console"
+    config.healthcheck_heartbeat_interval = 15
+    config.healthcheck_stale_threshold = 60
+    return config
 
 
 @pytest.mark.unit
@@ -33,26 +45,26 @@ def test_main_runs_application(mock_app_run):
 
 @pytest.mark.asyncio
 @patch("main.sys.platform", "linux")
+@patch("main.hasattr", return_value=True)  # Ensure SIGHUP is detected
 @patch("main.asyncio.get_running_loop")
 @patch("main.DockerManager")
 @patch("main.AsyncProxy")
-@patch("main.configure_logging")
 @patch("main.load_app_config")
 async def test_application_lifecycle(
     mock_load_config,
-    mock_configure_logging,
     mock_async_proxy_class,
     mock_docker_manager_class,
     mock_get_loop,
+    mock_hasattr,
+    mock_complete_app_config,
 ):
     """Verify Application.run orchestrates startup, task management, and cleanup."""
     # GIVEN
+    mock_load_config.return_value = mock_complete_app_config
     mock_docker_instance = AsyncMock()
     mock_docker_manager_class.return_value = mock_docker_instance
     mock_proxy_instance = AsyncMock()
     mock_async_proxy_class.return_value = mock_proxy_instance
-    mock_app_config = MagicMock(game_servers=[MagicMock()])
-    mock_load_config.return_value = mock_app_config
 
     mock_loop = MagicMock()
     mock_loop.add_signal_handler = MagicMock()
@@ -60,14 +72,15 @@ async def test_application_lifecycle(
 
     app = Application()
 
-    # WHEN we run the application but immediately cancel the main gatherer
-    with patch("main.asyncio.gather", new_callable=AsyncMock) as mock_gather:
-        mock_gather.side_effect = asyncio.CancelledError  # Simulate shutdown
+    # WHEN we run the app and simulate a task finishing to exit the main loop
+    with patch("main.asyncio.wait", new_callable=AsyncMock) as mock_wait:
+        # Simulate that one task completes, ending the app's main wait
+        mock_wait.return_value = ([AsyncMock()], [AsyncMock()])
         await app.run()
 
     # THEN
     mock_async_proxy_class.assert_called_once_with(
-        mock_app_config, mock_docker_instance
+        mock_complete_app_config, mock_docker_instance
     )
     assert mock_loop.add_signal_handler.call_count == 3
     mock_proxy_instance.start.assert_called_once()
@@ -85,6 +98,9 @@ async def test_application_shutdown():
     app.tasks = [task1, task2]
 
     await app.shutdown(signal.SIGINT)
+
+    # Allow the event loop one cycle to process the cancellations
+    await asyncio.sleep(0)
 
     assert app.shutdown_event.is_set()
     assert task1.cancelled()
