@@ -180,7 +180,7 @@ def health_check():
 
 def main():
     """Main entrypoint function to be called by the script."""
-    early_log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+    early_log_level = os.environ.get("LOG_LEVEL", "DEBUG").upper()
     early_log_format = os.environ.get("NB_LOG_FORMATTER", "console")
     configure_logging(early_log_level, early_log_format)
 
