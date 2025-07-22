@@ -12,23 +12,30 @@ services:
       - mc-network
     ports:
       - "19132-19134:19132-19134/udp"
-      - "25565:25565/udp"
       - "25565:25565/tcp"
+      - "8000:8000/tcp" # Expose prometheus port for tests
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - LOG_LEVEL=DEBUG
-      - NB_LOG_FORMATTER=json
+      - NB_LOG_FORMATTER=console # Use console for easier debugging in CI
       - NB_IDLE_TIMEOUT=30
       - NB_PLAYER_CHECK_INTERVAL=5
       - NB_QUERY_TIMEOUT=2
       - NB_SERVER_READY_MAX_WAIT=120
+      - NB_SERVER_STOP_TIMEOUT=20
       - NB_INITIAL_BOOT_READY_MAX_WAIT=45
-      - NB_SERVER_STARTUP_DELAY=5
+      - NB_SERVER_STARTUP_DELAY=2
       - NB_INITIAL_SERVER_QUERY_DELAY=2
-      - NB_HEALTHCHECK_STALE_THRESHOLD=10
+      - NB_HEALTHCHECK_STALE_THRESHOLD=15
       - NB_HEARTBEAT_INTERVAL=5
-    command: --generate-test-config python main.py
+    # FIX: Run the actual application and generate the test config
+    command: ["--generate-test-config", "python", "main.py"]
+    depends_on:
+      mc-bedrock:
+        condition: service_healthy
+      mc-java:
+        condition: service_healthy
 
   mc-bedrock:
     build:
@@ -47,6 +54,11 @@ services:
       - VERSION=${BEDROCK_VERSION}
       - DIRECT_DOWNLOAD_URL=${BEDROCK_DOWNLOAD_URL}
       - IDLE_TIMEOUT=-1
+    healthcheck:
+      test: ["CMD", "netstat", "-tuln"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
 
   mc-java:
     build:
@@ -69,6 +81,11 @@ services:
       - IDLE_TIMEOUT=-1
       - ONLINE_MODE=FALSE
       - SKIP_PAPER_PATCH_DOWNLOAD=TRUE
+    healthcheck:
+      test: ["CMD", "mc-health"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
 
   nb-tester:
     image: nb-tester:local
@@ -82,7 +99,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      - NB_TEST_MODE=container
+      - CI_MODE=true
     command: /bin/bash -c "while true; do sleep 1; done"
 
 networks:
