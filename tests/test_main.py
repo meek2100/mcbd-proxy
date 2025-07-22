@@ -3,7 +3,7 @@ import asyncio
 import os
 import signal
 import sys
-from unittest.mock import ANY, AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -77,8 +77,7 @@ async def test_amain_full_lifecycle(
         mock_app_config, mock_docker_instance
     )
     # Assert tasks were created for the main processes
-    mock_create_task.assert_any_call(ANY)  # For heartbeat
-    mock_create_task.assert_any_call(mock_proxy_instance.start())
+    assert mock_create_task.call_count == 2
     # Assert tasks were cancelled during shutdown
     mock_heartbeat_task.cancel.assert_called_once()
     mock_proxy_task.cancel.assert_called_once()

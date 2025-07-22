@@ -182,14 +182,13 @@ async def test_monitor_stops_idle_server(proxy, mock_docker_manager):
 async def bedrock_protocol(proxy, mock_bedrock_server_config):
     """Provides a BedrockProtocol instance for testing."""
     protocol = BedrockProtocol(proxy, mock_bedrock_server_config)
-    protocol.transport = AsyncMock()
+    protocol.transport = MagicMock(spec=asyncio.DatagramTransport)
     # Manually call connection_made to start the cleanup task in a loop
     protocol.connection_made(protocol.transport)
     yield protocol
     # Cleanup the task after the test
     if protocol.cleanup_task:
         protocol.cleanup_task.cancel()
-        # Allow cancellation to propagate
         await asyncio.sleep(0)
 
 
@@ -204,8 +203,6 @@ async def test_bedrock_new_client_creates_session(bedrock_protocol, proxy):
 
     assert addr in bedrock_protocol.client_map
     proxy.metrics_manager.inc_active_connections.assert_called_once()
-    # The method is NOT awaited, it's run in a background task.
-    # We just need to ensure it was CALLED.
     mock_create_backend.assert_called_once_with(addr, b"ping")
 
 
@@ -213,13 +210,10 @@ async def test_bedrock_new_client_creates_session(bedrock_protocol, proxy):
 async def test_bedrock_client_forwards_to_backend(bedrock_protocol):
     """Verify an existing client with a ready backend forwards data directly."""
     addr = ("127.0.0.1", 12345)
-    mock_backend_transport = AsyncMock()
-    # This mock needs its sendto method to also be an AsyncMock to avoid warnings
-    mock_backend_protocol = MagicMock(transport=mock_backend_transport)
-
+    mock_backend_transport = MagicMock(spec=asyncio.DatagramTransport)
     bedrock_protocol.client_map[addr] = {
         "last_activity": time.time(),
-        "protocol": mock_backend_protocol,
+        "protocol": MagicMock(transport=mock_backend_transport),
         "queue": [],
     }
 
@@ -233,7 +227,7 @@ async def test_bedrock_cleanup_removes_client(bedrock_protocol, proxy):
     """Verify the cleanup logic correctly removes a client and its resources."""
     addr = ("127.0.0.1", 12345)
     mock_backend_protocol = MagicMock()
-    mock_backend_protocol.transport = AsyncMock()
+    mock_backend_protocol.transport = MagicMock(spec=asyncio.DatagramTransport)
     bedrock_protocol.client_map[addr] = {
         "protocol": mock_backend_protocol,
         "task": MagicMock(),
