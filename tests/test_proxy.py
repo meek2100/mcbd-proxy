@@ -137,9 +137,7 @@ async def test_handle_tcp_connection_rejects_max_sessions(
     proxy.active_tcp_sessions = {MagicMock(): "fake_session"}
     _reader, writer = mock_tcp_streams
 
-    await proxy._handle_tcp_connection(
-        _reader, writer, mock_java_server_config
-    )
+    await proxy._handle_tcp_connection(_reader, writer, mock_java_server_config)
 
     proxy.metrics_manager.inc_active_connections.assert_not_called()
     writer.close.assert_called_once()
@@ -242,6 +240,4 @@ async def test_bedrock_cleanup_removes_client(bedrock_protocol, proxy):
 
     assert addr not in bedrock_protocol.client_map
     mock_backend_protocol.transport.close.assert_called_once()
-    proxy.metrics_manager.dec_active_connections.assert_called_once_with(
-        "test_bedrock"
-    )
+    proxy.metrics_manager.dec_active_connections.assert_called_once_with("test_bedrock")
