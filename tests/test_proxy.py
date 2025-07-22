@@ -182,6 +182,7 @@ async def test_monitor_stops_idle_server(proxy, mock_docker_manager):
 async def bedrock_protocol(proxy, mock_bedrock_server_config):
     """Provides a BedrockProtocol instance for testing."""
     protocol = BedrockProtocol(proxy, mock_bedrock_server_config)
+    # Use MagicMock for transport; its methods are not awaitable
     protocol.transport = MagicMock(spec=asyncio.DatagramTransport)
     # Manually call connection_made to start the cleanup task in a loop
     protocol.connection_made(protocol.transport)
@@ -203,6 +204,8 @@ async def test_bedrock_new_client_creates_session(bedrock_protocol, proxy):
 
     assert addr in bedrock_protocol.client_map
     proxy.metrics_manager.inc_active_connections.assert_called_once()
+    # The method is NOT awaited, it's run in a background task.
+    # We just need to ensure it was CALLED.
     mock_create_backend.assert_called_once_with(addr, b"ping")
 
 
