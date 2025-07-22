@@ -68,6 +68,7 @@ async def _update_heartbeat(app_config, shutdown_event: asyncio.Event):
             current_time = int(time.time())
             HEARTBEAT_FILE.write_text(str(current_time))
             log.debug("Heartbeat updated.", timestamp=current_time)
+            # Shield the wait so it can't be cancelled directly
             await asyncio.wait_for(
                 asyncio.shield(shutdown_event.wait()),
                 timeout=app_config.healthcheck_heartbeat_interval,
@@ -121,29 +122,31 @@ async def amain():
     # Register signal handlers only on non-Windows platforms
     if sys.platform != "win32":
         loop = asyncio.get_running_loop()
+
+        # FIX: Use a defined function to avoid lambda late-binding issues
+        def create_shutdown_task(s):
+            return lambda: asyncio.create_task(
+                shutdown(s, proxy_server, shutdown_event)
+            )
+
         for sig in (signal.SIGINT, signal.SIGTERM):
-
-            def handler(s=sig):
-                return asyncio.create_task(shutdown(s, proxy_server, shutdown_event))
-
-            loop.add_signal_handler(sig, handler)
+            loop.add_signal_handler(sig, create_shutdown_task(sig))
         if hasattr(signal, "SIGHUP"):
             loop.add_signal_handler(signal.SIGHUP, proxy_server.schedule_reload)
 
     # Start background tasks
     heartbeat_task = asyncio.create_task(_update_heartbeat(app_config, shutdown_event))
     proxy_task = asyncio.create_task(proxy_server.start())
-    all_tasks = [heartbeat_task, proxy_task]
 
     log.info("Nether-bridge is running. Waiting for shutdown signal...")
     await shutdown_event.wait()
     log.info("Shutdown event received, cleaning up tasks.")
 
     # Clean up tasks
-    for task in all_tasks:
+    for task in [heartbeat_task, proxy_task]:
         if not task.done():
             task.cancel()
-    await asyncio.gather(*all_tasks, return_exceptions=True)
+    await asyncio.gather(heartbeat_task, proxy_task, return_exceptions=True)
 
     log.debug("Closing Docker manager session.")
     await docker_manager.close()
