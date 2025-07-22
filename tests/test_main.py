@@ -26,7 +26,7 @@ def test_main_runs_health_check(mock_health_check):
 
 @pytest.mark.unit
 @patch("main.asyncio.run")
-@patch("main.amain", new_callable=AsyncMock)
+@patch("main.amain")
 def test_main_runs_amain(mock_amain, mock_asyncio_run):
     """
     Tests that the main function calls asyncio.run with the amain coroutine.
@@ -34,10 +34,9 @@ def test_main_runs_amain(mock_amain, mock_asyncio_run):
     with patch("main.sys.argv", ["main.py"]):
         main()
         # Verify that amain was called to create the coroutine
-        mock_amain.assert_awaited_once()
-        # Verify that the coroutine object was passed to asyncio.run
-        mock_asyncio_run.assert_called_once()
-        assert asyncio.iscoroutine(mock_asyncio_run.call_args.args[0])
+        mock_amain.assert_called_once()
+        # Verify that the coroutine object it returned was passed to asyncio.run
+        mock_asyncio_run.assert_called_once_with(mock_amain.return_value)
 
 
 @pytest.mark.unit
@@ -63,9 +62,6 @@ async def test_amain_full_lifecycle(
     mock_docker_instance = AsyncMock()
     mock_docker_manager_class.return_value = mock_docker_instance
 
-    # FIX: Use a MagicMock for the proxy and attach AsyncMocks for async methods.
-    # This prevents `schedule_reload` (a sync method) from being an AsyncMock,
-    # which would cause a TypeError with `add_signal_handler`.
     mock_proxy_instance = MagicMock()
     mock_proxy_instance.start = AsyncMock()
     mock_proxy_instance.shutdown = AsyncMock()
@@ -74,8 +70,10 @@ async def test_amain_full_lifecycle(
     mock_app_config = MagicMock(game_servers=[MagicMock()])
     mock_load_config.return_value = mock_app_config
 
-    mock_heartbeat_task = AsyncMock(spec=asyncio.Task)
-    mock_proxy_task = AsyncMock(spec=asyncio.Task)
+    # FIX: Use MagicMock for tasks. We only need to check `cancel()`, which
+    # is a synchronous method, avoiding event loop conflicts.
+    mock_heartbeat_task = MagicMock(spec=asyncio.Task)
+    mock_proxy_task = MagicMock(spec=asyncio.Task)
     mock_create_task.side_effect = [mock_heartbeat_task, mock_proxy_task]
 
     mock_loop = MagicMock()
@@ -90,12 +88,9 @@ async def test_amain_full_lifecycle(
     mock_async_proxy_class.assert_called_once_with(
         mock_app_config, mock_docker_instance
     )
-    # Assert tasks were created for the main processes
     assert mock_create_task.call_count == 2
-    # Assert tasks were cancelled during shutdown
     mock_heartbeat_task.cancel.assert_called_once()
     mock_proxy_task.cancel.assert_called_once()
-    # Assert cleanup was awaited
     mock_docker_instance.close.assert_awaited_once()
 
 
@@ -114,7 +109,7 @@ async def test_shutdown_coroutine():
 
 
 @pytest.mark.unit
-@patch("main.DockerManager")  # Patch DockerManager to prevent initialization
+@patch("main.DockerManager")
 @patch("main.sys.exit")
 @patch("main.log")
 @patch("main.load_app_config")

@@ -76,6 +76,22 @@ def proxy(mock_app_config, mock_docker_manager):
 
 
 @pytest.fixture
+def proxy_with_single_server(
+    mock_app_config, mock_docker_manager, mock_java_server_config
+):
+    """Provides an AsyncProxy instance with only one server for specific tests."""
+    # Create a new config with just one server
+    single_server_config = MagicMock(spec=AppConfig)
+    single_server_config.game_servers = [mock_java_server_config]
+    single_server_config.player_check_interval = 0.01
+    single_server_config.server_stop_timeout = 10
+    single_server_config.idle_timeout = 0.1
+
+    with patch("proxy.MetricsManager"):
+        yield AsyncProxy(single_server_config, mock_docker_manager)
+
+
+@pytest.fixture
 def mock_tcp_streams():
     """Provides correctly mocked asyncio StreamReader and StreamWriter."""
     reader = AsyncMock(spec=asyncio.StreamReader)
@@ -92,7 +108,6 @@ def mock_tcp_streams():
 async def test_shutdown_cancels_tasks(proxy):
     """Verify the shutdown method cancels all registered tasks."""
     loop = asyncio.get_running_loop()
-    # Use tasks that run long enough to be cancelled
     task1 = loop.create_task(asyncio.sleep(0.1))
     task2 = loop.create_task(asyncio.sleep(0.1))
     tcp_task = loop.create_task(asyncio.sleep(0.1))
@@ -155,8 +170,10 @@ async def test_proxy_data_handles_connection_reset(proxy, mock_tcp_streams):
 
 
 @pytest.mark.asyncio
-async def test_monitor_stops_idle_server(proxy, mock_docker_manager):
+async def test_monitor_stops_idle_server(proxy_with_single_server, mock_docker_manager):
     """Tests that the monitor task stops an idle server."""
+    # Use the isolated proxy fixture with only one server
+    proxy = proxy_with_single_server
     server_config = proxy.app_config.game_servers[0]
     proxy._server_state[server_config.name]["is_running"] = True
     proxy._server_state[server_config.name]["last_activity"] = (
@@ -164,9 +181,6 @@ async def test_monitor_stops_idle_server(proxy, mock_docker_manager):
     )
     mock_docker_manager.is_container_running.return_value = True
 
-    # FIX: Allow the loop to run once before stopping it.
-    # The first sleep completes, the logic runs, and the second sleep raises
-    # the exception to exit the test.
     with patch("asyncio.sleep", side_effect=[None, StopTestLoop()]):
         try:
             await proxy._monitor_server_activity()
@@ -185,12 +199,9 @@ async def test_monitor_stops_idle_server(proxy, mock_docker_manager):
 async def bedrock_protocol(proxy, mock_bedrock_server_config):
     """Provides a BedrockProtocol instance for testing."""
     protocol = BedrockProtocol(proxy, mock_bedrock_server_config)
-    # Use MagicMock for transport; its methods are not awaitable
     protocol.transport = MagicMock(spec=asyncio.DatagramTransport)
-    # Manually call connection_made to start the cleanup task in a loop
     protocol.connection_made(protocol.transport)
     yield protocol
-    # Cleanup the task after the test
     if protocol.cleanup_task:
         protocol.cleanup_task.cancel()
         await asyncio.sleep(0)
@@ -207,8 +218,6 @@ async def test_bedrock_new_client_creates_session(bedrock_protocol, proxy):
 
     assert addr in bedrock_protocol.client_map
     proxy.metrics_manager.inc_active_connections.assert_called_once()
-    # The method is NOT awaited, it's run in a background task.
-    # We just need to ensure it was CALLED.
     mock_create_backend.assert_called_once_with(addr, b"ping")
 
 
