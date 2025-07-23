@@ -3,12 +3,14 @@
 # This script is the entrypoint for the Docker container. It prepares the
 # environment and then executes the main application command.
 
-# Exit immediately if any command fails.
-set -e
+# Exit immediately if any command fails (-e) and treat unset variables
+# as an error (-u).
+set -eu
 
 # This block checks for a special flag used only during CI/CD integration tests.
-# If found, it generates a servers.json file and ensures the application user can access it.
-if [ "$1" = "--generate-test-config" ]; then
+# If found, it generates a servers.json file and ensures the application user
+# can access it.
+if [ "${1:-}" = "--generate-test-config" ]; then
     echo "Found --generate-test-config flag. Generating test servers.json..."
     # Create the servers.json file for the test environment.
     echo '{
@@ -33,13 +35,13 @@ if [ "$1" = "--generate-test-config" ]; then
     # Change ownership of the generated file to the application user ('naeus').
     # This is critical for tests that need to modify this file at runtime.
     chown naeus:nogroup /app/servers.json
-    
-    # Remove the flag from the argument list so it isn't passed to the Python app.
+
+    # Remove the flag from the argument list so it isn't passed to the app.
     shift
 fi
 
-# This block grants the non-root user 'naeus' permission to use the Docker socket.
-# It is a critical security step.
+# This block grants the non-root user 'naeus' permission to use the Docker
+# socket. It is a critical security and functionality step.
 if [ -S /var/run/docker.sock ]; then
     # Get the Group ID (GID) of the Docker socket file.
     DOCKER_SOCKET_GID=$(stat -c '%g' /var/run/docker.sock)
@@ -56,20 +58,26 @@ if [ -S /var/run/docker.sock ]; then
         echo "Creating group 'dockersock' with GID ${DOCKER_SOCKET_GID}"
         addgroup --system --gid "$DOCKER_SOCKET_GID" dockersock
     fi
-    
+
     # Get the name of the group that owns the Docker socket.
     DOCKER_GROUP_NAME=$(getent group "$DOCKER_SOCKET_GID" | cut -d: -f1)
 
     # Add the 'naeus' user to that group.
     echo "Adding user 'naeus' to group '${DOCKER_GROUP_NAME}'"
-    adduser naeus "$DOCKER_GROUP_NAME"
+    # The 'adduser' command might fail if the user is already in the group,
+    # so we add '|| true' to prevent the script from exiting.
+    adduser naeus "$DOCKER_GROUP_NAME" || true
 else
-    echo "Warning: /var/run/docker.sock is not mounted. Docker functionality will be unavailable."
+    echo "Warning: /var/run/docker.sock is not mounted." >&2
 fi
 
-# This is the final step. 'exec' replaces the shell process with the application.
-# 'gosu' is used to drop from root to the specified user ('naeus'). It's a
-# lighter, more secure alternative to 'su' as it avoids leaving a TTY
-# and handles signal passing correctly.
-# '"$@"' passes along the command from the Dockerfile CMD (e.g., "python", "main.py").
+# This is the final and most important step.
+# 'exec' replaces the shell process with the application process. This ensures
+# that signals (like SIGTERM from 'docker stop') are sent directly to the
+# application, allowing for graceful shutdown.
+# 'gosu' drops from root to the specified user ('naeus'). It's a lighter, more
+# secure alternative to 'su'.
+# '"$@"' passes along the command from the Dockerfile CMD (e.g., "python",
+# "-u", "main.py"). Using "python -u" is recommended for unbuffered output.
+echo "Handing off to application..."
 exec gosu naeus "$@"
