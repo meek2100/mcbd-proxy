@@ -12,7 +12,7 @@ import signal
 import sys
 import time
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import structlog
 from structlog.stdlib import BoundLogger
@@ -64,8 +64,10 @@ class Application:
         self.app_config = app_config
         self.shutdown_event = asyncio.Event()
         self.tasks: List[asyncio.Task] = []
-        self.docker_manager = DockerManager(app_config)
-        self.proxy_server = AsyncProxy(app_config, self.docker_manager)
+        # These are initialized in start() to ensure they are created
+        # within a running asyncio event loop.
+        self.docker_manager: Optional[DockerManager] = None
+        self.proxy_server: Optional[AsyncProxy] = None
 
     def _setup_signal_handlers(self):
         """Sets up signal handlers for graceful shutdown."""
@@ -76,7 +78,7 @@ class Application:
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, self._signal_handler, sig)
-        if hasattr(signal, "SIGHUP"):
+        if hasattr(signal, "SIGHUP") and self.proxy_server:
             loop.add_signal_handler(signal.SIGHUP, self.proxy_server.schedule_reload)
 
     def _signal_handler(self, sig: signal.Signals):
@@ -88,8 +90,13 @@ class Application:
         self.shutdown_event.set()
 
     async def start(self):
-        """Starts all application components and background tasks."""
+        """Initializes async components and starts background tasks."""
         log.info("Nether-bridge is starting...")
+
+        # **FIX:** Instantiate async components here, inside the event loop.
+        self.docker_manager = DockerManager(self.app_config)
+        self.proxy_server = AsyncProxy(self.app_config, self.docker_manager)
+
         self._setup_signal_handlers()
 
         # Start the core application tasks
@@ -102,11 +109,10 @@ class Application:
         # Monitor tasks for unexpected failures
         monitor_task = asyncio.create_task(self._monitor_tasks())
         self.tasks.append(monitor_task)
+        log.info("Application components started successfully.")
 
     async def _monitor_tasks(self):
-        """
-        Monitors running tasks and triggers shutdown if any fail unexpectedly.
-        """
+        """Monitors running tasks and triggers shutdown if any fail unexpectedly."""
         done, pending = await asyncio.wait(
             self.tasks, return_when=asyncio.FIRST_COMPLETED
         )
@@ -125,8 +131,6 @@ class Application:
     async def run_forever(self):
         """Runs the application until a shutdown is triggered."""
         await self.start()
-        # This is the main application loop. It will wait here until the
-        # shutdown_event is set by a signal or a critical task failure.
         await self.shutdown_event.wait()
         await self.cleanup()
 
@@ -134,18 +138,20 @@ class Application:
         """Gracefully stops all tasks and cleans up resources."""
         log.info("Cleaning up resources...")
 
-        # Cancel all running tasks
         for task in self.tasks:
             if not task.done():
                 task.cancel()
 
-        # Wait for tasks to finish cancelling
         await asyncio.gather(*self.tasks, return_exceptions=True)
 
         if self.proxy_server:
             await self.proxy_server.shutdown()
         if self.docker_manager:
             await self.docker_manager.close()
+
+        if HEARTBEAT_FILE.exists():
+            HEARTBEAT_FILE.unlink(missing_ok=True)
+            log.debug("Heartbeat file removed on shutdown.")
 
         log.info("Shutdown complete.")
 
@@ -156,15 +162,13 @@ async def _update_heartbeat(app_config: AppConfig, shutdown_event: asyncio.Event
     while not shutdown_event.is_set():
         try:
             HEARTBEAT_FILE.write_text(str(int(time.time())))
-            # Wait for the interval, but break immediately if shutdown is triggered
             await asyncio.wait_for(shutdown_event.wait(), timeout=interval)
         except asyncio.TimeoutError:
-            continue  # This is the expected path for the loop
+            continue
         except asyncio.CancelledError:
-            break  # Exit cleanly on cancellation
+            break
         except Exception:
             log.error("Failed to update heartbeat file.", exc_info=True)
-            # Prevent a fast busy-loop on persistent file errors
             await asyncio.sleep(interval)
 
 
@@ -192,6 +196,7 @@ def main():
         health_check()
         return
 
+    # Load config and configure logging synchronously first.
     app_config = load_app_config()
     configure_logging(app_config.log_level, app_config.log_format)
 
@@ -207,10 +212,6 @@ def main():
     except Exception:
         log.critical("Unhandled exception in main application.", exc_info=True)
         sys.exit(1)
-    finally:
-        if HEARTBEAT_FILE.exists():
-            HEARTBEAT_FILE.unlink(missing_ok=True)
-        log.debug("Heartbeat file removed on shutdown.")
 
 
 if __name__ == "__main__":
