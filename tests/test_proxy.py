@@ -48,10 +48,10 @@ def mock_bedrock_server_config():
 @pytest.fixture
 def mock_docker_manager():
     """Provides a mock DockerManager with explicit async methods."""
-    manager = AsyncMock()
+    manager = MagicMock()
     manager.is_container_running = AsyncMock(return_value=False)
     manager.start_server = AsyncMock(return_value=True)
-    manager.stop_server = AsyncMock()  # Explicitly make this an AsyncMock
+    manager.stop_server = AsyncMock()
     return manager
 
 
@@ -76,6 +76,22 @@ def proxy(mock_app_config, mock_docker_manager):
 
 
 @pytest.fixture
+def proxy_with_single_server(
+    mock_app_config, mock_docker_manager, mock_java_server_config
+):
+    """Provides an AsyncProxy instance with only one server for specific tests."""
+    # Create a new config with just one server
+    single_server_config = MagicMock(spec=AppConfig)
+    single_server_config.game_servers = [mock_java_server_config]
+    single_server_config.player_check_interval = 0.01
+    single_server_config.server_stop_timeout = 10
+    single_server_config.idle_timeout = 0.1
+
+    with patch("proxy.MetricsManager"):
+        yield AsyncProxy(single_server_config, mock_docker_manager)
+
+
+@pytest.fixture
 def mock_tcp_streams():
     """Provides correctly mocked asyncio StreamReader and StreamWriter."""
     reader = AsyncMock(spec=asyncio.StreamReader)
@@ -92,7 +108,6 @@ def mock_tcp_streams():
 async def test_shutdown_cancels_tasks(proxy):
     """Verify the shutdown method cancels all registered tasks."""
     loop = asyncio.get_running_loop()
-    # Use tasks that run long enough to be cancelled
     task1 = loop.create_task(asyncio.sleep(0.1))
     task2 = loop.create_task(asyncio.sleep(0.1))
     tcp_task = loop.create_task(asyncio.sleep(0.1))
@@ -155,8 +170,10 @@ async def test_proxy_data_handles_connection_reset(proxy, mock_tcp_streams):
 
 
 @pytest.mark.asyncio
-async def test_monitor_stops_idle_server(proxy, mock_docker_manager):
+async def test_monitor_stops_idle_server(proxy_with_single_server, mock_docker_manager):
     """Tests that the monitor task stops an idle server."""
+    # Use the isolated proxy fixture with only one server
+    proxy = proxy_with_single_server
     server_config = proxy.app_config.game_servers[0]
     proxy._server_state[server_config.name]["is_running"] = True
     proxy._server_state[server_config.name]["last_activity"] = (
@@ -164,7 +181,7 @@ async def test_monitor_stops_idle_server(proxy, mock_docker_manager):
     )
     mock_docker_manager.is_container_running.return_value = True
 
-    with patch("asyncio.sleep", side_effect=StopTestLoop()):
+    with patch("asyncio.sleep", side_effect=[None, StopTestLoop()]):
         try:
             await proxy._monitor_server_activity()
         except StopTestLoop:
@@ -182,14 +199,12 @@ async def test_monitor_stops_idle_server(proxy, mock_docker_manager):
 async def bedrock_protocol(proxy, mock_bedrock_server_config):
     """Provides a BedrockProtocol instance for testing."""
     protocol = BedrockProtocol(proxy, mock_bedrock_server_config)
-    protocol.transport = AsyncMock()
-    # Manually call connection_made to start the cleanup task in a loop
+    protocol.transport = MagicMock(spec=asyncio.DatagramTransport)
     protocol.connection_made(protocol.transport)
     yield protocol
-    # Cleanup the task after the test
     if protocol.cleanup_task:
         protocol.cleanup_task.cancel()
-        await asyncio.sleep(0)  # Allow cancellation to propagate
+        await asyncio.sleep(0)
 
 
 @pytest.mark.asyncio
@@ -203,14 +218,14 @@ async def test_bedrock_new_client_creates_session(bedrock_protocol, proxy):
 
     assert addr in bedrock_protocol.client_map
     proxy.metrics_manager.inc_active_connections.assert_called_once()
-    mock_create_backend.assert_awaited_once_with(addr, b"ping")
+    mock_create_backend.assert_called_once_with(addr, b"ping")
 
 
 @pytest.mark.asyncio
 async def test_bedrock_client_forwards_to_backend(bedrock_protocol):
     """Verify an existing client with a ready backend forwards data directly."""
     addr = ("127.0.0.1", 12345)
-    mock_backend_transport = AsyncMock()
+    mock_backend_transport = MagicMock(spec=asyncio.DatagramTransport)
     bedrock_protocol.client_map[addr] = {
         "last_activity": time.time(),
         "protocol": MagicMock(transport=mock_backend_transport),
@@ -227,7 +242,7 @@ async def test_bedrock_cleanup_removes_client(bedrock_protocol, proxy):
     """Verify the cleanup logic correctly removes a client and its resources."""
     addr = ("127.0.0.1", 12345)
     mock_backend_protocol = MagicMock()
-    mock_backend_protocol.transport = AsyncMock()
+    mock_backend_protocol.transport = MagicMock(spec=asyncio.DatagramTransport)
     bedrock_protocol.client_map[addr] = {
         "protocol": mock_backend_protocol,
         "task": MagicMock(),
