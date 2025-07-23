@@ -23,35 +23,8 @@ class DockerManager:
 
     def __init__(self, app_config: AppConfig):
         self.app_config = app_config
-        self.docker: Optional[aiodocker.Docker] = None
-        self._lock = asyncio.Lock()
-        log.info("DockerManager initialized (client will connect on first use).")
-
-    async def _get_client(self) -> aiodocker.Docker:
-        """
-        Lazily initializes and returns the aiodocker client, ensuring it
-        happens only once and in an async context. This is more resilient
-        than connecting in the constructor.
-        """
-        async with self._lock:
-            if self.docker is None:
-                log.info("First use: initializing Docker client...")
-                try:
-                    self.docker = aiodocker.Docker()
-                    # Verify the connection is alive with a lightweight command
-                    await self.docker.version()
-                    log.info("Docker client connected successfully.")
-                except Exception:
-                    log.critical(
-                        "Failed to initialize Docker client. Is Docker running?",
-                        exc_info=True,
-                    )
-                    # Ensure we close a partially opened client
-                    if self.docker:
-                        await self.docker.close()
-                    self.docker = None  # Reset to allow retries
-                    raise
-            return self.docker
+        self.docker = aiodocker.Docker()
+        log.info("DockerManager initialized")
 
     @asynccontextmanager
     async def get_container(
@@ -59,12 +32,12 @@ class DockerManager:
     ) -> AsyncGenerator[Optional[DockerContainer], None]:
         """
         An async context manager to safely get a container object.
-        Handles exceptions gracefully if the container is not found.
+        Handles exceptions gracefully if the container is not found,
+        yielding None instead of raising an error.
         """
         container = None
         try:
-            docker = await self._get_client()
-            container = await docker.containers.get(container_name)
+            container = await self.docker.containers.get(container_name)
             yield container
         except aiodocker.exceptions.DockerError as e:
             if e.status == 404:
@@ -95,6 +68,7 @@ class DockerManager:
         async with self.get_container(container_name) as container:
             if not container:
                 return False
+
             try:
                 container_info = await container.show()
                 is_running = container_info.get("State", {}).get("Running", False)
@@ -120,7 +94,7 @@ class DockerManager:
         Returns True on success, False on failure.
         """
         container_name = server_config.container_name
-        log.info("Attempting to start container", container_name=container_name)
+        log.info("Starting container", container_name=container_name)
         async with self.get_container(container_name) as container:
             if not container:
                 return False
@@ -128,22 +102,25 @@ class DockerManager:
             try:
                 await container.start()
                 log.info(
-                    "Container started successfully", container_name=container_name
+                    "Container started successfully",
+                    container_name=container_name,
                 )
                 await asyncio.sleep(self.app_config.server_startup_delay)
                 return await self.wait_for_server_query_ready(server_config)
             except aiodocker.exceptions.DockerError as e:
                 if "already started" in str(e).lower():
                     log.warning(
-                        "Container is already running", container_name=container_name
+                        "Container is already running",
+                        container_name=container_name,
                     )
                     return True
-                log.error(
-                    "Failed to start container",
-                    container_name=container_name,
-                    exc_info=True,
-                )
-                return False
+                else:
+                    log.error(
+                        "Failed to start container",
+                        container_name=container_name,
+                        exc_info=True,
+                    )
+                    return False
 
     async def stop_server(self, container_name: str, stop_timeout: int):
         """
@@ -183,7 +160,7 @@ class DockerManager:
         query_timeout = self.app_config.query_timeout
         log.info(
             "Waiting for server to be queryable",
-            server=server_config.name,
+            container_name=server_config.container_name,
             timeout=wait_timeout,
         )
 
@@ -195,28 +172,33 @@ class DockerManager:
                         lookup_str, timeout=query_timeout
                     )
                 else:
+                    # BedrockServer.lookup is synchronous, so it's run in a
+                    # thread pool to avoid blocking the event loop.
                     server = await asyncio.to_thread(
                         BedrockServer.lookup, lookup_str, timeout=query_timeout
                     )
+
                 await server.async_status()
-                log.info("Server is queryable!", server=server_config.name)
+                log.info(
+                    "Server is queryable!",
+                    container_name=server_config.container_name,
+                )
                 return True
             except (asyncio.TimeoutError, ConnectionRefusedError, OSError) as e:
                 log.debug(
                     "Server not queryable yet, retrying...",
-                    server=server_config.name,
+                    container_name=server_config.container_name,
                     error=str(e),
                 )
                 await asyncio.sleep(query_timeout)
 
         log.error(
             "Timeout waiting for server to be queryable",
-            server=server_config.name,
+            container_name=server_config.container_name,
         )
         return False
 
     async def close(self):
-        """Closes the asynchronous aiodocker session if it was created."""
-        if self.docker:
-            await self.docker.close()
-            log.info("DockerManager session closed")
+        """Closes the asynchronous aiodocker session."""
+        await self.docker.close()
+        log.info("DockerManager session closed")
