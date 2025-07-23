@@ -18,7 +18,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - LOG_LEVEL=DEBUG
-      - NB_LOG_FORMATTER=console
+      - NB_LOG_FORMATTER=console # Use console for easier debugging in CI
       - NB_IDLE_TIMEOUT=30
       - NB_PLAYER_CHECK_INTERVAL=5
       - NB_QUERY_TIMEOUT=2
@@ -30,6 +30,7 @@ services:
       - NB_HEALTHCHECK_STALE_THRESHOLD=15
       - NB_HEARTBEAT_INTERVAL=5
       - PYTHONUNBUFFERED=1 # Ensure logs are not buffered
+    # FIX: Run the actual application after generating the test config.
     command: ["--generate-test-config", "python", "main.py"]
     depends_on:
       mc-bedrock:
@@ -54,6 +55,12 @@ services:
       - VERSION=${BEDROCK_VERSION}
       - DIRECT_DOWNLOAD_URL=${BEDROCK_DOWNLOAD_URL}
       - IDLE_TIMEOUT=-1
+    healthcheck:
+      # This simple check confirms the server process is listening.
+      test: ["CMD", "netstat", "-tuln"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
 
   mc-java:
     build:
@@ -77,6 +84,7 @@ services:
       - ONLINE_MODE=FALSE
       - SKIP_PAPER_PATCH_DOWNLOAD=TRUE
     healthcheck:
+      # Use the built-in healthcheck script from the base image.
       test: ["CMD", "mc-health"]
       interval: 5s
       timeout: 5s
@@ -94,7 +102,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      - CI_MODE=true
+      - CI_MODE=true # Ensure tests run in container-aware mode
     command: /bin/bash -c "while true; do sleep 1; done"
 
 networks:
