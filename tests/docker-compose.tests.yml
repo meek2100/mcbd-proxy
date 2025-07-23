@@ -54,11 +54,6 @@ services:
       - VERSION=${BEDROCK_VERSION}
       - DIRECT_DOWNLOAD_URL=${BEDROCK_DOWNLOAD_URL}
       - IDLE_TIMEOUT=-1
-    healthcheck:
-      test: ["CMD", "netstat", "-tuln"]
-      interval: 5s
-      timeout: 5s
-      retries: 24
 
   mc-java:
     build:
