@@ -31,7 +31,7 @@ pytest-mock = "3.14.1"
 pytest-cov = "6.2.1"
 ruff = "0.12.3"
 requests = "2.32.4"
-pytest-asyncio = "1.0.0"
+pytest-asyncio = "1.1.0"
 
 [tool.poetry.urls]
 Homepage = "https://github.com/meek2100/mcbd-proxy"
