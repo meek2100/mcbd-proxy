@@ -2,19 +2,25 @@
 
 [[package]]
 name = "aiodocker"
-version = "0.21.0"
-description = "Docker API client for asyncio"
+version = "0.27.0"
+description = "A simple Docker HTTP API wrapper written with asyncio and aiohttp."
 optional = false
-python-versions = ">=3.6"
+python-versions = ">=3.10.0"
 groups = ["main"]
 files = [
-    {file = "aiodocker-0.21.0-py3-none-any.whl", hash = "sha256:6fe00135bb7dc40a407669d3157ecdfd856f3737d939df54f40a479d40cf7bdc"},
-    {file = "aiodocker-0.21.0.tar.gz", hash = "sha256:1f2e6db6377195962bb676d4822f6e3a0c525e1b5d60b8ebbab68230bff3d227"},
+    {file = "aiodocker-0.27.0-py3-none-any.whl", hash = "sha256:c55647bdcaf546dd4fc9b52794a9510575e126888dff478a9185f580a40dc45e"},
+    {file = "aiodocker-0.27.0.tar.gz", hash = "sha256:74586f4929aee4563ee7db50996a1a39ac35e06c80701daad31f94aadb6551c7"},
 ]
 
 [package.dependencies]
-aiohttp = ">=3.6"
-typing-extensions = ">=3.6.5"
+aiohttp = ">=3.11.13,<4.0"
+
+[package.extras]
+dev = ["aiohttp (==3.13.5)", "towncrier (==25.8.0)"]
+doc = ["alabaster (==1.0.0)", "sphinx (==8.1.3)"]
+lint = ["mypy (==1.20.2)", "pre-commit (>=3.5.0)", "ruff (==0.15.11)", "types-paramiko"]
+ssh = ["asyncssh (>=2.14.0)", "paramiko (>=2.9.0)"]
+test = ["async-timeout (>=5.0.1,<5.1.0)", "asyncssh (>=2.14.0)", "codecov (==2.1.13)", "packaging (==26.1)", "paramiko (>=2.9.0)", "pytest (==9.0.3)", "pytest-asyncio (==1.3.0)", "pytest-cov (==7.1.0)", "pytest-sugar (==1.1.1)", "testcontainers (==4.14.2)"]
 
 [[package]]
 name = "aiohappyeyeballs"
@@ -1393,4 +1399,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.13"
-content-hash = "74e960d46c3993db0d1b58874b5de48e5dbb6df27d9c8a2eaf6192735003026e"
+content-hash = "1387caec546cfadc614d45334a186f20e7c2fb1d51bf1fa8417a51a8ea23ddb5"
