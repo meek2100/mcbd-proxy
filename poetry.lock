@@ -573,14 +573,14 @@ files = [
 
 [[package]]
 name = "mcstatus"
-version = "12.0.2"
+version = "15.0.0"
 description = "A library to query Minecraft Servers for their status and capabilities."
 optional = false
-python-versions = ">=3.9"
+python-versions = ">=3.11"
 groups = ["main"]
 files = [
-    {file = "mcstatus-12.0.2-py3-none-any.whl", hash = "sha256:b2ee5ff189a4ebf255c658e3983b3e2c74a1e0d222d3e74cfe04c2b4f64f66e6"},
-    {file = "mcstatus-12.0.2.tar.gz", hash = "sha256:85546aa508d023524ffcbdb6911307cbaf88809465dfd71ef08e5edee1690e26"},
+    {file = "mcstatus-15.0.0-py3-none-any.whl", hash = "sha256:04187ca016f50c94232b1ce45f20dcdf2bf64cd6768413bb28c975ae1c1103c2"},
+    {file = "mcstatus-15.0.0.tar.gz", hash = "sha256:e9e862781f8291f3b715c339c396bc7e6b236f1da948680a90cf237f3d0f1170"},
 ]
 
 [package.dependencies]
@@ -1393,4 +1393,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.13"
-content-hash = "9cba2c97049fefc8bd1cf16e308a3f10082301b95a5de952c1fc8b1eed1e11d8"
+content-hash = "74e960d46c3993db0d1b58874b5de48e5dbb6df27d9c8a2eaf6192735003026e"
