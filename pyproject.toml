@@ -23,7 +23,7 @@ prometheus-client = "0.22.1"
 structlog = "25.4.0"
 colorama = "0.4.6"
 pydantic = "2.14.4"
-python-dotenv = "1.1.1"
+python-dotenv = "1.2.4"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "8.4.1"
